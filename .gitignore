@@ -1,0 +1,7 @@
+.tools/
+gh.zip
+.publish-git/
+.agents/
+__pycache__/
+*.pyc
+web/*.log
