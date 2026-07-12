@@ -22,6 +22,20 @@ ESPN_LEAGUES = {
     "fin.1": "芬超",
 }
 ZGZCW_HAD_URL = "https://cp.zgzcw.com/lottery/jchtplayvsForJsp.action?lotteryId=47&type=jcmini"
+ZGZCW_ODDS_URLS = {
+    "crs": "https://cp.zgzcw.com/lottery/jcplayvsForJsp.action?lotteryId=23",
+    "ttg": "https://cp.zgzcw.com/lottery/jcplayvsForJsp.action?lotteryId=24",
+    "hafu": "https://cp.zgzcw.com/lottery/jcplayvsForJsp.action?lotteryId=25",
+}
+CRS_KEYS = [
+    "s01s00", "s02s00", "s02s01", "s03s00", "s03s01", "s03s02",
+    "s04s00", "s04s01", "s04s02", "s05s00", "s05s01", "s05s02", "s-1sh",
+    "s00s00", "s01s01", "s02s02", "s03s03", "s-1sd",
+    "s00s01", "s00s02", "s01s02", "s00s03", "s01s03", "s02s03",
+    "s00s04", "s01s04", "s02s04", "s00s05", "s01s05", "s02s05", "s-1sa",
+]
+TTG_KEYS = [f"s{index}" for index in range(8)]
+HAFU_KEYS = ["hh", "hd", "ha", "dh", "dd", "da", "ah", "ad", "aa"]
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
     "Referer": "https://www.sporttery.cn/jc/zqsgkj/",
@@ -108,10 +122,47 @@ class ZgzcwMatchParser(HTMLParser):
             self.current = None
 
 
+class ZgzcwOddsParser(HTMLParser):
+    def __init__(self, target_date: date):
+        super().__init__(convert_charrefs=True)
+        self.target_date = target_date.isoformat()
+        self.current_match_id = ""
+        self.odds: dict[str, list[str]] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {key: value or "" for key, value in attrs}
+        if tag == "tr" and values.get("id", "").startswith("tr_"):
+            self.current_match_id = ""
+            if values.get("t", "")[:10] == self.target_date:
+                self.current_match_id = values["id"].removeprefix("tr_")
+        elif tag == "input" and self.current_match_id:
+            if values.get("id") == f"ht_{self.current_match_id}":
+                self.odds[self.current_match_id] = values.get("value", "").split()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "tr":
+            self.current_match_id = ""
+
+
 def fetch_zgzcw_matches(target_date: date) -> list[dict]:
     parser = ZgzcwMatchParser(target_date)
     parser.feed(fetch_text(ZGZCW_HAD_URL))
     return parser.matches
+
+
+def fetch_zgzcw_odds(target_date: date) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    key_sets = {"crs": CRS_KEYS, "ttg": TTG_KEYS, "hafu": HAFU_KEYS}
+    for play, url in ZGZCW_ODDS_URLS.items():
+        parser = ZgzcwOddsParser(target_date)
+        parser.feed(fetch_text(url))
+        keys = key_sets[play]
+        for match_id, values in parser.odds.items():
+            if len(values) != len(keys):
+                print(f"WARNING: {match_id} {play}赔率数量异常：{len(values)}，应为{len(keys)}")
+                continue
+            result.setdefault(match_id, {})[play] = dict(zip(keys, values))
+    return result
 
 
 def fetch_matches(target_date: date) -> list[dict]:
@@ -368,12 +419,13 @@ def collect_odds(matches: list[dict]) -> dict[str, dict]:
     for item in matches:
         match_id = str(item.get("matchId", ""))
         if item.get("source") == "中国足彩网":
+            extra = item.get("zgzcw_odds", {})
             odds[match_id] = {
                 "had": {"h": item.get("h", ""), "d": item.get("d", ""), "a": item.get("a", "")},
                 "hhad": {},
-                "ttg": {},
-                "hafu": {},
-                "crs": {},
+                "ttg": extra.get("ttg", {}),
+                "hafu": extra.get("hafu", {}),
+                "crs": extra.get("crs", {}),
             }
         elif match_id and not match_id.startswith("espn-"):
             odds[match_id] = fetch_odds(match_id)
@@ -420,6 +472,9 @@ def main() -> int:
             selected = fetch_zgzcw_matches(target_date)
             if not selected:
                 raise RuntimeError("中国足彩网当天没有可解析的竞彩比赛")
+            fallback_odds = fetch_zgzcw_odds(target_date)
+            for item in selected:
+                item["zgzcw_odds"] = fallback_odds.get(str(item.get("matchId", "")), {})
         except Exception as fallback_exc:
             source = "ESPN"
             source_message += f" 中国足彩网也不可用（{type(fallback_exc).__name__}），已切换 ESPN。"
