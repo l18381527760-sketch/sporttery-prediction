@@ -1,0 +1,30 @@
+name: Email Daily Betting Report
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 14:00 Beijing time
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  email:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+      GMAIL_ADDRESS: l18381527760@gmail.com
+      REPORT_RECIPIENT: l18381527760@gmail.com
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+    steps:
+      - name: Checkout latest report
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Send report image
+        run: python send_daily_email.py
