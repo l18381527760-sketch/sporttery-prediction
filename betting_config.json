@@ -1,5 +1,5 @@
 {
-  "daily_budget": 300,
+  "daily_budget": 230,
   "max_daily_budget": 500,
   "base_allocations": {
     "total_goals": 100,
@@ -8,6 +8,15 @@
     "score_combo": 50
   },
   "min_stake": 10,
+  "draw_strategy": {
+    "single_stake": 150,
+    "double_stake_each": 100,
+    "second_draw_min_probability": 0.27,
+    "max_probability_gap": 0.05,
+    "combo_stake": 30,
+    "combo_min_legs": 3,
+    "combo_max_legs": 4
+  },
   "default_odds": {},
   "confidence_multiplier": {
     "high": 1.15,
