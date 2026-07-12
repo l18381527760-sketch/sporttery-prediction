@@ -1,0 +1,2 @@
+﻿date,match,team_a,team_b,play,selection,probability,odds,stake,expected_return,expected_profit,reason,legs_json
+2026-07-12,布兰 vs 斯达,布兰,斯达,胜平负,胜,0.7341344971836603,1.28,100,93.97,-6.03,胜平负模型信心最高：胜，概率73.4%，竞彩网赔率1.28,[]
