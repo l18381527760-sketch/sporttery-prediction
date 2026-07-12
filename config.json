@@ -8,6 +8,7 @@
   "rest_weight": 0.035,
   "home_adv_weight": 1.0,
   "market_blend_weight": 0.28,
+  "dixon_coles_rho": -0.10,
   "max_goals": 10,
   "knockout_stages": ["round32", "round16", "quarterfinal", "semifinal", "third_place", "final", "knockout"],
   "confidence_thresholds": {
