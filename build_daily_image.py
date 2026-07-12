@@ -75,7 +75,9 @@ def latest_plan() -> tuple[str, list[dict]]:
 def draw_report() -> Path:
     report_date, plan = latest_plan()
     ledger = read_csv(OUTPUT_DIR / "betting_ledger.csv")
-    metrics = read_metrics().get("overall", {})
+    all_metrics = read_metrics()
+    metrics = all_metrics.get("overall", {})
+    clv_metrics = all_metrics.get("clv", {})
     plan_height = max(1, len(plan)) * 124
     ledger_height = max(1, len(ledger)) * 76
     height = 590 + plan_height + ledger_height
@@ -100,10 +102,11 @@ def draw_report() -> Path:
     today_stake = sum(number(row, "stake") for row in plan)
     brier = metrics.get("brier")
     roi = metrics.get("roi")
+    average_clv = clv_metrics.get("average_clv")
     stats = [
         ("今日预算", f"{today_stake:.0f} 元"),
-        ("已结算", f"{len(settled)} 笔"),
         ("Brier误差", f"{brier:.3f}" if brier is not None else "-"),
+        ("平均CLV", f"{average_clv * 100:+.1f}%" if average_clv is not None else "-"),
         ("实际回报率", f"{roi * 100:+.1f}%" if roi is not None else "-"),
         ("累计盈亏", f"{profit:+.0f} 元"),
     ]
@@ -131,7 +134,7 @@ def draw_report() -> Path:
             draw.text((320, y + 57), selection_lines[0], font=font(21), fill=muted)
             market_probability = number(row, "market_probability")
             value_edge = number(row, "value_edge")
-            draw.text((1040, y + 57), f"模型 {number(row, 'probability') * 100:.1f}%  市场 {market_probability * 100:.1f}%  优势 {value_edge * 100:+.1f}%", font=font(20), fill=muted)
+            draw.text((960, y + 57), f"保守 {number(row, 'probability') * 100:.1f}%  原模型 {number(row, 'raw_model_probability') * 100:.1f}%  市场 {market_probability * 100:.1f}%  优势 {value_edge * 100:+.1f}%", font=font(19), fill=muted)
             y += 124
 
     draw.line((70, y, WIDTH - 70, y), fill=line, width=2)
