@@ -49,6 +49,16 @@ def read_betting_ledger() -> list[dict]:
     return read_csv_file(OUTPUT_DIR / "betting_ledger.csv")
 
 
+def read_model_metrics() -> dict:
+    path = OUTPUT_DIR / "model_metrics.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def as_float(row: dict, key: str) -> float | None:
     value = (row.get(key) or "").strip()
     return float(value) if value else None
@@ -64,6 +74,10 @@ def yuan(value: float | None) -> str:
     if value is None:
         return "-"
     return f"{value:.0f}"
+
+
+def decimal(value: float | None) -> str:
+    return "-" if value is None else f"{value:.3f}"
 
 
 def match_date(row: dict) -> date:
@@ -216,7 +230,7 @@ def render_betting_plan(plan: list[dict]) -> str:
         return """
         <section class="betting-section">
           <div class="section-title"><h2>模拟投注方案</h2><span>暂无方案</span></div>
-          <div class="empty">还没有生成今天的模拟投注方案。</div>
+          <div class="empty">今天没有同时满足概率优势、赔率价值和风险条件的方案，因此不模拟投注。</div>
         </section>
         """
 
@@ -233,8 +247,8 @@ def render_betting_plan(plan: list[dict]) -> str:
               <td>{html.escape(item.get("play", ""))}</td>
               <td>{html.escape(item.get("match", ""))}</td>
               <td><strong>{html.escape(item.get("selection", ""))}</strong></td>
-              <td>{pct(as_float(item, "probability"))}</td>
-              <td>{html.escape(item.get("odds", ""))}</td>
+              <td>{pct(as_float(item, "probability"))}<br><small>市场 {pct(as_float(item, "market_probability"))}</small></td>
+              <td>{html.escape(item.get("odds", ""))}<br><small>优势 {pct(as_float(item, "value_edge"))}</small></td>
               <td>{yuan(as_float(item, "stake"))}</td>
               <td>{yuan(as_float(item, "expected_profit"))}</td>
               <td>{html.escape(item.get("reason", ""))}</td>
@@ -268,7 +282,7 @@ def render_betting_plan(plan: list[dict]) -> str:
     """
 
 
-def render_ledger(ledger: list[dict]) -> str:
+def render_ledger(ledger: list[dict], model_metrics: dict) -> str:
     if not ledger:
         return ""
     total_stake = sum(as_float(row, "stake") or 0 for row in ledger)
@@ -276,12 +290,21 @@ def render_ledger(ledger: list[dict]) -> str:
     profit = sum(as_float(row, "profit") or 0 for row in settled)
     hits = sum(1 for row in settled if row.get("status") == "命中")
     hit_rate = hits / len(settled) if settled else None
+    overall = model_metrics.get("overall", {})
+    roi = overall.get("roi")
+    brier = overall.get("brier")
+    log_loss = overall.get("log_loss")
+    average_expected_return = overall.get("average_expected_return")
     return f"""
       <section class="ledger-strip">
         <div><span>累计模拟投入</span><strong>{yuan(total_stake)}</strong></div>
         <div><span>已结算注数</span><strong>{len(settled)}</strong></div>
         <div><span>命中率</span><strong>{pct(hit_rate)}</strong></div>
         <div><span>累计盈亏</span><strong>{yuan(profit)}</strong></div>
+        <div><span>实际回报率</span><strong>{pct(roi)}</strong></div>
+        <div><span>Brier概率误差</span><strong>{decimal(brier)}</strong></div>
+        <div><span>Log Loss</span><strong>{decimal(log_loss)}</strong></div>
+        <div><span>平均赔率价值</span><strong>{pct((average_expected_return - 1) if average_expected_return is not None else None)}</strong></div>
       </section>
     """
 
@@ -295,6 +318,7 @@ def render_site(rows: list[dict]) -> str:
     high_confidence = sum(1 for row in rows if row.get("confidence") in {"高", "High"})
     betting_plan = read_betting_plan(display_date)
     betting_ledger = read_betting_ledger()
+    model_metrics = read_model_metrics()
     source_status = read_source_status()
     source_name = str(source_status.get("source") or "未知")
     analysis_source = str(source_status.get("analysis_source") or "专业欧赔市场")
@@ -757,7 +781,7 @@ def render_site(rows: list[dict]) -> str:
       </aside>
     </section>
 
-    {render_ledger(betting_ledger)}
+    {render_ledger(betting_ledger, model_metrics)}
     {render_betting_plan(betting_plan)}
 
     <footer>
