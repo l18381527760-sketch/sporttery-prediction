@@ -260,7 +260,7 @@ def build_plan(target_date: date) -> list[dict]:
             if odds and market_probability is not None:
                 edge = probability - market_probability
                 if probability >= float(value_strategy.get("min_combo_leg_probability", 0.48)) and edge >= float(value_strategy.get("min_combo_leg_edge", 0.0)):
-                    quality = probability * (probability * odds) * performance_multiplier("胜平负串关")
+                    quality = (probability * odds) * performance_multiplier("胜平负串关")
                     match_wdw.append((quality, row, selection, probability, odds, market_probability, edge))
         if match_wdw:
             # One selection per match, ranked by calibrated model probability.
