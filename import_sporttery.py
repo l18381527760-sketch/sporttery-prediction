@@ -82,6 +82,8 @@ class ZgzcwMatchParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.target_date = target_date.isoformat()
         self.current: dict | None = None
+        self.current_cell = ""
+        self.capture_team = False
         self.matches: list[dict] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -101,22 +103,49 @@ class ZgzcwMatchParser(HTMLParser):
                     "h": "",
                     "d": "",
                     "a": "",
+                    "market_h": "",
+                    "market_d": "",
+                    "market_a": "",
                 }
+        elif self.current is not None and tag == "td":
+            classes = values.get("class", "").split()
+            if "wh-4" in classes:
+                self.current_cell = "homeTeam"
+            elif "wh-6" in classes:
+                self.current_cell = "awayTeam"
+            else:
+                self.current_cell = ""
         elif self.current is not None and tag == "a":
             title = values.get("title", "").strip()
             if title and "homeTeam" not in self.current:
                 self.current["homeTeam"] = title
             elif title and "awayTeam" not in self.current:
                 self.current["awayTeam"] = title
+            self.capture_team = self.current_cell in {"homeTeam", "awayTeam"} and "soccer/team" in values.get("href", "")
         elif self.current is not None and tag == "input":
             input_id = values.get("id", "")
             if input_id.startswith("ht_"):
                 standard = values.get("value", "").split("|", 1)[0].split()
                 if len(standard) == 3:
                     self.current["h"], self.current["d"], self.current["a"] = standard
+            elif input_id.startswith("esp_"):
+                professional = values.get("value", "").split()
+                if len(professional) == 3:
+                    self.current["market_h"], self.current["market_d"], self.current["market_a"] = professional
+
+    def handle_data(self, data: str) -> None:
+        if self.current is None or not self.capture_team:
+            return
+        text = data.strip()
+        if text and not self.current.get(self.current_cell):
+            self.current[self.current_cell] = text
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "tr" and self.current is not None:
+        if tag == "a":
+            self.capture_team = False
+        elif tag == "td":
+            self.current_cell = ""
+        elif tag == "tr" and self.current is not None:
             if self.current.get("homeTeam") and self.current.get("awayTeam"):
                 self.matches.append(self.current)
             self.current = None
@@ -316,6 +345,22 @@ def attach_had_odds(matches: list[dict], odds_by_id: dict[str, dict]) -> list[di
     return enriched
 
 
+def attach_professional_market(matches: list[dict], market_matches: list[dict]) -> list[dict]:
+    """Attach European bookmaker consensus odds without replacing JC odds."""
+    by_number = {match_number(item): item for item in market_matches if match_number(item)}
+    by_teams = {(team_home(item), team_away(item)): item for item in market_matches}
+    enriched = []
+    for item in matches:
+        row = dict(item)
+        market = by_number.get(match_number(item)) or by_teams.get((team_home(item), team_away(item))) or {}
+        row["market_h"] = market.get("market_h", row.get("market_h", ""))
+        row["market_d"] = market.get("market_d", row.get("market_d", ""))
+        row["market_a"] = market.get("market_a", row.get("market_a", ""))
+        row["analysis_source"] = "中国足彩网专业欧赔市场" if all(row.get(key) for key in ("market_h", "market_d", "market_a")) else "竞彩足球市场"
+        enriched.append(row)
+    return enriched
+
+
 def write_fixtures(matches: list[dict], target_date: date) -> Path:
     path = DATA_DIR / "fixtures.csv"
     fields = [
@@ -329,6 +374,10 @@ def write_fixtures(matches: list[dict], target_date: date) -> Path:
         "odds_a",
         "odds_draw",
         "odds_b",
+        "market_odds_a",
+        "market_odds_draw",
+        "market_odds_b",
+        "analysis_source",
         "match_num",
         "match_id",
         "pool_status",
@@ -349,6 +398,10 @@ def write_fixtures(matches: list[dict], target_date: date) -> Path:
                     "odds_a": item.get("h", ""),
                     "odds_draw": item.get("d", ""),
                     "odds_b": item.get("a", ""),
+                    "market_odds_a": item.get("market_h", ""),
+                    "market_odds_draw": item.get("market_d", ""),
+                    "market_odds_b": item.get("market_a", ""),
+                    "analysis_source": item.get("analysis_source", "竞彩足球市场"),
                     "match_num": match_number(item),
                     "match_id": item.get("matchId", ""),
                     "pool_status": item.get("poolStatus", item.get("matchStatus", "")),
@@ -369,7 +422,7 @@ def write_ratings(matches: list[dict]) -> Path:
     path = DATA_DIR / "team_ratings.csv"
     ratings = load_ratings()
     for item in matches:
-        edge = implied_home_edge(item.get("h", ""), item.get("a", ""))
+        edge = implied_home_edge(item.get("market_h") or item.get("h", ""), item.get("market_a") or item.get("a", ""))
         home = team_home(item)
         away = team_away(item)
         if home and home not in ratings:
@@ -438,10 +491,11 @@ def write_odds_data(odds: dict[str, dict], target_date: date) -> Path:
     return path
 
 
-def write_source_status(source: str, target_date: date, message: str = "") -> Path:
+def write_source_status(source: str, target_date: date, message: str = "", analysis_source: str = "专业欧赔市场") -> Path:
     path = DATA_DIR / "source_status.json"
     payload = {
         "source": source,
+        "analysis_source": analysis_source,
         "target_date": target_date.isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "fallback": source != "竞彩网",
@@ -486,10 +540,16 @@ def main() -> int:
         selected = matches
     odds_data = collect_odds(selected)
     selected = attach_had_odds(selected, odds_data)
+    try:
+        selected = attach_professional_market(selected, fetch_zgzcw_matches(target_date))
+    except Exception as exc:
+        print(f"WARNING: 专业欧赔市场暂不可用（{type(exc).__name__}），本次使用竞彩足球市场概率。")
+        selected = attach_professional_market(selected, [])
+    analysis_source = "中国足彩网专业欧赔市场" if any(item.get("analysis_source") == "中国足彩网专业欧赔市场" for item in selected) else "竞彩足球市场（专业欧赔暂缺）"
     fixtures_path = write_fixtures(selected, target_date)
     ratings_path = write_ratings(selected)
     odds_path = write_odds_data(odds_data, target_date)
-    status_path = write_source_status(source, target_date, source_message)
+    status_path = write_source_status(source, target_date, source_message, analysis_source)
     print(f"竞彩网返回比赛: {len(matches)}")
     print(f"导入未开奖比赛: {len(selected)}")
     for item in selected:
