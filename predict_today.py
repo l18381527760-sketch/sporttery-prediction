@@ -63,7 +63,7 @@ def load_ratings() -> dict[str, TeamRating]:
     path = DATA_DIR / "team_ratings.csv"
     with path.open("r", encoding="utf-8-sig", newline="") as fh:
         rows = csv.DictReader(fh)
-        return {
+        ratings = {
             row["team"].strip(): TeamRating(
                 team=row["team"].strip(),
                 elo=to_float(row["elo"]),
@@ -76,6 +76,27 @@ def load_ratings() -> dict[str, TeamRating]:
             )
             for row in rows
         }
+    history_path = DATA_DIR / "team_history_features.csv"
+    if history_path.exists():
+        with history_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                team = row["team"].strip()
+                if team not in ratings:
+                    continue
+                base = ratings[team]
+                sample = min(1.0, to_float(row.get("matches", "0")) / 6.0)
+                weight = 0.65 * sample
+                ratings[team] = TeamRating(
+                    team=team,
+                    elo=base.elo,
+                    attack=(1 - weight) * base.attack + weight * to_float(row.get("attack", "")),
+                    defense=(1 - weight) * base.defense + weight * to_float(row.get("defense", "")),
+                    form=(1 - weight) * base.form + weight * to_float(row.get("form", "")),
+                    injury=base.injury,
+                    rest_days=to_float(row.get("rest_days", ""), base.rest_days),
+                    home_adv=base.home_adv,
+                )
+    return ratings
 
 
 def load_fixtures() -> list[Fixture]:
@@ -146,7 +167,7 @@ def expected_goals(a: TeamRating, b: TeamRating, fixture: Fixture, config: dict)
     return clamp(math.exp(a_log), 0.15, 4.5), clamp(math.exp(b_log), 0.15, 4.5)
 
 
-def score_distribution(lam_a: float, lam_b: float, max_goals: int) -> dict:
+def score_distribution(lam_a: float, lam_b: float, max_goals: int, rho: float = -0.10) -> dict:
     dist_a = poisson_pmf(lam_a, max_goals)
     dist_b = poisson_pmf(lam_b, max_goals)
     p_a = p_draw = p_b = 0.0
@@ -155,6 +176,14 @@ def score_distribution(lam_a: float, lam_b: float, max_goals: int) -> dict:
     for goals_a, pa in enumerate(dist_a):
         for goals_b, pb in enumerate(dist_b):
             p = pa * pb
+            if goals_a == 0 and goals_b == 0:
+                p *= 1 - lam_a * lam_b * rho
+            elif goals_a == 0 and goals_b == 1:
+                p *= 1 + lam_a * rho
+            elif goals_a == 1 and goals_b == 0:
+                p *= 1 + lam_b * rho
+            elif goals_a == 1 and goals_b == 1:
+                p *= 1 - rho
             if goals_a > goals_b:
                 p_a += p
             elif goals_a == goals_b:
@@ -163,6 +192,9 @@ def score_distribution(lam_a: float, lam_b: float, max_goals: int) -> dict:
                 p_b += p
             scores.append(((goals_a, goals_b), p))
 
+    total = p_a + p_draw + p_b
+    p_a, p_draw, p_b = p_a / total, p_draw / total, p_b / total
+    scores = [(score, probability / total) for score, probability in scores]
     scores.sort(key=lambda item: item[1], reverse=True)
     return {"p_a": p_a, "p_draw": p_draw, "p_b": p_b, "top_scores": scores[:5]}
 
@@ -213,7 +245,7 @@ def predict_fixture(fixture: Fixture, ratings: dict[str, TeamRating], config: di
     team_a = ratings[fixture.team_a]
     team_b = ratings[fixture.team_b]
     lam_a, lam_b = expected_goals(team_a, team_b, fixture, config)
-    dist = score_distribution(lam_a, lam_b, int(config["max_goals"]))
+    dist = score_distribution(lam_a, lam_b, int(config["max_goals"]), float(config.get("dixon_coles_rho", -0.10)))
     probs = blend_with_market(
         (dist["p_a"], dist["p_draw"], dist["p_b"]),
         market_probabilities(fixture),
