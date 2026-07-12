@@ -122,6 +122,10 @@ class ZgzcwMatchParser(HTMLParser):
             elif title and "awayTeam" not in self.current:
                 self.current["awayTeam"] = title
             self.capture_team = self.current_cell in {"homeTeam", "awayTeam"} and "soccer/team" in values.get("href", "")
+        elif self.current is not None and tag == "span":
+            title = values.get("title", "")
+            if title.startswith("比赛时间:"):
+                self.current["kickoff_at"] = title.removeprefix("比赛时间:").strip()
         elif self.current is not None and tag == "input":
             input_id = values.get("id", "")
             if input_id.startswith("ht_"):
