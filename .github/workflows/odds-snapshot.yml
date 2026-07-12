@@ -1,0 +1,33 @@
+name: Sporttery Odds Snapshots
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 13:30, 18:30 and 22:30 Beijing time.
+    - cron: "30 5,10,14 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Capture official odds snapshot
+        run: python capture_odds_snapshot.py
+
+      - name: Commit snapshot
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Capture Sporttery odds snapshot"
+          file_pattern: "data/odds_snapshots/*.json"
