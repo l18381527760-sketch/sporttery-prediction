@@ -72,7 +72,7 @@ def select_alerts(candidates: list[dict], rank_gates=RANK_GATES, max_alerts: int
     return selected
 
 
-def attach_stake(alert: dict, main_plan: list[dict], existing_alerts: list[dict], subtype_metrics: dict, daily_budget: int, alert_budget: int, requested_stake: int) -> dict:
+def attach_stake(alert: dict, main_plan: list[dict], existing_alerts: list[dict], subtype_metrics: dict, daily_budget: int, alert_budget: int, requested_stake: int, minimum_stake: int = 10) -> dict:
     result = dict(alert)
     linked = next((row for row in main_plan if same_match(alert, row) and row.get("selection") == "平"), None)
     result["hypothetical_stake"] = 10
@@ -84,7 +84,7 @@ def attach_stake(alert: dict, main_plan: list[dict], existing_alerts: list[dict]
         used = sum(int(float(row.get("stake") or 0)) for row in main_plan)
         alert_used = sum(int(float(row.get("additional_stake") or 0)) for row in existing_alerts)
         available = max(0, min(daily_budget - used - alert_used, alert_budget - alert_used))
-        stake = min(requested_stake, available)
+        stake = min(requested_stake, available) if available >= minimum_stake else 0
         state = "standalone" if stake else "budget_capped_observation"
         result.update(additional_stake=stake, linked_main_stake=0, settlement_mode=state)
     return result
@@ -144,6 +144,7 @@ def generate_alerts(target_date: str, root: Path = ROOT) -> Path:
             int(app_config.get("max_daily_budget", 500)),
             int(draw_config.get("daily_additional_budget", 80)),
             requested_stake,
+            int(draw_config.get("min_promoted_stake", 10)),
         )
         rows.append(result)
     path = output_dir / f"draw_alert_{target_date}.csv"

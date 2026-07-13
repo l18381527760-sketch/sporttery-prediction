@@ -129,6 +129,12 @@ class GenerateDrawAlertTest(unittest.TestCase):
         result = attach_stake({"match_id": "003", "subtype": "cold_draw"}, [], existing, {"promoted": True}, 500, 80, 30)
         self.assertEqual(20, result["additional_stake"])
 
+    def test_below_minimum_remaining_capacity_is_budget_capped_observation(self):
+        main = [{"stake": 495}]
+        result = attach_stake({"match_id": "004", "subtype": "cold_draw"}, main, [], {"promoted": True}, 500, 80, 30)
+        self.assertEqual(0, result["additional_stake"])
+        self.assertEqual("budget_capped_observation", result["settlement_mode"])
+
 
 if __name__ == "__main__":
     unittest.main()
