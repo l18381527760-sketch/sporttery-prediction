@@ -54,7 +54,7 @@
 ```python
 import unittest
 
-from draw_alert_core import DrawInputs, classify_candidate, fair_probabilities, rank_candidates
+from draw_alert_core import MarketEvidence, DrawInputs, classify_candidate, fair_probabilities, rank_candidates
 
 
 CFG = {
@@ -73,6 +73,10 @@ def sample(**changes):
         match_id="001", team_a="A", team_b="B", stage="quarter-final",
         domestic_odds=(1.60, 4.00, 6.00), model_probabilities=(0.54, 0.32, 0.14),
         calibrated_draw_probability=0.32, xg_total=2.10, source_count=3,
+        market_sources=(
+            MarketEvidence("sporttery", "win_draw_loss", 90, False),
+            MarketEvidence("zgzcw", "win_draw_loss", 90, False),
+        ),
         market_scope="90m", favorite_movement=-0.06, regional_gap=0.07,
         underdog_win_probability=0.14, underdog_not_lose_probability=0.46,
         structural_signals=("knockout_caution", "underdog_defense"), data_quality="high",
@@ -138,7 +142,15 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'draw_alert_core'`.
 from dataclasses import dataclass
 
 
-QUALITY = {"low": 0, "medium": 1, "high": 2}
+QUALITY = {"medium": 1, "high": 2}
+
+
+@dataclass(frozen=True)
+class MarketEvidence:
+    source: str
+    market_type: str
+    settlement_minutes: int
+    includes_extra_time: bool
 
 
 @dataclass(frozen=True)
@@ -152,6 +164,7 @@ class DrawInputs:
     calibrated_draw_probability: float
     xg_total: float
     source_count: int
+    market_sources: tuple[MarketEvidence, ...]
     market_scope: str
     favorite_movement: float
     regional_gap: float
@@ -178,7 +191,18 @@ def fair_probabilities(home_odds: float, draw_odds: float, away_odds: float) -> 
 
 
 def classify_candidate(inputs: DrawInputs, config: dict) -> DrawCandidate | None:
-    if inputs.market_scope != "90m" or inputs.source_count < 2 or inputs.data_quality == "low":
+    if inputs.market_scope != "90m" or inputs.data_quality not in QUALITY:
+        return None
+    valid_sources = {
+        evidence.source
+        for evidence in inputs.market_sources
+        if (
+            evidence.market_type == "win_draw_loss"
+            and evidence.settlement_minutes == 90
+            and evidence.includes_extra_time is False
+        )
+    }
+    if len(valid_sources) < 2:
         return None
     fair = fair_probabilities(*inputs.domestic_odds)
     probability = inputs.calibrated_draw_probability
@@ -210,7 +234,7 @@ def rank_candidates(candidates: list[DrawCandidate]) -> list[DrawCandidate]:
 
 Run: `python -m unittest tests.test_draw_alert_core -v`
 
-Expected: 8 tests PASS.
+Expected: 13 tests PASS.
 
 - [ ] **Step 5: Commit the pure rules**
 

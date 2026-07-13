@@ -1,6 +1,12 @@
 import unittest
 
-from draw_alert_core import DrawInputs, classify_candidate, fair_probabilities, rank_candidates
+from draw_alert_core import (
+    DrawInputs,
+    MarketEvidence,
+    classify_candidate,
+    fair_probabilities,
+    rank_candidates,
+)
 
 
 CFG = {
@@ -19,6 +25,10 @@ def sample(**changes):
         match_id="001", team_a="A", team_b="B", stage="quarter-final",
         domestic_odds=(1.60, 4.00, 6.00), model_probabilities=(0.54, 0.32, 0.14),
         calibrated_draw_probability=0.32, xg_total=2.10, source_count=3,
+        market_sources=(
+            MarketEvidence("sporttery", "win_draw_loss", 90, False),
+            MarketEvidence("zgzcw", "win_draw_loss", 90, False),
+        ),
         market_scope="90m", favorite_movement=-0.06, regional_gap=0.07,
         underdog_win_probability=0.14, underdog_not_lose_probability=0.46,
         structural_signals=("knockout_caution", "underdog_defense"), data_quality="high",
@@ -67,6 +77,33 @@ class DrawAlertCoreTest(unittest.TestCase):
         self.assertIsNone(classify_candidate(
             sample(domestic_odds=(1.90, 3.60, 4.00)), CFG
         ))
+
+    def test_duplicate_market_sources_are_rejected(self):
+        self.assertIsNone(classify_candidate(sample(
+            source_count=99,
+            market_sources=(
+                MarketEvidence("sporttery", "win_draw_loss", 90, False),
+                MarketEvidence("sporttery", "win_draw_loss", 90, False),
+            ),
+        ), CFG))
+
+    def test_invalid_market_sources_do_not_count_toward_two_sources(self):
+        self.assertIsNone(classify_candidate(sample(
+            source_count=99,
+            market_sources=(
+                MarketEvidence("sporttery", "win_draw_loss", 90, False),
+                MarketEvidence("qualification", "qualification", 90, False),
+                MarketEvidence("extra-time", "win_draw_loss", 120, False),
+                MarketEvidence("with-extra-time", "win_draw_loss", 90, True),
+            ),
+        ), CFG))
+
+    def test_valid_market_sources_override_source_count_summary(self):
+        candidate = classify_candidate(sample(source_count=0), CFG)
+        self.assertEqual("cold_draw", candidate.subtype)
+
+    def test_unknown_data_quality_is_rejected(self):
+        self.assertIsNone(classify_candidate(sample(data_quality="unknown"), CFG))
 
     def test_non_90m_market_is_rejected(self):
         self.assertIsNone(classify_candidate(sample(market_scope="qualification"), CFG))

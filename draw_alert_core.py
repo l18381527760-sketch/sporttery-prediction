@@ -1,7 +1,15 @@
 from dataclasses import dataclass
 
 
-QUALITY = {"low": 0, "medium": 1, "high": 2}
+QUALITY = {"medium": 1, "high": 2}
+
+
+@dataclass(frozen=True)
+class MarketEvidence:
+    source: str
+    market_type: str
+    settlement_minutes: int
+    includes_extra_time: bool
 
 
 @dataclass(frozen=True)
@@ -15,6 +23,7 @@ class DrawInputs:
     calibrated_draw_probability: float
     xg_total: float
     source_count: int
+    market_sources: tuple[MarketEvidence, ...]
     market_scope: str
     favorite_movement: float
     regional_gap: float
@@ -41,7 +50,18 @@ def fair_probabilities(home_odds: float, draw_odds: float, away_odds: float) -> 
 
 
 def classify_candidate(inputs: DrawInputs, config: dict) -> DrawCandidate | None:
-    if inputs.market_scope != "90m" or inputs.source_count < 2 or inputs.data_quality == "low":
+    if inputs.market_scope != "90m" or inputs.data_quality not in QUALITY:
+        return None
+    valid_sources = {
+        evidence.source
+        for evidence in inputs.market_sources
+        if (
+            evidence.market_type == "win_draw_loss"
+            and evidence.settlement_minutes == 90
+            and evidence.includes_extra_time is False
+        )
+    }
+    if len(valid_sources) < 2:
         return None
     fair = fair_probabilities(*inputs.domestic_odds)
     probability = inputs.calibrated_draw_probability
