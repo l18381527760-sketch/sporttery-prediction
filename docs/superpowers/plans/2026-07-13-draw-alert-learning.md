@@ -964,7 +964,7 @@ After the existing prediction and betting-plan commands, run:
           python draw_alert_ledger.py --settle
 ```
 
-Install `requirements.txt` before Pillow, keep `TZ: Asia/Shanghai`, and include `data/market_heat_*.json`, `data/draw_feature_snapshots/*.json`, `data/models/*.joblib`, `output/draw_alert*.csv`, `output/draw_alert*.json`, and `output/draw_model_registry.json` in the commit pattern. All repository-writing workflows use `concurrency.group: sporttery-repository`, `cancel-in-progress: false`, and `queue: max` so snapshots, forecasts, refreshes, settlements, and email cannot race or replace already-pending runs.
+Install `requirements.txt` before Pillow, keep `TZ: Asia/Shanghai`, and include `data/market_heat_*.json`, `data/draw_feature_snapshots/*.json`, `data/models/*.joblib`, `output/draw_alert*.csv`, `output/draw_alert*.json`, and `output/draw_model_registry.json` in the commit pattern. All repository-writing workflows use `concurrency.group: sporttery-repository`, `cancel-in-progress: false`, and `queue: max` so snapshots, forecasts, refreshes, settlements, and email cannot race or replace already-pending runs. Guard every production job so it runs only for a schedule or a manual dispatch from `main`, and make every checkout explicitly resolve `ref: main` at job start so a queued workflow uses the preceding workflow's newest commit rather than its trigger-time SHA.
 
 - [ ] **Step 4: Create the 13:30 refresh workflow**
 
