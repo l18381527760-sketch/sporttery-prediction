@@ -139,7 +139,7 @@ class DrawAlertReportingTest(unittest.TestCase):
                 return getattr(self.drawing, name)
 
             def text(self, xy, text, *args, **kwargs):
-                self.positions.append((text, xy))
+                self.positions.append((text, xy, kwargs))
                 return self.drawing.text(xy, text, *args, **kwargs)
 
         with TemporaryDirectory() as directory:
@@ -163,9 +163,9 @@ class DrawAlertReportingTest(unittest.TestCase):
             ):
                 build_daily_image.draw_report()
 
-            empty_y = next(y for text, (_, y) in positions if text == "今日无符合门槛的平局预警")
-            observations_y = next(y for text, (_, y) in positions if text == "零金额观察单")
-            self.assertLessEqual(empty_y + build_daily_image.font(20).getbbox("今日无符合门槛的平局预警")[3], observations_y)
+            empty_y, empty_font = next((y, kwargs["font"]) for text, (_, y), kwargs in positions if text == "今日无符合门槛的平局预警")
+            observations_y = next(y for text, (_, y), _ in positions if text == "零金额观察单")
+            self.assertLessEqual(empty_y + empty_font.getbbox("今日无符合门槛的平局预警")[3], observations_y)
 
     def test_daily_alert_reader_enriches_rows_from_alert_ledger(self):
         with TemporaryDirectory() as directory:
@@ -189,6 +189,139 @@ class DrawAlertReportingTest(unittest.TestCase):
                 image_alerts = build_daily_image.read_draw_alert("2026-07-13")
 
             self.assertEqual("命中", image_alerts[0]["ledger_status"])
+
+    def test_daily_image_heading_lists_paused_leagues(self):
+        _, _, paused = build_daily_image.draw_alert_heading(
+            {},
+            {
+                "per_league": {
+                    "<英超>&": {"paused": True},
+                    "西甲": {"paused": False},
+                }
+            },
+        )
+
+        self.assertIn("暂停联赛：<英超>&", paused)
+
+    def test_daily_image_alert_metrics_show_dash_for_missing_or_invalid_values(self):
+        class RecordingDraw:
+            def __init__(self, drawing, calls):
+                self.drawing = drawing
+                self.calls = calls
+
+            def __getattr__(self, name):
+                return getattr(self.drawing, name)
+
+            def text(self, xy, text, *args, **kwargs):
+                self.calls.append((text, xy, kwargs))
+                return self.drawing.text(xy, text, *args, **kwargs)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            web = root / "web"
+            output.mkdir()
+            (output / "betting_plan_2026-07-13.csv").write_text("match,play,odds,stake,selection\n", encoding="utf-8")
+            (output / "betting_ledger.csv").write_text("date,play,match,selection,stake,status,profit\n", encoding="utf-8")
+            (output / "draw_alert_2026-07-13.csv").write_text(
+                "date,rank,subtype,match,settlement_mode,domestic_draw_odds,model_draw_probability,market_draw_probability,draw_edge,expected_value,xg_total\n"
+                "2026-07-13,1,cold_draw,A vs B,observation,invalid,,,not-a-number,none,\n",
+                encoding="utf-8",
+            )
+            calls = []
+            original_draw = build_daily_image.ImageDraw.Draw
+
+            with patch.object(build_daily_image, "OUTPUT_DIR", output), patch.object(build_daily_image, "WEB_DIR", web), patch.object(
+                build_daily_image.ImageDraw,
+                "Draw",
+                side_effect=lambda image: RecordingDraw(original_draw(image), calls),
+            ):
+                build_daily_image.draw_report()
+
+        metrics = next(text for text, _, _ in calls if text.startswith("官方平赔"))
+        self.assertIn("官方平赔 -", metrics)
+        self.assertIn("模型 -", metrics)
+        self.assertIn("市场 -", metrics)
+        self.assertIn("优势 -", metrics)
+        self.assertIn("期望值 -", metrics)
+        self.assertIn("xG总和 -", metrics)
+        self.assertNotIn("0.0%", metrics)
+
+    def test_daily_image_alert_formatters_reject_out_of_range_values(self):
+        alert = {
+            "domestic_draw_odds": "0",
+            "model_draw_probability": "1.2",
+            "market_draw_probability": "-0.1",
+            "draw_edge": "nan",
+            "expected_value": "inf",
+            "xg_total": "-0.5",
+        }
+
+        self.assertEqual("-", build_daily_image.alert_odds(alert))
+        self.assertEqual("-", build_daily_image.alert_decimal(alert, "model_draw_probability", percentage=True))
+        self.assertEqual("-", build_daily_image.alert_decimal(alert, "market_draw_probability", percentage=True))
+        self.assertEqual("-", build_daily_image.alert_decimal(alert, "draw_edge", signed=True, percentage=True))
+        self.assertEqual("-", build_daily_image.alert_decimal(alert, "expected_value"))
+        self.assertEqual("-", build_daily_image.alert_decimal(alert, "xg_total"))
+
+    def test_daily_image_alert_edge_keeps_valid_negative_values(self):
+        self.assertEqual("-2.0%", build_daily_image.alert_decimal({"draw_edge": "-0.02"}, "draw_edge", signed=True, percentage=True))
+
+    def test_four_long_alert_rows_keep_raw_text_and_stay_within_image_bounds(self):
+        class RecordingDraw:
+            def __init__(self, drawing, calls):
+                self.drawing = drawing
+                self.calls = calls
+
+            def __getattr__(self, name):
+                return getattr(self.drawing, name)
+
+            def text(self, xy, text, *args, **kwargs):
+                self.calls.append((text, xy, kwargs))
+                return self.drawing.text(xy, text, *args, **kwargs)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            web = root / "web"
+            output.mkdir()
+            (output / "betting_plan_2026-07-13.csv").write_text("match,play,odds,stake,selection\n", encoding="utf-8")
+            (output / "betting_ledger.csv").write_text("date,play,match,selection,stake,status,profit\n", encoding="utf-8")
+            rows = [
+                "2026-07-13,{rank},cold_draw,{text},budget_capped_observation,3.60,0.32,0.27,0.05,1.15,2.10,\"{{\\\"source\\\": \\\"{text}\\\"}}\",{text},2026-07-13T13:30:00+08:00\n".format(
+                    rank=rank,
+                    text="<&超长外部比赛名称和状态文本" * 18,
+                )
+                for rank in range(1, 5)
+            ]
+            (output / "draw_alert_2026-07-13.csv").write_text(
+                "date,rank,subtype,match,settlement_mode,domestic_draw_odds,model_draw_probability,market_draw_probability,draw_edge,expected_value,xg_total,evidence_json,data_quality,captured_at\n"
+                + "".join(rows),
+                encoding="utf-8",
+            )
+            (output / "draw_alert_metrics.json").write_text("{}", encoding="utf-8")
+            (output / "draw_model_registry.json").write_text(
+                '{"champion":{"version":"<&冠军"},"challenger":{"version":"<&挑战者","shadow_days":28,"sample_count":30,"bet_count":12},"per_league":{"<&超长暂停联赛": {"paused": true}},"last_training_error":"<&超长训练错误"}',
+                encoding="utf-8",
+            )
+            calls = []
+            original_draw = build_daily_image.ImageDraw.Draw
+
+            with patch.object(build_daily_image, "OUTPUT_DIR", output), patch.object(build_daily_image, "WEB_DIR", web), patch.object(
+                build_daily_image.ImageDraw,
+                "Draw",
+                side_effect=lambda image: RecordingDraw(original_draw(image), calls),
+            ):
+                build_daily_image.draw_report()
+
+        rendered = "\n".join(text for text, _, _ in calls)
+        self.assertIn("<&", rendered)
+        self.assertNotIn("&lt;", rendered)
+        self.assertNotIn("&amp;", rendered)
+        measurement = build_daily_image.ImageDraw.Draw(build_daily_image.Image.new("RGB", (1600, 10)))
+        for text, (x, _), kwargs in calls:
+            width = measurement.textbbox((0, 0), text, font=kwargs["font"])[2]
+            self.assertLessEqual(x + width, build_daily_image.WIDTH - 70, text)
 
 
 if __name__ == "__main__":

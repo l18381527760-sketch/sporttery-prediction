@@ -1,6 +1,6 @@
 import csv
-import html
 import json
+import math
 import textwrap
 from datetime import date, datetime
 from pathlib import Path
@@ -108,16 +108,92 @@ def number(row: dict, key: str) -> float:
         return 0.0
 
 
+def alert_number(row: dict, key: str) -> float | None:
+    try:
+        value = float(external_text(row.get(key)).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def alert_decimal(row: dict, key: str, *, signed: bool = False, percentage: bool = False) -> str:
+    value = alert_number(row, key)
+    if value is None or (percentage and not signed and not 0 <= value <= 1) or (key == "xg_total" and value < 0):
+        return "-"
+    if percentage:
+        return f"{value * 100:+.1f}%" if signed else f"{value * 100:.1f}%"
+    return f"{value:+.3f}" if signed else f"{value:.3f}"
+
+
+def alert_odds(row: dict) -> str:
+    value = alert_number(row, "domestic_draw_odds")
+    return external_text(row.get("domestic_draw_odds")).strip() if value is not None and value > 1 else "-"
+
+
 def wrap(value: str, width: int) -> list[str]:
     return textwrap.wrap(value or "-", width=width, break_long_words=True) or ["-"]
 
 
-def image_text(value: object, limit: int = 180) -> str:
-    text = html.escape(external_text(value)).strip()
-    return text if len(text) <= limit else f"{text[:limit - 1]}…"
+def text_width(draw: ImageDraw.ImageDraw, value: str, text_font: ImageFont.FreeTypeFont) -> int:
+    box = draw.textbbox((0, 0), value, font=text_font)
+    return box[2] - box[0]
 
 
-def draw_alert_heading(metrics: dict, registry: dict) -> tuple[str, str]:
+def fit_text(draw: ImageDraw.ImageDraw, value: object, text_font: ImageFont.FreeTypeFont, max_width: int) -> str:
+    text = external_text(value).strip() or "-"
+    if text_width(draw, text, text_font) <= max_width:
+        return text
+    ellipsis = "…"
+    if text_width(draw, ellipsis, text_font) > max_width:
+        return ""
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if text_width(draw, text[:middle] + ellipsis, text_font) <= max_width:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low] + ellipsis
+
+
+def wrap_image_text(
+    draw: ImageDraw.ImageDraw,
+    value: object,
+    text_font: ImageFont.FreeTypeFont,
+    max_width: int,
+    max_lines: int,
+) -> list[str]:
+    remaining = external_text(value).strip() or "-"
+    lines = []
+    while remaining and len(lines) < max_lines:
+        fitted = fit_text(draw, remaining, text_font, max_width)
+        if fitted == remaining:
+            lines.append(fitted)
+            remaining = ""
+            break
+        prefix = fitted.removesuffix("…")
+        break_at = prefix.rfind(" ")
+        if break_at > 0:
+            prefix = prefix[:break_at]
+        lines.append(prefix)
+        remaining = remaining[len(prefix):].lstrip()
+    if remaining and lines:
+        lines[-1] = fit_text(draw, lines[-1] + "…", text_font, max_width)
+    return lines or ["-"]
+
+
+def draw_fitted_text(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    value: object,
+    text_font: ImageFont.FreeTypeFont,
+    fill: str,
+    max_width: int,
+) -> None:
+    draw.text(xy, fit_text(draw, value, text_font, max_width), font=text_font, fill=fill)
+
+
+def draw_alert_heading(metrics: dict, registry: dict) -> tuple[str, str, str]:
     subtypes = metrics.get("subtypes", metrics) if isinstance(metrics, dict) else {}
     subtypes = subtypes if isinstance(subtypes, dict) else {}
     progress_items = []
@@ -128,13 +204,20 @@ def draw_alert_heading(metrics: dict, registry: dict) -> tuple[str, str]:
     progress = " · ".join(progress_items)
     champion = registry.get("champion") if isinstance(registry.get("champion"), dict) else {}
     challenger = registry.get("challenger") if isinstance(registry.get("challenger"), dict) else {}
-    champion_version = image_text(champion.get("version") or "暂无", 28)
-    challenger_version = image_text(challenger.get("version") or "暂无", 28)
+    champion_version = external_text(champion.get("version") or "暂无")
+    challenger_version = external_text(challenger.get("version") or "暂无")
     challenger_state = (
         f"挑战者 {challenger_version} · 影子 {max(0, as_int(challenger.get('shadow_days')))} 天 · 样本/投注 {max(0, as_int(challenger.get('sample_count')))}/{max(0, as_int(challenger.get('bet_count')))}"
         if challenger else "挑战者 暂无"
     )
-    return progress, f"冠军 {champion_version} · {challenger_state}"
+    leagues = registry.get("per_league") if isinstance(registry, dict) else {}
+    paused_leagues = [
+        external_text(league)
+        for league, state in leagues.items()
+        if isinstance(state, dict) and state.get("paused") is True
+    ] if isinstance(leagues, dict) else []
+    paused = f"暂停联赛：{'、'.join(paused_leagues) if paused_leagues else '无'}"
+    return progress, f"冠军 {champion_version} · {challenger_state}", paused
 
 
 def latest_plan() -> tuple[str, list[dict]]:
@@ -228,15 +311,16 @@ def draw_report() -> Path:
 
     draw.line((70, y, WIDTH - 70, y), fill=line, width=2)
     y += 16
-    subtype_progress, model_progress = draw_alert_heading(draw_alert_metrics, draw_model_registry)
+    subtype_progress, model_progress, paused_leagues = draw_alert_heading(draw_alert_metrics, draw_model_registry)
     draw.text((70, y), "平局预警", font=font(30), fill=ink)
-    draw.text((250, y + 6), image_text(subtype_progress, 70), font=font(18), fill=muted)
-    draw.text((70, y + 42), image_text(model_progress, 100), font=font(17), fill=muted)
+    draw_fitted_text(draw, (250, y + 6), subtype_progress, font(18), muted, WIDTH - 70 - 250)
+    draw_fitted_text(draw, (70, y + 28), model_progress, font(15), muted, 650)
+    draw_fitted_text(draw, (760, y + 28), paused_leagues, font(15), muted, WIDTH - 70 - 760)
     training_error = external_text(draw_model_registry.get("last_training_error")).strip()
     if training_error:
-        draw.text((850, y + 42), image_text(f"最近训练异常：{training_error}", 58), font=font(16), fill=red)
+        draw_fitted_text(draw, (70, y + 46), f"最近训练异常：{training_error}", font(14), red, WIDTH - 140)
     if not draw_alerts:
-        draw.text((70, y + 55), "今日无符合门槛的平局预警", font=font(20), fill=muted)
+        draw.text((70, y + 65), "今日无符合门槛的平局预警", font=font(14), fill=muted)
     y += 84
 
     for alert in draw_alerts:
@@ -250,33 +334,31 @@ def draw_report() -> Path:
             font=font(22),
             fill=gold,
         )
-        draw.text((315, y + 14), image_text(alert.get("match") or "-", 68), font=font(23), fill=ink)
-        draw.text(
-            (88, y + 50),
-            "  ".join(
-                [
-                    f"官方平赔 {image_text(alert.get('domestic_draw_odds') or '-', 12)}",
-                    f"模型 {number(alert, 'model_draw_probability') * 100:.1f}%",
-                    f"市场 {number(alert, 'market_draw_probability') * 100:.1f}%",
-                    f"优势 {number(alert, 'draw_edge') * 100:+.1f}%",
-                    f"期望值 {number(alert, 'expected_value'):.3f}",
-                    f"xG总和 {number(alert, 'xg_total'):.3f}",
-                ]
-            ),
-            font=font(17),
-            fill=muted,
+        draw_fitted_text(draw, (315, y + 14), alert.get("match") or "-", font(23), ink, WIDTH - 70 - 315)
+        metric_line = "  ".join(
+            [
+                f"官方平赔 {alert_odds(alert)}",
+                f"模型 {alert_decimal(alert, 'model_draw_probability', percentage=True)}",
+                f"市场 {alert_decimal(alert, 'market_draw_probability', percentage=True)}",
+                f"优势 {alert_decimal(alert, 'draw_edge', signed=True, percentage=True)}",
+                f"期望值 {alert_decimal(alert, 'expected_value')}",
+                f"xG总和 {alert_decimal(alert, 'xg_total')}",
+            ]
         )
-        draw.text(
-            (88, y + 78),
-            image_text(
-                f"{state} · {alert_amount(alert, settlement_mode)} · 账本 {external_text(alert.get('ledger_status') or '未结算')} · 数据质量 {external_text(alert.get('data_quality') or '-')} · 捕获 {external_text(alert.get('captured_at') or '-')}",
-                135,
-            ),
-            font=font(16),
-            fill=muted,
+        draw_fitted_text(draw, (88, y + 50), metric_line, font(17), muted, WIDTH - 70 - 88)
+        detail_line = (
+            f"{state} · {alert_amount(alert, settlement_mode)} · 账本 {external_text(alert.get('ledger_status') or '未结算')} "
+            f"· 数据质量 {external_text(alert.get('data_quality') or '-')} · 捕获 {external_text(alert.get('captured_at') or '-')}"
         )
-        evidence = image_text(f"证据来源：{evidence_source_summary(alert.get('evidence_json'))}", 190)
-        for index, line_text in enumerate(wrap(evidence, 92)[:2]):
+        draw_fitted_text(draw, (88, y + 78), detail_line, font(16), muted, WIDTH - 70 - 88)
+        evidence = wrap_image_text(
+            draw,
+            f"证据来源：{evidence_source_summary(alert.get('evidence_json'))}",
+            font(16),
+            WIDTH - 70 - 88,
+            2,
+        )
+        for index, line_text in enumerate(evidence):
             draw.text((88, y + 105 + index * 20), line_text, font=font(16), fill=muted)
         y += 170
 
