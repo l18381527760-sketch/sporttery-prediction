@@ -178,14 +178,18 @@ def _probability(value) -> float | None:
 
 
 def _is_valid_settled_sample(row: dict) -> bool:
+    stake = _number(row.get("hypothetical_stake"))
+    clv = _number(row.get("clv"))
     return (
         row.get("status") in SETTLED_STATUSES
         and _outcome(row) is not None
         and _probability(row.get("model_draw_probability")) is not None
         and _probability(row.get("market_draw_probability")) is not None
-        and _number(row.get("hypothetical_stake")) is not None
+        and stake is not None
+        and 0 < stake <= 500
         and _number(row.get("hypothetical_profit")) is not None
-        and _number(row.get("clv")) is not None
+        and clv is not None
+        and -1 <= clv <= 1
     )
 
 

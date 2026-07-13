@@ -117,12 +117,17 @@ class DrawAlertLedgerTest(unittest.TestCase):
             ("market_draw_probability", None),
             ("hypothetical_stake", float("nan")),
             ("hypothetical_stake", float("inf")),
+            ("hypothetical_stake", 0),
+            ("hypothetical_stake", -1),
+            ("hypothetical_stake", 501),
             ("hypothetical_stake", None),
             ("hypothetical_profit", float("nan")),
             ("hypothetical_profit", float("inf")),
             ("hypothetical_profit", None),
             ("clv", float("nan")),
             ("clv", float("inf")),
+            ("clv", -1.01),
+            ("clv", 1.01),
             ("clv", None),
         ]
         invalid_rows = []
