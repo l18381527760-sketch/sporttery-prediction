@@ -10,6 +10,14 @@ OUTPUT_DIR = ROOT / "output"
 WEB_DIR = ROOT / "web"
 ASSET_PATH = "assets/stadium-dashboard.png"
 
+SUBTYPE_LABELS = {"cold_draw": "冷门平局", "balanced_draw": "均势平局"}
+SETTLEMENT_LABELS = {
+    "linked": "复用主方案金额，不重复投入",
+    "observation": "零金额观察",
+    "standalone": "独立小额模拟",
+    "budget_capped_observation": "达到当日预警预算上限，零新增金额观察",
+}
+
 
 def read_source_status() -> dict:
     path = ROOT / "data" / "source_status.json"
@@ -35,8 +43,11 @@ def read_predictions() -> list[dict]:
 def read_csv_file(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    with path.open("r", encoding="utf-8-sig", newline="") as fh:
-        return list(csv.DictReader(fh))
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as fh:
+            return list(csv.DictReader(fh))
+    except (OSError, UnicodeError, csv.Error):
+        return []
 
 
 def read_betting_plan(display_date: date | None) -> list[dict]:
@@ -55,19 +66,72 @@ def read_betting_ledger() -> list[dict]:
     return read_csv_file(OUTPUT_DIR / "betting_ledger.csv")
 
 
-def read_model_metrics() -> dict:
-    path = OUTPUT_DIR / "model_metrics.json"
+def read_draw_alert(display_date: date | None) -> list[dict]:
+    if display_date is None:
+        return []
+    alerts = read_csv_file(OUTPUT_DIR / f"draw_alert_{display_date.isoformat()}.csv")
+    ledger = {
+        draw_alert_key(row): row
+        for row in read_csv_file(OUTPUT_DIR / "draw_alert_ledger.csv")
+    }
+    enriched = []
+    for alert in alerts:
+        ledger_row = ledger.get(draw_alert_key(alert), {})
+        enriched.append({**alert, "ledger_status": ledger_row.get("status", "")})
+    return enriched
+
+
+def read_json_file(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
+    return value if isinstance(value, dict) else {}
+
+
+def read_model_metrics() -> dict:
+    return read_json_file(OUTPUT_DIR / "model_metrics.json")
+
+
+def read_draw_alert_metrics() -> dict:
+    return read_json_file(OUTPUT_DIR / "draw_alert_metrics.json")
+
+
+def read_draw_model_registry() -> dict:
+    return read_json_file(OUTPUT_DIR / "draw_model_registry.json")
+
+
+def draw_alert_key(row: dict) -> tuple[str, str, str]:
+    return (
+        external_text(row.get("date")).strip(),
+        external_text(row.get("subtype")).strip(),
+        external_text(row.get("match")).strip(),
+    )
 
 
 def as_float(row: dict, key: str) -> float | None:
-    value = (row.get(key) or "").strip()
-    return float(value) if value else None
+    value = str(row.get(key) or "").strip()
+    try:
+        return float(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def as_int(value: object, default: int = 0) -> int:
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def external_text(value: object) -> str:
+    return value if isinstance(value, str) else "" if value is None else str(value)
+
+
+def escaped(value: object) -> str:
+    return html.escape(external_text(value))
 
 
 def pct(value: float | None) -> str:
@@ -314,6 +378,137 @@ def render_observations(observations: list[dict]) -> str:
     """
 
 
+def evidence_source_summary(value: object) -> str:
+    """Return only named, parsed evidence sources; never echo untrusted JSON."""
+    try:
+        payload = json.loads(external_text(value))
+    except (TypeError, json.JSONDecodeError):
+        return "未提供可用来源"
+
+    sources: list[str] = []
+
+    def collect(item: object) -> None:
+        if isinstance(item, list):
+            for child in item:
+                collect(child)
+        elif isinstance(item, dict):
+            for key in ("source", "provider", "bookmaker", "name"):
+                source = item.get(key)
+                if isinstance(source, (str, int, float)) and external_text(source).strip():
+                    sources.append(external_text(source).strip())
+            for child in item.values():
+                if isinstance(child, (list, dict)):
+                    collect(child)
+
+    collect(payload)
+    unique = list(dict.fromkeys(sources))
+    return "、".join(unique[:3]) if unique else "已记录来源"
+
+
+def alert_rank(alert: dict) -> int:
+    rank = as_int(alert.get("rank"), 999)
+    return rank if rank > 0 else 999
+
+
+def alert_amount(alert: dict, settlement_mode: str) -> str:
+    if settlement_mode == "linked":
+        return f"复用主方案金额 {yuan(as_float(alert, 'linked_main_stake'))}"
+    if settlement_mode == "standalone":
+        return f"额外投入 {yuan(as_float(alert, 'additional_stake'))}"
+    return "零新增金额"
+
+
+def render_draw_progress(metrics: dict, registry: dict) -> str:
+    subtype_metrics = metrics.get("subtypes", metrics) if isinstance(metrics, dict) else {}
+    subtype_metrics = subtype_metrics if isinstance(subtype_metrics, dict) else {}
+    progress = []
+    for key, label in SUBTYPE_LABELS.items():
+        item = subtype_metrics.get(key, {})
+        item = item if isinstance(item, dict) else {}
+        count = max(0, as_int(item.get("count")))
+        status = "已晋级" if item.get("promoted") is True else "观察期"
+        progress.append(f'<span><strong>{label} {count}/30</strong><small>{status}</small></span>')
+
+    registry = registry if isinstance(registry, dict) else {}
+    champion = registry.get("champion") if isinstance(registry.get("champion"), dict) else {}
+    challenger = registry.get("challenger") if isinstance(registry.get("challenger"), dict) else {}
+    champion_version = escaped(champion.get("version") or "暂无")
+    challenger_version = escaped(challenger.get("version") or "暂无")
+    shadow_days = max(0, as_int(challenger.get("shadow_days")))
+    sample_count = max(0, as_int(challenger.get("sample_count")))
+    bet_count = max(0, as_int(challenger.get("bet_count")))
+    leagues = registry.get("per_league")
+    paused_leagues = []
+    if isinstance(leagues, dict):
+        for league, state in leagues.items():
+            if isinstance(state, dict) and state.get("paused") is True:
+                paused_leagues.append(escaped(league))
+    paused = "、".join(paused_leagues) if paused_leagues else "无"
+    error = external_text(registry.get("last_training_error")).strip()
+    error_block = f'<span class="draw-training-error">最近训练异常：{escaped(error)}</span>' if error else ""
+    return f"""
+      <div class="draw-progress" aria-label="平局模型进度">
+        <div class="draw-subtype-progress">{''.join(progress)}</div>
+        <div class="draw-model-progress">
+          <span>冠军 {champion_version}</span>
+          <span>挑战者 {challenger_version} · 影子 {shadow_days} 天 · 样本/投注 {sample_count}/{bet_count}</span>
+          <span>暂停联赛：{paused}</span>
+          {error_block}
+        </div>
+        <p>进度仅用于观测与复盘，不代表模型改善或晋级保证。</p>
+      </div>
+    """
+
+
+def render_draw_alert(alerts: list[dict], metrics: dict | None = None, registry: dict | None = None) -> str:
+    metrics = metrics if isinstance(metrics, dict) else {}
+    registry = registry if isinstance(registry, dict) else {}
+    ranked_alerts = sorted((alert for alert in alerts if isinstance(alert, dict)), key=alert_rank)[:4]
+    if not ranked_alerts:
+        return f"""
+        <section class="draw-alert">
+          <div class="section-title"><h2>平局预警</h2><span>零到四场，按预警排名展示</span></div>
+          {render_draw_progress(metrics, registry)}
+          <p class="draw-empty">今日无符合门槛的平局预警</p>
+        </section>
+        """
+
+    rows = []
+    for alert in ranked_alerts:
+        subtype = SUBTYPE_LABELS.get(external_text(alert.get("subtype")), "待分类平局")
+        settlement_mode = external_text(alert.get("settlement_mode"))
+        state = SETTLEMENT_LABELS.get(settlement_mode, "待确认状态")
+        rows.append(f"""
+          <article class="draw-alert-row">
+            <header>
+              <span>第{alert_rank(alert)}场 · {subtype}</span>
+              <strong>{escaped(alert.get("match") or "-")}</strong>
+            </header>
+            <div class="draw-alert-metrics">
+              <span>官方平赔 <strong>{escaped(alert.get("domestic_draw_odds") or "-")}</strong></span>
+              <span>模型 <strong>{pct(as_float(alert, "model_draw_probability"))}</strong></span>
+              <span>市场 <strong>{pct(as_float(alert, "market_draw_probability"))}</strong></span>
+              <span>优势 <strong>{pct(as_float(alert, "draw_edge"))}</strong></span>
+              <span>期望值 <strong>{decimal(as_float(alert, "expected_value"))}</strong></span>
+              <span>xG 总和 <strong>{decimal(as_float(alert, "xg_total"))}</strong></span>
+            </div>
+            <div class="draw-alert-detail">
+              <p><span>状态</span>{state} · {alert_amount(alert, settlement_mode)}</p>
+              <p><span>证据来源</span>{escaped(evidence_source_summary(alert.get("evidence_json")))}</p>
+              <p><span>数据质量</span>{escaped(alert.get("data_quality") or "-")} · <span>捕获时间</span>{escaped(alert.get("captured_at") or "-")}</p>
+              <p><span>账本状态</span>{escaped(alert.get("ledger_status") or "未结算")}</p>
+            </div>
+          </article>
+        """)
+    return f"""
+      <section class="draw-alert">
+        <div class="section-title"><h2>平局预警</h2><span>零到四场，按预警排名展示</span></div>
+        {render_draw_progress(metrics, registry)}
+        <div class="draw-alert-list">{''.join(rows)}</div>
+      </section>
+    """
+
+
 def render_ledger(ledger: list[dict], model_metrics: dict) -> str:
     if not ledger:
         return ""
@@ -356,6 +551,9 @@ def render_site(rows: list[dict]) -> str:
     observation_plan = read_observation_plan(display_date)
     betting_ledger = read_betting_ledger()
     model_metrics = read_model_metrics()
+    draw_alerts = read_draw_alert(display_date)
+    draw_alert_metrics = read_draw_alert_metrics()
+    draw_model_registry = read_draw_model_registry()
     source_status = read_source_status()
     source_name = str(source_status.get("source") or "未知")
     analysis_source = str(source_status.get("analysis_source") or "专业欧赔市场")
@@ -372,7 +570,7 @@ def render_site(rows: list[dict]) -> str:
     display_label = display_date.isoformat() if display_date else "暂无日期"
     data_json = json.dumps(rows, ensure_ascii=False)
 
-    return f"""<!doctype html>
+    page = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -697,6 +895,120 @@ def render_site(rows: list[dict]) -> str:
     .betting-section {{
       margin-top: 22px;
     }}
+    .draw-alert {{
+      margin-top: 22px;
+      padding: 18px 0 2px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }}
+    .draw-progress {{
+      display: grid;
+      gap: 10px;
+      padding: 12px 0 16px;
+      border-bottom: 1px solid var(--line);
+    }}
+    .draw-subtype-progress, .draw-model-progress {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 18px;
+    }}
+    .draw-subtype-progress span, .draw-model-progress span {{
+      min-width: 0;
+      overflow-wrap: anywhere;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }}
+    .draw-subtype-progress strong {{
+      color: var(--ink);
+      display: block;
+      font-size: 14px;
+    }}
+    .draw-subtype-progress small {{
+      font-size: 12px;
+    }}
+    .draw-training-error {{
+      color: var(--red) !important;
+    }}
+    .draw-progress p {{
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }}
+    .draw-alert-list {{
+      display: grid;
+      gap: 10px;
+      padding: 14px 0 16px;
+    }}
+    .draw-alert-row {{
+      min-width: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(24, 42, 32, .07);
+      padding: 14px;
+    }}
+    .draw-alert-row header {{
+      display: grid;
+      grid-template-columns: minmax(130px, .38fr) minmax(0, 1fr);
+      gap: 12px;
+      align-items: baseline;
+    }}
+    .draw-alert-row header span {{
+      color: var(--gold);
+      font-size: 13px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }}
+    .draw-alert-row header strong {{
+      min-width: 0;
+      font-size: 17px;
+      overflow-wrap: anywhere;
+    }}
+    .draw-alert-metrics {{
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }}
+    .draw-alert-metrics span {{
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }}
+    .draw-alert-metrics strong {{
+      display: block;
+      color: var(--ink);
+      font-size: 14px;
+      margin-top: 3px;
+    }}
+    .draw-alert-detail {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px 16px;
+      margin-top: 12px;
+      padding-top: 11px;
+      border-top: 1px solid var(--line);
+    }}
+    .draw-alert-detail p {{
+      min-width: 0;
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }}
+    .draw-alert-detail span {{
+      color: var(--ink);
+      font-weight: 700;
+      margin-right: 5px;
+    }}
+    .draw-empty {{
+      margin: 14px 0 16px;
+      color: var(--muted);
+    }}
     .table-wrap {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -775,8 +1087,22 @@ def render_site(rows: list[dict]) -> str:
       .ledger-strip {{
         grid-template-columns: 1fr;
       }}
+      .draw-subtype-progress, .draw-model-progress, .draw-alert-detail {{
+        grid-template-columns: 1fr;
+      }}
+      .draw-alert-metrics {{
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }}
       .hero {{
         min-height: 280px;
+      }}
+    }}
+    @media (max-width: 420px) {{
+      .draw-alert-row header, .draw-alert-metrics {{
+        grid-template-columns: 1fr;
+      }}
+      .draw-alert-row header {{
+        gap: 5px;
       }}
     }}
   </style>
@@ -820,6 +1146,7 @@ def render_site(rows: list[dict]) -> str:
 
     {render_ledger(betting_ledger, model_metrics)}
     {render_betting_plan(betting_plan)}
+    {render_draw_alert(draw_alerts, draw_alert_metrics, draw_model_registry)}
     {render_observations(observation_plan)}
 
     <footer>
@@ -830,6 +1157,7 @@ def render_site(rows: list[dict]) -> str:
 </body>
 </html>
 """
+    return "\n".join(line.rstrip() for line in page.splitlines()) + "\n"
 
 
 def main() -> int:

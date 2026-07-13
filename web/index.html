@@ -323,6 +323,120 @@
     .betting-section {
       margin-top: 22px;
     }
+    .draw-alert {
+      margin-top: 22px;
+      padding: 18px 0 2px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .draw-progress {
+      display: grid;
+      gap: 10px;
+      padding: 12px 0 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .draw-subtype-progress, .draw-model-progress {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 18px;
+    }
+    .draw-subtype-progress span, .draw-model-progress span {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .draw-subtype-progress strong {
+      color: var(--ink);
+      display: block;
+      font-size: 14px;
+    }
+    .draw-subtype-progress small {
+      font-size: 12px;
+    }
+    .draw-training-error {
+      color: var(--red) !important;
+    }
+    .draw-progress p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .draw-alert-list {
+      display: grid;
+      gap: 10px;
+      padding: 14px 0 16px;
+    }
+    .draw-alert-row {
+      min-width: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(24, 42, 32, .07);
+      padding: 14px;
+    }
+    .draw-alert-row header {
+      display: grid;
+      grid-template-columns: minmax(130px, .38fr) minmax(0, 1fr);
+      gap: 12px;
+      align-items: baseline;
+    }
+    .draw-alert-row header span {
+      color: var(--gold);
+      font-size: 13px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .draw-alert-row header strong {
+      min-width: 0;
+      font-size: 17px;
+      overflow-wrap: anywhere;
+    }
+    .draw-alert-metrics {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .draw-alert-metrics span {
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .draw-alert-metrics strong {
+      display: block;
+      color: var(--ink);
+      font-size: 14px;
+      margin-top: 3px;
+    }
+    .draw-alert-detail {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px 16px;
+      margin-top: 12px;
+      padding-top: 11px;
+      border-top: 1px solid var(--line);
+    }
+    .draw-alert-detail p {
+      min-width: 0;
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    .draw-alert-detail span {
+      color: var(--ink);
+      font-weight: 700;
+      margin-right: 5px;
+    }
+    .draw-empty {
+      margin: 14px 0 16px;
+      color: var(--muted);
+    }
     .table-wrap {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -401,8 +515,22 @@
       .ledger-strip {
         grid-template-columns: 1fr;
       }
+      .draw-subtype-progress, .draw-model-progress, .draw-alert-detail {
+        grid-template-columns: 1fr;
+      }
+      .draw-alert-metrics {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
       .hero {
         min-height: 280px;
+      }
+    }
+    @media (max-width: 420px) {
+      .draw-alert-row header, .draw-alert-metrics {
+        grid-template-columns: 1fr;
+      }
+      .draw-alert-row header {
+        gap: 5px;
       }
     }
   </style>
@@ -429,10 +557,10 @@
       <div>
         <div class="section-title">
           <h2>比赛预测</h2>
-          <span>最后更新：2026-07-13 09:39</span>
+          <span>最后更新：2026-07-13 04:35</span>
         </div>
         <div class="matches">
-          
+
       <article class="match-card">
         <header class="match-head">
           <div>
@@ -457,86 +585,86 @@
           </section>
         </div>
         <section class="prob-panel" aria-label="90分钟概率">
-          
+
         <div class="prob-row">
           <div class="prob-label"><span>佐加顿斯 胜</span><strong>74.8%</strong></div>
           <div class="track"><div class="fill home" style="width: 74.8%"></div></div>
         </div>
-    
-          
+
+
         <div class="prob-row">
           <div class="prob-label"><span>平局</span><strong>16.5%</strong></div>
           <div class="track"><div class="fill draw" style="width: 16.5%"></div></div>
         </div>
-    
-          
+
+
         <div class="prob-row">
           <div class="prob-label"><span>哈斯塔德 胜</span><strong>8.7%</strong></div>
           <div class="track"><div class="fill away" style="width: 8.7%"></div></div>
         </div>
-    
+
         </section>
-        
+
         <section class="score-picks" aria-label="比分预测">
           <h3>比分预测</h3>
           <ol>
-            
+
             <li>
               <span>1</span>
               <strong>2-0</strong>
               <small>11.7%</small>
             </li>
-            
+
             <li>
               <span>2</span>
               <strong>3-0</strong>
               <small>9.8%</small>
             </li>
-            
+
             <li>
               <span>3</span>
               <strong>2-1</strong>
               <small>9.2%</small>
             </li>
-            
+
           </ol>
         </section>
-    
-        
+
+
       </article>
-    
+
         </div>
       </div>
 
       <aside class="side-panel">
         <h2>预测历史</h2>
         <ul class="history">
-          
+
             <li class="history-item active">
               <span>2026-07-13</span>
               <strong>1 场</strong>
               <small>佐加顿斯</small>
             </li>
-            
+
 
             <li class="history-item">
               <span>2026-07-12</span>
               <strong>13 场</strong>
               <small>仁川联队，大田市民，首尔FC，马尔默，哈马比，瓦斯特拉，博德闪耀，盖斯，天狼星，布兰，罗森博格，桑纳菲，维京</small>
             </li>
-            
+
 
             <li class="history-item">
               <span>2026-07-11</span>
               <strong>4 场</strong>
               <small>英格兰，阿根廷，赫根，特罗姆瑟</small>
             </li>
-            
+
         </ul>
       </aside>
     </section>
 
-    
+
       <section class="ledger-strip">
         <div><span>累计模拟投入</span><strong>330</strong></div>
         <div><span>已结算注数</span><strong>4</strong></div>
@@ -549,14 +677,32 @@
         <div><span>平均赔率价值</span><strong>-</strong></div>
         <div><span>平均CLV</span><strong>0.0%</strong></div>
       </section>
-    
-    
+
+
         <section class="betting-section">
           <div class="section-title"><h2>模拟投注方案</h2><span>暂无方案</span></div>
           <div class="empty">今天没有同时满足概率优势、赔率价值和风险条件的方案，因此不模拟投注。</div>
         </section>
-        
-    
+
+
+        <section class="draw-alert">
+          <div class="section-title"><h2>平局预警</h2><span>零到四场，按预警排名展示</span></div>
+
+      <div class="draw-progress" aria-label="平局模型进度">
+        <div class="draw-subtype-progress"><span><strong>冷门平局 0/30</strong><small>观察期</small></span><span><strong>均势平局 0/30</strong><small>观察期</small></span></div>
+        <div class="draw-model-progress">
+          <span>冠军 暂无</span>
+          <span>挑战者 暂无 · 影子 0 天 · 样本/投注 0/0</span>
+          <span>暂停联赛：无</span>
+
+        </div>
+        <p>进度仅用于观测与复盘，不代表模型改善或晋级保证。</p>
+      </div>
+
+          <p class="draw-empty">今日无符合门槛的平局预警</p>
+        </section>
+
+
       <section class="betting-section">
         <div class="section-title"><h2>零金额观察单</h2><span>只用于概率校准与CLV，不计入投入和盈亏</span></div>
         <div class="table-wrap"><table>
@@ -573,7 +719,7 @@
         </tbody>
         </table></div>
       </section>
-    
+
 
     <footer>
       预测是概率判断，不是确定赛果。建议每天比赛前更新赛程、球队评分、伤停和赔率后重新运行每日脚本。
