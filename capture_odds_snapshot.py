@@ -16,7 +16,7 @@ def capture(target_date: date) -> Path | None:
     payload = {
         "target_date": target_date.isoformat(),
         "captured_at": captured_at.isoformat(),
-        "source": "中国足彩网",
+        "source": "zgzcw_professional",
         "matches": [
             {
                 "team_a": item.get("homeTeam", ""),
@@ -26,6 +26,12 @@ def capture(target_date: date) -> Path | None:
                 "h": item.get("h", ""),
                 "d": item.get("d", ""),
                 "a": item.get("a", ""),
+                "market_h": item.get("h", ""),
+                "market_d": item.get("d", ""),
+                "market_a": item.get("a", ""),
+                "market_type": "win_draw_loss",
+                "settlement_minutes": 90,
+                "includes_extra_time": False,
             }
             for item in matches
             if item.get("homeTeam") and item.get("awayTeam")
