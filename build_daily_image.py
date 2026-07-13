@@ -16,6 +16,7 @@ from build_site import (
     draw_alert_value,
     evidence_source_summary,
     external_text,
+    normalize_evidence_whitespace,
 )
 
 
@@ -136,6 +137,10 @@ def text_width(draw: ImageDraw.ImageDraw, value: str, text_font: ImageFont.FreeT
     return box[2] - box[0]
 
 
+def heading_text(value: object) -> str:
+    return normalize_evidence_whitespace(value)
+
+
 def fit_text(draw: ImageDraw.ImageDraw, value: object, text_font: ImageFont.FreeTypeFont, max_width: int) -> str:
     text = external_text(value).strip() or "-"
     if text_width(draw, text, text_font) <= max_width:
@@ -197,19 +202,19 @@ def draw_alert_heading(metrics: dict, registry: dict) -> tuple[str, str, str]:
     for key, label in SUBTYPE_LABELS.items():
         item = subtypes.get(key)
         item = item if isinstance(item, dict) else {}
-        progress_items.append(f"{label} {max(0, as_int(item.get('count')))}/30")
+        progress_items.append(f"{heading_text(label)} {max(0, as_int(item.get('count')))}/30")
     progress = " · ".join(progress_items)
     champion = registry.get("champion") if isinstance(registry.get("champion"), dict) else {}
     challenger = registry.get("challenger") if isinstance(registry.get("challenger"), dict) else {}
-    champion_version = external_text(champion.get("version") or "暂无")
-    challenger_version = external_text(challenger.get("version") or "暂无")
+    champion_version = heading_text(champion.get("version") or "暂无")
+    challenger_version = heading_text(challenger.get("version") or "暂无")
     challenger_state = (
         f"挑战者 {challenger_version} · 影子 {max(0, as_int(challenger.get('shadow_days')))} 天 · 样本/投注 {max(0, as_int(challenger.get('sample_count')))}/{max(0, as_int(challenger.get('bet_count')))}"
         if challenger else "挑战者 暂无"
     )
     leagues = registry.get("per_league") if isinstance(registry, dict) else {}
     paused_leagues = [
-        external_text(league)
+        heading_text(league)
         for league, state in leagues.items()
         if isinstance(state, dict) and state.get("paused") is True
     ] if isinstance(leagues, dict) else []
@@ -313,7 +318,7 @@ def draw_report() -> Path:
     draw_fitted_text(draw, (250, alert_header_y + 13), subtype_progress, font(18), muted, WIDTH - 70 - 250)
     draw_fitted_text(draw, (70, alert_header_y + 45), model_progress, font(15), muted, 650)
     draw_fitted_text(draw, (760, alert_header_y + 45), paused_leagues, font(15), muted, WIDTH - 70 - 760)
-    training_error = external_text(draw_model_registry.get("last_training_error")).strip()
+    training_error = heading_text(draw_model_registry.get("last_training_error"))
     if training_error:
         draw_fitted_text(draw, (70, alert_header_y + 63), f"最近训练异常：{training_error}", font(14), red, WIDTH - 140)
     if not draw_alerts:

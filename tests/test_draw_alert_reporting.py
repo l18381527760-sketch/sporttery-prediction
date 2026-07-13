@@ -301,6 +301,128 @@ class DrawAlertReportingTest(unittest.TestCase):
                 intersects = left[0] < right[2] and right[0] < left[2] and left[1] < right[3] and right[1] < left[3]
                 self.assertFalse(intersects, (left_key, left, right_key, right))
 
+    def test_crowded_zero_alert_header_normalizes_all_external_line_separators(self):
+        class RecordingDraw:
+            def __init__(self, drawing, calls):
+                self.drawing = drawing
+                self.calls = calls
+
+            def __getattr__(self, name):
+                return getattr(self.drawing, name)
+
+            def text(self, xy, text, *args, **kwargs):
+                self.calls.append((text, xy, kwargs))
+                return self.drawing.text(xy, text, *args, **kwargs)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            web = root / "web"
+            output.mkdir()
+            (output / "betting_plan_2026-07-13.csv").write_text(
+                "match,play,odds,stake,selection\n",
+                encoding="utf-8",
+            )
+            (output / "betting_ledger.csv").write_text(
+                "date,play,match,selection,stake,status,profit\n",
+                encoding="utf-8",
+            )
+            (output / "observation_plan_2026-07-13.csv").write_text(
+                "match,selection,odds,probability,raw_model_probability,market_probability\n"
+                "A vs B,平,3.2,0.3,0.3,0.3\n",
+                encoding="utf-8",
+            )
+            (output / "draw_alert_metrics.json").write_text(
+                json.dumps(
+                    {
+                        "subtypes": {
+                            "cold_draw": {"count": 29},
+                            "balanced_draw": {"count": 30, "promoted": True},
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output / "draw_model_registry.json").write_text(
+                json.dumps(
+                    {
+                        "champion": {"version": "冠\r军\n模型\u0085版本"},
+                        "challenger": {
+                            "version": "挑\n战者\r\n模型\u2028版本",
+                            "shadow_days": 28,
+                            "sample_count": 30,
+                            "bet_count": 12,
+                        },
+                        "per_league": {"英\r\n超\u2029联赛\t测试\v名称": {"paused": True}},
+                        "last_training_error": "训练\r\n错误\u2028详情\u2029补充\u0085信息\f" * 20,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            calls = []
+            original_draw = build_daily_image.ImageDraw.Draw
+            subtype_labels = {
+                "cold_draw": "冷\r\n门\u2028平局",
+                "balanced_draw": "均衡\u2029平局",
+            }
+
+            with patch.object(build_daily_image, "OUTPUT_DIR", output), patch.object(
+                build_daily_image,
+                "WEB_DIR",
+                web,
+            ), patch.object(build_daily_image, "SUBTYPE_LABELS", subtype_labels), patch.object(
+                build_daily_image.ImageDraw,
+                "Draw",
+                side_effect=lambda image: RecordingDraw(original_draw(image), calls),
+            ):
+                image_path = build_daily_image.draw_report()
+
+            with build_daily_image.Image.open(image_path) as image:
+                self.assertEqual((1600, 1018), image.size)
+
+        following_y = next(y for text, (_, y), _ in calls if text == "零金额观察单")
+        header_top = following_y - 100
+        header_calls = [
+            call
+            for call in calls
+            if header_top <= call[1][1] < following_y
+        ]
+        self.assertEqual(6, len(header_calls))
+
+        for text, _, _ in header_calls:
+            self.assertEqual(" ".join(text.split()), text, repr(text))
+            for separator in EVIDENCE_LINE_BREAKS:
+                self.assertNotIn(separator, text, repr(text))
+
+        header_text = " | ".join(text for text, _, _ in header_calls)
+        for expected in (
+            "冷 门 平局",
+            "冠军 冠 军 模型 版本",
+            "挑战者 挑 战者 模型 版本",
+            "暂停联赛：英 超 联赛 测试 名称",
+            "最近训练异常：训练 错误 详情 补充 信息",
+            "今日无符合门槛的平局预警",
+        ):
+            self.assertIn(expected, header_text)
+
+        measurement = build_daily_image.ImageDraw.Draw(build_daily_image.Image.new("RGB", (1600, 10)))
+        boxes = [
+            measurement.textbbox(xy, text, font=kwargs["font"])
+            for text, xy, kwargs in header_calls
+        ]
+        for box in boxes:
+            self.assertGreaterEqual(box[0], 70, box)
+            self.assertLessEqual(box[2], build_daily_image.WIDTH - 70, box)
+            self.assertGreaterEqual(box[1], header_top, box)
+            self.assertLessEqual(box[3], following_y, box)
+
+        for index, left in enumerate(boxes):
+            for right in boxes[index + 1:]:
+                intersects = left[0] < right[2] and right[0] < left[2] and left[1] < right[3] and right[1] < left[3]
+                self.assertFalse(intersects, (left, right))
+
     def test_daily_alert_reader_enriches_rows_from_alert_ledger(self):
         with TemporaryDirectory() as directory:
             output = Path(directory) / "output"
