@@ -17,8 +17,9 @@ def play_family(play: str) -> str:
     return play
 
 
-def summarize(rows: list[dict]) -> dict:
-    settled = [row for row in rows if row.get("status") in {"命中", "未中"}]
+def summarize(rows: list[dict], active_strategy: str = "") -> dict:
+    settled_all = [row for row in rows if row.get("status") in {"命中", "未中"}]
+    settled = [row for row in settled_all if not active_strategy or row.get("strategy_version") == active_strategy]
     by_play: dict[str, list[dict]] = {}
     by_league: dict[str, list[dict]] = {}
     for row in settled:
@@ -56,7 +57,8 @@ def summarize(rows: list[dict]) -> dict:
         item_metrics["paused"] = len(items) >= 20 and (item_metrics.get("roi") or 0) < 0 and worsening
         league_metrics[league] = item_metrics
     return {
-        "overall": metrics(settled),
+        "overall": metrics(settled_all),
+        "active_strategy": {"version": active_strategy, **metrics(settled)},
         "by_play": {key: metrics(items) for key, items in by_play.items()},
         "by_league": league_metrics,
     }
@@ -140,8 +142,16 @@ def write_metrics() -> Path:
     if ledger.exists():
         with ledger.open("r", encoding="utf-8-sig", newline="") as handle:
             rows = list(csv.DictReader(handle))
-    payload = summarize(rows)
-    payload["clv"] = closing_line_value(rows)
+    config_path = ROOT / "betting_config.json"
+    active_strategy = ""
+    if config_path.exists():
+        try:
+            active_strategy = str(json.loads(config_path.read_text(encoding="utf-8")).get("strategy_version") or "")
+        except (OSError, json.JSONDecodeError):
+            active_strategy = ""
+    payload = summarize(rows, active_strategy)
+    active_rows = [row for row in rows if not active_strategy or row.get("strategy_version") == active_strategy]
+    payload["clv"] = closing_line_value(active_rows)
     output = OUTPUT_DIR / "model_metrics.json"
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Updated model metrics: {output}")
