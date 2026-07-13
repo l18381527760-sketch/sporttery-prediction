@@ -669,12 +669,13 @@ git commit -m "feat: settle draw alerts by subtype"
 - Create: `tests/test_draw_model_learning.py`
 - Create: `requirements.txt`
 - Create: `data/models/.gitkeep`
+- Create: `data/draw_feature_snapshots/.gitkeep`
 - Modify: `generate_draw_alert.py`
 - Modify: `tests/test_generate_draw_alert.py`
 
 **Interfaces:**
 - Consumes: chronological prediction CSVs, results, market evidence, alert ledger, and current registry.
-- Produces: `data/draw_training_samples.csv`, `data/models/draw_champion.joblib`, `data/models/draw_challenger.joblib`, and `output/draw_model_registry.json`; exports `predict_draw_probability(features: dict) -> float`.
+- Produces: immutable versioned artifacts below `data/models/`, `data/draw_training_samples.csv`, timestamped files below `data/draw_feature_snapshots/`, and `output/draw_model_registry.json`; exports `predict_draw_probability(features: dict) -> float`.
 - Public orchestration entry point: `update_draw_model(root: Path = ROOT, as_of: date | None = None, force_train: bool = False) -> Path`.
 
 - [ ] **Step 1: Write failing time-order and promotion tests**
@@ -693,11 +694,11 @@ class DrawModelLearningTest(unittest.TestCase):
             self.assertLess(max(dates[index] for index in train), min(dates[index] for index in validation))
 
     def test_challenger_cannot_promote_before_four_weeks(self):
-        challenger = {"shadow_days": 27, "sample_count": 250, "bet_count": 120, "brier_improvement": 0.03, "brier_skill": 0.02, "clv": 0.01, "roi": 0.02, "max_drawdown": 80}
+        challenger = {"shadow_days": 27, "sample_count": 250, "bet_count": 120, "brier_improvement": 0.03, "log_loss_improvement": 0.03, "brier_skill": 0.02, "clv": 0.01, "roi": 0.02, "max_drawdown": 80}
         self.assertFalse(promotion_decision(challenger, {"max_drawdown": 90}))
 
     def test_all_gates_allow_promotion(self):
-        challenger = {"shadow_days": 28, "sample_count": 250, "bet_count": 120, "brier_improvement": 0.03, "brier_skill": 0.02, "clv": 0.01, "roi": 0.02, "max_drawdown": 80}
+        challenger = {"shadow_days": 28, "sample_count": 250, "bet_count": 120, "brier_improvement": 0.03, "log_loss_improvement": 0.03, "brier_skill": 0.02, "clv": 0.01, "roi": 0.02, "max_drawdown": 80}
         self.assertTrue(promotion_decision(challenger, {"max_drawdown": 90}))
 
     def test_missing_champion_returns_existing_blended_probability(self):
@@ -746,11 +747,15 @@ FEATURES = [
 
 For fewer than 200 settled all-match samples, train a sigmoid calibrator with only `base_draw_probability` and `market_draw_probability`. At 200 or more samples, train a `Pipeline([StandardScaler(), LogisticRegression(C=0.5, max_iter=1000, random_state=42)])` on all features. Use `TimeSeriesSplit` without shuffled data, save fold Brier/LogLoss and market baselines, and generate only a challenger until the four-week shadow and metric gates pass. Promotion must atomically replace the champion and retain `previous_champion` in the registry for rollback. If training fails, retain the current champion and write the error to `last_training_error`.
 
-Build `data/draw_training_samples.csv` from `output/predictions_*.csv` joined to `data/bet_results.csv` by exact date and teams. Use the prediction's already blended `p_draw` as `base_draw_probability`, the stored domestic no-vig draw probability when available as `market_draw_probability`, and `outcome=1` only for equal 90-minute goals. Never train on unresolved matches or post-match features. Write samples, registry JSON, and model replacements with a temporary file followed by `Path.replace()` so a failed run cannot corrupt the current champion.
+At alert-generation time, write immutable timestamped pre-match feature snapshots under `data/draw_feature_snapshots/`. Each row contains all ten serving/training features, exact date and teams, match ID, stage, domestic draw odds, `captured_at`, and `kickoff_at`; accept it only when both timestamps parse and `captured_at <= kickoff_at`. Build `data/draw_training_samples.csv` only from these snapshots joined to `data/bet_results.csv` by exact date and teams. Use `outcome=1` only for equal 90-minute goals. Never train on unresolved matches, mutable post-match copies, or rows without proven pre-match provenance.
 
-Apply exponentially decaying sample weights while retaining every historical row. After promotion, compare the new and previous champions on the latest 50 settled all-match samples; roll back when either Brier or LogLoss is worse by at least 2% relative to the previous champion. Record per-league metrics, and after 30 samples mark only that league paused when ROI is negative and recent-ten Brier is worse than the preceding ten. A paused league can still be scored, displayed, and logged but cannot publish a paid alert; `generate_draw_alert.py` must read `output/draw_model_registry.json` and force that league's subtype metrics to unpromoted before stake attachment.
+Use immutable versioned model artifacts strictly beneath `data/models/`. Validate a new artifact before activation, then atomically replace only `output/draw_model_registry.json` to switch champion/challenger/previous-champion pointers. Never overwrite bytes referenced by the current registry. Reject absolute paths, parent traversal, paths outside `data/models`, schema/version mismatches, unexpected feature order or model kind, estimator dimension mismatches, and corrupt joblib files.
 
-`predict_draw_probability()` must return `features["base_draw_probability"]` (the existing blended draw probability) when no valid champion exists; otherwise load the champion and clamp its output to `[0.03, 0.70]`. It accepts an optional keyword-only `root` for isolated tests while remaining callable with the one-argument interface used by `generate_draw_alert.py`.
+Apply exponentially decaying sample weights while retaining every historical row. Evaluate the fixed challenger on post-creation immutable samples: its own probabilities determine qualifying simulated bets and therefore its own `bet_count`, fixed-stake ROI, CLV, and maximum drawdown. Compare challenger Brier and LogLoss against the current champion on the same rows, using base probability only when no champion exists; both relative improvements must be at least 2%. Day 28 is a minimum shadow age: keep an under-sampled challenger active until it reaches both 200 probability samples and 100 qualifying simulated bets, then promote only when every quality gate passes or reject it so a fresh challenger can start.
+
+After promotion, compare the new and previous champions on the latest 50 settled all-match samples; roll back when either Brier or LogLoss is worse by at least 2% relative to the previous champion. Sort per-league rows chronologically, and after 30 samples mark only that league paused when ROI is negative and recent-ten Brier is worse than the preceding ten. A paused league can still be scored, displayed, and logged but cannot publish a paid alert; `generate_draw_alert.py` must read `output/draw_model_registry.json` and force that league's subtype metrics to unpromoted before stake attachment.
+
+`predict_draw_probability()` must return `features["base_draw_probability"]` when no valid champion exists or any feature/artifact validation fails; otherwise load the registry-matched champion and clamp its output to `[0.03, 0.70]`. It accepts an optional keyword-only `root` for isolated tests. Alert generation passes all ten features with exactly the same definitions written to the immutable snapshot.
 
 Implement the tested gate helpers exactly:
 
@@ -767,6 +772,7 @@ def promotion_decision(challenger: dict, champion: dict) -> bool:
         challenger.get("sample_count", 0) >= 200,
         challenger.get("bet_count", 0) >= 100,
         challenger.get("brier_improvement", 0) >= 0.02,
+        challenger.get("log_loss_improvement", 0) >= 0.02,
         challenger.get("brier_skill", 0) > 0,
         challenger.get("clv", 0) > 0,
         challenger.get("roi", 0) > 0,
@@ -783,7 +789,7 @@ Expected: all tests PASS and no model files are written outside the test tempora
 - [ ] **Step 6: Commit learning**
 
 ```bash
-git add draw_model_learning.py requirements.txt data/models/.gitkeep tests/test_draw_model_learning.py
+git add draw_model_learning.py requirements.txt data/models/.gitkeep data/draw_feature_snapshots/.gitkeep generate_draw_alert.py tests/test_draw_model_learning.py tests/test_generate_draw_alert.py
 git commit -m "feat: add guarded draw model learning"
 ```
 
