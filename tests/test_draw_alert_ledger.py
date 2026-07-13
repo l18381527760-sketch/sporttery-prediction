@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +79,70 @@ class DrawAlertLedgerTest(unittest.TestCase):
 
         self.assertFalse(metrics["promoted"])
 
+    def test_invalid_model_probabilities_do_not_count_or_affect_metrics(self):
+        invalid_probabilities = [float("nan"), float("inf"), -0.01, 1.01, None] * 5
+        invalid_probabilities += [float("-inf"), -1, 2, None]
+        rows = []
+        for probability in invalid_probabilities:
+            row = settled_row(
+                status="未命中",
+                model_draw_probability=probability,
+                market_draw_probability="0.90",
+                hypothetical_stake="0.01",
+                hypothetical_profit="-0.01",
+                clv="0.50",
+            )
+            if probability is None:
+                row.pop("model_draw_probability")
+            rows.append(row)
+        rows.append(settled_row())
+
+        metrics = compute_subtype_metrics(rows, min_samples=30, roi_gate=0.05, max_drawdown=100)
+
+        self.assertEqual((1, False), (metrics["count"], metrics["promoted"]))
+        self.assertEqual(1.0, metrics["hit_rate"])
+        self.assertAlmostEqual(2.2, metrics["roi"])
+        self.assertAlmostEqual((0.34 - 1.0) ** 2, metrics["brier"])
+        self.assertAlmostEqual((0.28 - 1.0) ** 2, metrics["market_brier"])
+        self.assertAlmostEqual(-math.log(0.34), metrics["log_loss"])
+        self.assertAlmostEqual(0.01, metrics["average_clv"])
+        self.assertEqual(0.0, metrics["max_drawdown"])
+
+    def test_invalid_promotion_numbers_do_not_count_or_block_valid_samples(self):
+        invalid_values = [
+            ("market_draw_probability", float("nan")),
+            ("market_draw_probability", float("inf")),
+            ("market_draw_probability", -0.01),
+            ("market_draw_probability", 1.01),
+            ("market_draw_probability", None),
+            ("hypothetical_stake", float("nan")),
+            ("hypothetical_stake", float("inf")),
+            ("hypothetical_stake", None),
+            ("hypothetical_profit", float("nan")),
+            ("hypothetical_profit", float("inf")),
+            ("hypothetical_profit", None),
+            ("clv", float("nan")),
+            ("clv", float("inf")),
+            ("clv", None),
+        ]
+        invalid_rows = []
+        for field, value in invalid_values:
+            row = settled_row(**{field: value})
+            if value is None:
+                row.pop(field)
+            invalid_rows.append(row)
+
+        metrics = compute_subtype_metrics(
+            [settled_row(), *invalid_rows],
+            min_samples=1,
+            roi_gate=0.05,
+            max_drawdown=100,
+        )
+
+        self.assertEqual((1, True), (metrics["count"], metrics["promoted"]))
+        self.assertAlmostEqual(2.2, metrics["roi"])
+        self.assertAlmostEqual(0.01, metrics["average_clv"])
+
     def test_missing_result_stays_unsettled_for_retry(self):
         settled = settle_alert({"domestic_draw_odds": "3.20", "hypothetical_stake": "10", "additional_stake": "20", "settlement_mode": "standalone"}, None)
 
@@ -134,6 +199,9 @@ class DrawAlertLedgerTest(unittest.TestCase):
                 self._alert_row(subtype="cold_draw", domestic_draw_odds="3.60"),
             ])
             self._write_results(root, [("2026-07-11", "A", "B", "1", "1")])
+            snapshots = root / "data" / "odds_snapshots"
+            snapshots.mkdir(parents=True)
+            self._write_snapshot(snapshots / "latest.json", "2026-07-11T11:00:00+00:00", "3.20")
 
             ledger_path, metrics_path = update_draw_alert_ledger(root)
 

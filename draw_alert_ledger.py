@@ -45,25 +45,25 @@ def settle_alert(alert: dict, result: dict | None) -> dict:
 
 
 def compute_subtype_metrics(rows: list[dict], min_samples: int = 30, roi_gate: float = 0.05, max_drawdown: float = 100) -> dict:
-    """Calculate promotion evidence from settled alerts of one subtype."""
-    settled_rows = [row for row in rows if row.get("status") in SETTLED_STATUSES]
-    outcomes = [_outcome(row) for row in settled_rows]
-    count = len(settled_rows)
+    """Calculate promotion evidence from valid settled alerts of one subtype."""
+    valid_rows = [row for row in rows if _is_valid_settled_sample(row)]
+    outcomes = [_outcome(row) for row in valid_rows]
+    count = len(valid_rows)
     hits = sum(outcome for outcome in outcomes if outcome is not None)
-    hypothetical_profit = sum(_number(row.get("hypothetical_profit")) or 0.0 for row in settled_rows)
-    hypothetical_stake = sum(_number(row.get("hypothetical_stake")) or 0.0 for row in settled_rows)
+    hypothetical_profit = sum(_number(row.get("hypothetical_profit")) or 0.0 for row in valid_rows)
+    hypothetical_stake = sum(_number(row.get("hypothetical_stake")) or 0.0 for row in valid_rows)
     roi = hypothetical_profit / hypothetical_stake if hypothetical_stake else None
 
-    model_losses = _squared_errors(settled_rows, "model_draw_probability")
-    market_losses = _squared_errors(settled_rows, "market_draw_probability")
+    model_losses = _squared_errors(valid_rows, "model_draw_probability")
+    market_losses = _squared_errors(valid_rows, "market_draw_probability")
     brier = _mean(model_losses)
     market_brier = _mean(market_losses)
-    log_loss = _binary_log_loss(settled_rows)
-    clv_values = [_number(row.get("clv")) for row in settled_rows]
+    log_loss = _binary_log_loss(valid_rows)
+    clv_values = [_number(row.get("clv")) for row in valid_rows]
     valid_clv = [value for value in clv_values if value is not None]
     average_clv = _mean(valid_clv)
     complete_clv = len(valid_clv) == count
-    drawdown = _max_drawdown(settled_rows)
+    drawdown = _max_drawdown(valid_rows)
     recent_brier = _mean(model_losses[-10:])
     previous_brier = _mean(model_losses[-20:-10]) if len(model_losses) >= 20 else None
     recent_not_worse = previous_brier is None or (recent_brier is not None and recent_brier <= previous_brier)
@@ -172,6 +172,23 @@ def _number(value) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _probability(value) -> float | None:
+    number = _number(value)
+    return number if number is not None and 0 <= number <= 1 else None
+
+
+def _is_valid_settled_sample(row: dict) -> bool:
+    return (
+        row.get("status") in SETTLED_STATUSES
+        and _outcome(row) is not None
+        and _probability(row.get("model_draw_probability")) is not None
+        and _probability(row.get("market_draw_probability")) is not None
+        and _number(row.get("hypothetical_stake")) is not None
+        and _number(row.get("hypothetical_profit")) is not None
+        and _number(row.get("clv")) is not None
+    )
+
+
 def _outcome(row: dict) -> float | None:
     value = _number(row.get("outcome"))
     if value in {0.0, 1.0}:
@@ -186,9 +203,9 @@ def _outcome(row: dict) -> float | None:
 def _squared_errors(rows: list[dict], probability_field: str) -> list[float]:
     errors = []
     for row in rows:
-        probability = _number(row.get(probability_field))
+        probability = _probability(row.get(probability_field))
         outcome = _outcome(row)
-        if probability is not None and 0 <= probability <= 1 and outcome is not None:
+        if probability is not None and outcome is not None:
             errors.append((probability - outcome) ** 2)
     return errors
 
@@ -196,9 +213,9 @@ def _squared_errors(rows: list[dict], probability_field: str) -> list[float]:
 def _binary_log_loss(rows: list[dict]) -> float | None:
     losses = []
     for row in rows:
-        probability = _number(row.get("model_draw_probability"))
+        probability = _probability(row.get("model_draw_probability"))
         outcome = _outcome(row)
-        if probability is None or not 0 <= probability <= 1 or outcome is None:
+        if probability is None or outcome is None:
             continue
         clipped = min(max(probability, 1e-15), 1 - 1e-15)
         losses.append(-(outcome * math.log(clipped) + (1 - outcome) * math.log(1 - clipped)))
