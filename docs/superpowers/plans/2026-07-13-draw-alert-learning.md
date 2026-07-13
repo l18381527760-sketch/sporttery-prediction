@@ -1016,7 +1016,7 @@ python predict_today.py --date 2026-07-12
 python generate_betting_plan.py --date 2026-07-12
 python collect_market_heat.py --date 2026-07-12 --offline
 python generate_draw_alert.py --date 2026-07-12
-python draw_alert_ledger.py --date 2026-07-12
+python draw_alert_ledger.py --settle
 python build_site.py
 python build_daily_image.py
 ```
