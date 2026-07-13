@@ -21,6 +21,7 @@ from draw_model_learning import (
     _atomic_dump_artifact,
     _atomic_write_json,
     _promote_challenger,
+    _role_is_valid,
     _rollback_if_needed,
     _shadow_metrics,
     _train_artifact,
@@ -179,6 +180,29 @@ class DrawModelLearningTest(unittest.TestCase):
                 ),
             )
         loader.assert_not_called()
+
+    def test_every_registry_role_checks_digest_before_joblib_load(self):
+        self._write_champion(0.66, SMALL_SAMPLE_FEATURES)
+        original = self._read_registry()["champion"]
+
+        for role in ("champion", "challenger", "previous_champion"):
+            for digest in (None, "0" * 64):
+                with self.subTest(role=role, digest=digest):
+                    entry = dict(original)
+                    if digest is None:
+                        entry.pop("artifact_sha256")
+                    else:
+                        entry["artifact_sha256"] = digest
+                    with patch("draw_model_learning.joblib.load") as loader:
+                        self.assertFalse(
+                            _role_is_valid(
+                                self.temp_root,
+                                entry,
+                                role,
+                                date(2026, 7, 12),
+                            )
+                        )
+                    loader.assert_not_called()
 
     def test_full_feature_champion_fails_closed_when_required_feature_is_missing(self):
         artifact = self._artifact(0.66, FEATURES, "full-v1")

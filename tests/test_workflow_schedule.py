@@ -146,6 +146,27 @@ class WorkflowScheduleTest(unittest.TestCase):
         positions.append(text.index("      - name: Build final website and image"))
         self.assertEqual(positions, sorted(positions))
 
+    def test_base_failure_cannot_reach_commit_or_pages_publication(self):
+        text = self.read_workflow("daily-forecast.yml")
+        publication_steps = (
+            "Commit generated files",
+            "Configure Pages",
+            "Upload Pages artifact",
+            "Deploy to GitHub Pages",
+        )
+
+        for step_name in publication_steps:
+            step = self.step_block(text, "forecast", step_name)
+            self.assertNotIn("if: always()", step)
+            self.assertNotIn("continue-on-error: true", step)
+
+        build_position = text.index("      - name: Build final website and image")
+        publication_positions = [
+            text.index(f"      - name: {step_name}") for step_name in publication_steps
+        ]
+        self.assertLess(build_position, publication_positions[0])
+        self.assertEqual(publication_positions, sorted(publication_positions))
+
     def test_refresh_failure_isolation_binds_each_command_to_its_own_step(self):
         text = self.read_workflow("draw-alert-refresh.yml")
         refresh_steps = {

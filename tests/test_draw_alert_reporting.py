@@ -184,8 +184,28 @@ class DrawAlertReportingTest(unittest.TestCase):
             ), patch.object(build_daily_image.ImageDraw, "Draw", side_effect=recording_draw):
                 build_daily_image.draw_report()
 
-        self.assertIn("130 元", texts)
-        self.assertTrue(any("高级" in value for value in texts), texts)
+            self.assertIn("130 元", texts)
+            self.assertTrue(any("高级" in value for value in texts), texts)
+
+            (output / "betting_plan_2026-07-13.csv").write_text(
+                "match,play,odds,stake,selection\n", encoding="utf-8"
+            )
+            alert_path = output / "draw_alert_2026-07-13.csv"
+            alert_path.write_text(
+                alert_path.read_text(encoding="utf-8").replace("高级", "中级"),
+                encoding="utf-8",
+            )
+            texts.clear()
+            with patch.object(build_daily_image, "OUTPUT_DIR", output), patch.object(
+                build_daily_image, "WEB_DIR", web
+            ), patch.object(
+                build_daily_image.ImageDraw, "Draw", side_effect=recording_draw
+            ):
+                build_daily_image.draw_report()
+
+            self.assertIn("30 元", texts)
+            self.assertIn("主方案为空，但有平局预警投入 30 元", texts)
+            self.assertTrue(any("中级" in value for value in texts), texts)
 
     def test_empty_alert_has_neutral_copy(self):
         self.assertIn("今日无符合门槛", render_draw_alert([]))
