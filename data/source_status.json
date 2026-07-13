@@ -2,7 +2,7 @@
   "source": "中国足彩网",
   "analysis_source": "中国足彩网专业欧赔市场",
   "target_date": "2026-07-13",
-  "updated_at": "2026-07-13T00:38:58.445575+00:00",
+  "updated_at": "2026-07-13T01:06:19.628196+00:00",
   "fallback": true,
   "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。"
 }
