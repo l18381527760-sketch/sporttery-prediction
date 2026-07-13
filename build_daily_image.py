@@ -10,6 +10,7 @@ from build_site import (
     SUBTYPE_LABELS,
     SETTLEMENT_LABELS,
     alert_amount,
+    alert_level_label,
     alert_rank,
     alert_rank_label,
     as_int,
@@ -17,6 +18,7 @@ from build_site import (
     evidence_source_summary,
     external_text,
     normalize_evidence_whitespace,
+    today_stake_totals,
 )
 
 
@@ -242,8 +244,11 @@ def draw_report() -> Path:
     observations = observation_plan(report_date)
     ledger = read_csv(OUTPUT_DIR / "betting_ledger.csv")
     all_metrics = read_metrics()
+    all_draw_alerts = [
+        row for row in read_draw_alert(report_date) if isinstance(row, dict)
+    ]
     draw_alerts = sorted(
-        (row for row in read_draw_alert(report_date) if isinstance(row, dict)),
+        all_draw_alerts,
         key=alert_rank,
     )[:4]
     draw_alert_metrics = read_draw_json("draw_alert_metrics.json")
@@ -273,7 +278,9 @@ def draw_report() -> Path:
     settled = [row for row in ledger if row.get("status") not in {"", "未结算"}]
     hits = sum(1 for row in settled if row.get("status") == "命中")
     profit = sum(number(row, "profit") for row in settled)
-    today_stake = sum(number(row, "stake") for row in plan)
+    _, standalone_alert_stake, today_stake = today_stake_totals(
+        plan, all_draw_alerts
+    )
     brier = active_metrics.get("brier")
     roi = metrics.get("roi")
     average_clv = clv_metrics.get("average_clv")
@@ -296,7 +303,12 @@ def draw_report() -> Path:
     draw.text((70, y), "今日投注方案", font=font(34), fill=ink)
     y += 58
     if not plan:
-        draw.text((75, y), "今日暂无符合条件的方案", font=font(24), fill=muted)
+        empty_copy = (
+            f"主方案为空，但有平局预警投入 {standalone_alert_stake:.0f} 元"
+            if standalone_alert_stake > 0
+            else "今日暂无符合条件的方案"
+        )
+        draw.text((75, y), empty_copy, font=font(24), fill=muted)
         y += 124
     else:
         for index, row in enumerate(plan, start=1):
@@ -329,10 +341,12 @@ def draw_report() -> Path:
         subtype = SUBTYPE_LABELS.get(external_text(alert.get("subtype")), "待分类平局")
         settlement_mode = external_text(alert.get("settlement_mode"))
         state = SETTLEMENT_LABELS.get(settlement_mode, "待确认状态")
+        level = alert_level_label(alert)
+        level_suffix = f" · {level}" if level else ""
         draw.rounded_rectangle((70, y, WIDTH - 70, y + 154), radius=7, fill="white", outline=line)
         draw.text(
             (88, y + 14),
-            f"{alert_rank_label(alert)} · {subtype}",
+            f"{alert_rank_label(alert)} · {subtype}{level_suffix}",
             font=font(22),
             fill=gold,
         )

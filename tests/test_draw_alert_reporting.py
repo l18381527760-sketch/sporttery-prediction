@@ -29,6 +29,62 @@ def multiline_evidence_source() -> tuple[str, str]:
 
 
 class DrawAlertReportingTest(unittest.TestCase):
+    def test_site_totals_only_valid_standalone_draw_alert_stakes(self):
+        alerts = [
+            {"settlement_mode": "standalone", "additional_stake": "30"},
+            {"settlement_mode": "linked", "additional_stake": "99"},
+            {"settlement_mode": "observation", "additional_stake": "88"},
+            {"settlement_mode": "standalone", "additional_stake": "nan"},
+            {"settlement_mode": "standalone", "additional_stake": "inf"},
+            {"settlement_mode": "standalone", "additional_stake": "-5"},
+            {"settlement_mode": "standalone", "additional_stake": "0"},
+            {"settlement_mode": "standalone", "hypothetical_stake": "70"},
+        ]
+
+        main, draw_alert, total = build_site.today_stake_totals(
+            [{"stake": "100"}, {"stake": "nan"}, {"stake": "-10"}], alerts
+        )
+
+        self.assertEqual((100.0, 30.0, 130.0), (main, draw_alert, total))
+
+    def test_empty_main_plan_reports_paid_draw_alert_instead_of_no_bet(self):
+        html = build_site.render_betting_plan(
+            [],
+            [{"settlement_mode": "standalone", "additional_stake": "30"}],
+        )
+
+        self.assertIn("今日模拟投入 30元", html)
+        self.assertIn("主方案为空，但有平局预警投入 30元", html)
+        self.assertNotIn("因此不模拟投注", html)
+
+    def test_alert_level_is_displayed_only_for_supported_levels(self):
+        high = render_draw_alert(
+            [
+                {
+                    "rank": "1",
+                    "subtype": "cold_draw",
+                    "match": "A vs B",
+                    "settlement_mode": "observation",
+                    "alert_level": "高级",
+                }
+            ]
+        )
+        invalid = render_draw_alert(
+            [
+                {
+                    "rank": "1",
+                    "subtype": "cold_draw",
+                    "match": "A vs B",
+                    "settlement_mode": "observation",
+                    "alert_level": "rank_999<script>",
+                }
+            ]
+        )
+
+        self.assertIn("高级", high)
+        self.assertNotIn("rank_999", invalid)
+        self.assertNotIn("&lt;script&gt;", invalid)
+
     def test_linked_alert_copy_does_not_claim_extra_stake(self):
         html = render_draw_alert([
             {
@@ -48,6 +104,88 @@ class DrawAlertReportingTest(unittest.TestCase):
         self.assertIn("冷门平局", html)
         self.assertIn("复用主方案金额", html)
         self.assertNotIn("额外投入 100", html)
+
+    def test_daily_image_totals_standalone_alert_and_shows_level(self):
+        class RecordingDraw:
+            def __init__(self, drawing, texts):
+                self.drawing = drawing
+                self.texts = texts
+
+            def __getattr__(self, name):
+                return getattr(self.drawing, name)
+
+            def text(self, xy, value, *args, **kwargs):
+                self.texts.append(str(value))
+                return self.drawing.text(xy, value, *args, **kwargs)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            web = root / "web"
+            output.mkdir()
+            (output / "betting_plan_2026-07-13.csv").write_text(
+                "match,play,odds,stake,selection\nA vs B,胜平负,2.0,100,胜\n",
+                encoding="utf-8",
+            )
+            (output / "betting_ledger.csv").write_text(
+                "date,play,match,selection,stake,status,profit\n", encoding="utf-8"
+            )
+            with (output / "draw_alert_2026-07-13.csv").open(
+                "w", encoding="utf-8", newline=""
+            ) as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "date",
+                        "rank",
+                        "subtype",
+                        "match",
+                        "settlement_mode",
+                        "additional_stake",
+                        "linked_main_stake",
+                        "hypothetical_stake",
+                        "alert_level",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerows(
+                    [
+                        {
+                            "date": "2026-07-13",
+                            "rank": "1",
+                            "subtype": "cold_draw",
+                            "match": "C vs D",
+                            "settlement_mode": "standalone",
+                            "additional_stake": "30",
+                            "alert_level": "高级",
+                        },
+                        {
+                            "date": "2026-07-13",
+                            "rank": "2",
+                            "subtype": "balanced_draw",
+                            "match": "E vs F",
+                            "settlement_mode": "linked",
+                            "additional_stake": "99",
+                            "linked_main_stake": "100",
+                            "hypothetical_stake": "50",
+                        },
+                    ]
+                )
+            (output / "draw_alert_metrics.json").write_text("{}", encoding="utf-8")
+            (output / "draw_model_registry.json").write_text("{}", encoding="utf-8")
+            texts = []
+            original_draw = build_daily_image.ImageDraw.Draw
+
+            def recording_draw(image):
+                return RecordingDraw(original_draw(image), texts)
+
+            with patch.object(build_daily_image, "OUTPUT_DIR", output), patch.object(
+                build_daily_image, "WEB_DIR", web
+            ), patch.object(build_daily_image.ImageDraw, "Draw", side_effect=recording_draw):
+                build_daily_image.draw_report()
+
+        self.assertIn("130 元", texts)
+        self.assertTrue(any("高级" in value for value in texts), texts)
 
     def test_empty_alert_has_neutral_copy(self):
         self.assertIn("今日无符合门槛", render_draw_alert([]))

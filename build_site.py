@@ -129,6 +129,30 @@ def as_float(row: dict, key: str) -> float | None:
     return number if number is not None and math.isfinite(number) else None
 
 
+def positive_amount(row: dict, key: str) -> float:
+    value = as_float(row, key) if isinstance(row, dict) else None
+    return value if value is not None and value > 0 else 0.0
+
+
+def standalone_draw_alert_stake(alerts: list[dict] | None) -> float:
+    return sum(
+        positive_amount(alert, "additional_stake")
+        for alert in alerts or []
+        if isinstance(alert, dict)
+        and external_text(alert.get("settlement_mode")).strip() == "standalone"
+    )
+
+
+def today_stake_totals(
+    plan: list[dict] | None, alerts: list[dict] | None
+) -> tuple[float, float, float]:
+    main_stake = sum(
+        positive_amount(row, "stake") for row in plan or [] if isinstance(row, dict)
+    )
+    draw_alert_stake = standalone_draw_alert_stake(alerts)
+    return main_stake, draw_alert_stake, main_stake + draw_alert_stake
+
+
 def as_int(value: object, default: int = 0) -> int:
     try:
         number = float(str(value).strip())
@@ -308,8 +332,20 @@ def render_history(grouped: dict[str, list[dict]], display_date: date | None) ->
     return "\n".join(items)
 
 
-def render_betting_plan(plan: list[dict]) -> str:
+def render_betting_plan(
+    plan: list[dict], draw_alerts: list[dict] | None = None
+) -> str:
+    main_stake, draw_alert_stake, total_stake = today_stake_totals(
+        plan, draw_alerts
+    )
     if not plan:
+        if draw_alert_stake > 0:
+            return f"""
+        <section class="betting-section">
+          <div class="section-title"><h2>模拟投注方案</h2><span>今日模拟投入 {yuan(total_stake)}元</span></div>
+          <div class="empty">主方案为空，但有平局预警投入 {yuan(draw_alert_stake)}元。具体场次和依据见下方平局预警。</div>
+        </section>
+        """
         return """
         <section class="betting-section">
           <div class="section-title"><h2>模拟投注方案</h2><span>暂无方案</span></div>
@@ -317,11 +353,16 @@ def render_betting_plan(plan: list[dict]) -> str:
         </section>
         """
 
-    total_stake = sum(as_float(row, "stake") or 0 for row in plan)
     by_play: dict[str, float] = {}
     for row in plan:
-        by_play[row["play"]] = by_play.get(row["play"], 0.0) + (as_float(row, "stake") or 0)
-    play_summary = " / ".join(f"{html.escape(key)} {yuan(value)}" for key, value in by_play.items())
+        play = row.get("play", "-")
+        by_play[play] = by_play.get(play, 0.0) + positive_amount(row, "stake")
+    summary_parts = [
+        f"{html.escape(key)} {yuan(value)}" for key, value in by_play.items()
+    ]
+    if draw_alert_stake > 0:
+        summary_parts.append(f"平局预警 {yuan(draw_alert_stake)}")
+    play_summary = " / ".join(summary_parts)
     rows = []
     for item in plan:
         rows.append(
@@ -342,7 +383,7 @@ def render_betting_plan(plan: list[dict]) -> str:
       <section class="betting-section">
         <div class="section-title">
           <h2>模拟投注方案</h2>
-          <span>今日模拟投入 {yuan(total_stake)}；{play_summary}</span>
+          <span>今日模拟投入 {yuan(total_stake)}元；{play_summary}</span>
         </div>
         <div class="table-wrap">
           <table>
@@ -511,6 +552,11 @@ def alert_rank_label(alert: dict) -> str:
     return f"第{rank}场" if rank <= 4 else "未排名"
 
 
+def alert_level_label(alert: dict) -> str:
+    level = external_text(alert.get("alert_level")).strip()
+    return level if level in {"高级", "中级"} else ""
+
+
 def alert_amount(alert: dict, settlement_mode: str) -> str:
     if settlement_mode == "linked":
         return f"复用主方案金额 {yuan(as_float(alert, 'linked_main_stake'))}"
@@ -579,10 +625,12 @@ def render_draw_alert(alerts: list[dict], metrics: dict | None = None, registry:
         subtype = SUBTYPE_LABELS.get(external_text(alert.get("subtype")), "待分类平局")
         settlement_mode = external_text(alert.get("settlement_mode"))
         state = SETTLEMENT_LABELS.get(settlement_mode, "待确认状态")
+        level = alert_level_label(alert)
+        level_suffix = f" · {escaped(level)}" if level else ""
         rows.append(f"""
           <article class="draw-alert-row">
             <header>
-              <span>{alert_rank_label(alert)} · {subtype}</span>
+              <span>{alert_rank_label(alert)} · {subtype}{level_suffix}</span>
               <strong>{escaped(alert.get("match") or "-")}</strong>
             </header>
             <div class="draw-alert-metrics">
@@ -1246,7 +1294,7 @@ def render_site(rows: list[dict]) -> str:
     </section>
 
     {render_ledger(betting_ledger, model_metrics)}
-    {render_betting_plan(betting_plan)}
+    {render_betting_plan(betting_plan, draw_alerts)}
     {render_draw_alert(draw_alerts, draw_alert_metrics, draw_model_registry)}
     {render_observations(observation_plan)}
 
