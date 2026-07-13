@@ -903,6 +903,9 @@ git commit -m "feat: show draw alerts in daily reports"
 - Create: `.github/workflows/draw-alert-refresh.yml`
 - Modify: `.github/workflows/noon-settlement.yml`
 - Modify: `.github/workflows/email-report.yml`
+- Modify: `.github/workflows/odds-snapshot.yml`
+- Modify: `draw_alert_ledger.py`
+- Modify: `tests/test_draw_alert_ledger.py`
 - Modify: `tests/test_workflow_schedule.py`
 
 **Interfaces:**
@@ -928,6 +931,18 @@ class WorkflowScheduleTest(unittest.TestCase):
         text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "draw-alert-refresh.yml").read_text(encoding="utf-8")
         self.assertGreaterEqual(text.count("continue-on-error: true"), 3)
         self.assertIn("python build_daily_image.py", text)
+
+    def test_repository_writers_share_one_concurrency_group(self):
+        root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+        for name in ("daily-forecast.yml", "draw-alert-refresh.yml", "noon-settlement.yml", "odds-snapshot.yml"):
+            text = (root / name).read_text(encoding="utf-8")
+            self.assertIn("group: sporttery-repository", text)
+            self.assertIn("cancel-in-progress: false", text)
+
+    def test_email_waits_in_the_same_queue_without_installing_ml(self):
+        text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "email-report.yml").read_text(encoding="utf-8")
+        self.assertIn("group: sporttery-repository", text)
+        self.assertNotIn("requirements.txt", text)
 ```
 
 - [ ] **Step 2: Verify the schedule tests fail**
@@ -941,31 +956,32 @@ Expected: FAIL because `draw-alert-refresh.yml` does not exist.
 After the existing prediction and betting-plan commands, run:
 
 ```yaml
-          python collect_market_heat.py
-          python generate_draw_alert.py
+          TARGET_DATE="$(date +%F)"
+          python collect_market_heat.py --date "$TARGET_DATE"
+          python generate_draw_alert.py --date "$TARGET_DATE"
           python draw_alert_ledger.py
 ```
 
-Install `requirements.txt`, and include `data/market_heat_*.json`, `data/models/*`, `output/draw_alert*.csv`, `output/draw_alert*.json`, and `output/draw_model_registry.json` in the commit pattern.
+Install `requirements.txt` before Pillow, keep `TZ: Asia/Shanghai`, and include `data/market_heat_*.json`, `data/draw_feature_snapshots/*.json`, `data/models/*.joblib`, `output/draw_alert*.csv`, `output/draw_alert*.json`, and `output/draw_model_registry.json` in the commit pattern. All repository-writing workflows use `concurrency.group: sporttery-repository` with `cancel-in-progress: false` so snapshots, forecasts, refreshes, and settlements cannot race their git commits.
 
 - [ ] **Step 4: Create the 13:30 refresh workflow**
 
-Schedule `30 5 * * *`, checkout the latest main branch, install dependencies/fonts, rerun `import_sporttery.py`, `predict_today.py`, `collect_market_heat.py`, `generate_draw_alert.py`, `build_site.py`, and `build_daily_image.py`. Put import, prediction refresh, and optional market collection in separate steps with `continue-on-error: true`; alert generation then uses the newest complete timestamped inputs or reuses the committed 12:15 alert and capture time. Commit outputs and deploy Pages with the existing actions.
+Schedule `30 5 * * *`, checkout the latest main branch, install dependencies/fonts, derive `TARGET_DATE="$(date +%F)"` under `TZ: Asia/Shanghai`, and rerun `import_sporttery.py`, `predict_today.py`, `collect_market_heat.py --date "$TARGET_DATE"`, `generate_draw_alert.py --date "$TARGET_DATE"`, `draw_alert_ledger.py`, `build_site.py`, and `build_daily_image.py`. Put import, prediction refresh, optional market collection, and alert generation in separate steps with `continue-on-error: true`; report rebuilding always runs, so a refresh failure reuses the committed 12:15 alert and capture time. Commit outputs and deploy Pages with the existing actions.
 
 - [ ] **Step 5: Extend settlement and email workflows**
 
-At 13:45, run `draw_alert_ledger.py --settle`, `draw_model_learning.py --train`, then rebuild the site/image before commit/deploy. Keep the 14:05 result retry. At 14:00, install no learning dependencies and send the latest checked-out `web/daily-report.png`; keep Gmail credentials only in GitHub secrets/environment.
+Add a tested CLI entry point to `draw_alert_ledger.py` so `python draw_alert_ledger.py --settle` calls `update_draw_alert_ledger()` and exits nonzero on real failure. At 13:45, update results, rebuild historical features, settle the main ledger, run `draw_alert_ledger.py --settle`, run `draw_model_learning.py --train`, then rebuild the site/image before commit/deploy. Keep the 14:05 result retry. Commit the draw ledger/metrics, immutable feature snapshots and versioned model artifacts, the registry, and generated site/image. At 14:00, install no learning dependencies and send the latest checked-out `web/daily-report.png`; put the email workflow in the same concurrency queue so it waits for a running settlement and cannot email a stale image. Keep Gmail credentials only in GitHub secrets/environment.
 
 - [ ] **Step 6: Run workflow tests**
 
 Run: `python -m unittest tests.test_workflow_schedule -v`
 
-Expected: 2 tests PASS.
+Expected: all workflow and ledger CLI tests PASS.
 
 - [ ] **Step 7: Commit workflows**
 
 ```bash
-git add .github/workflows/daily-forecast.yml .github/workflows/draw-alert-refresh.yml .github/workflows/noon-settlement.yml .github/workflows/email-report.yml tests/test_workflow_schedule.py
+git add .github/workflows/daily-forecast.yml .github/workflows/draw-alert-refresh.yml .github/workflows/noon-settlement.yml .github/workflows/email-report.yml .github/workflows/odds-snapshot.yml draw_alert_ledger.py tests/test_draw_alert_ledger.py tests/test_workflow_schedule.py
 git commit -m "feat: automate draw alert refresh and learning"
 ```
 
