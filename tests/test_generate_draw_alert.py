@@ -135,6 +135,57 @@ class GenerateDrawAlertTest(unittest.TestCase):
         self.assertEqual(0, result["additional_stake"])
         self.assertEqual("budget_capped_observation", result["settlement_mode"])
 
+    def test_paused_league_alert_stays_visible_as_zero_stake_observation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "output").mkdir()
+            (root / "data").mkdir()
+            (root / "betting_config.json").write_text(
+                (Path(__file__).resolve().parents[1] / "betting_config.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            (root / "config.json").write_text(
+                json.dumps({"knockout_stages": ["quarterfinal"]}), encoding="utf-8"
+            )
+            (root / "output" / "predictions_2026-07-12.csv").write_text(
+                "date,match_id,team_a,team_b,stage,xg_a,xg_b,p_a,p_draw,p_b\n"
+                "2026-07-12,001,A,B,quarterfinal,1.1,1.2,0.54,0.34,0.12\n",
+                encoding="utf-8",
+            )
+            (root / "data" / "sporttery_odds_2026-07-12.json").write_text(
+                json.dumps({"001": {"had": {"h": "1.60", "d": "4.00", "a": "6.00"}}}),
+                encoding="utf-8",
+            )
+            (root / "data" / "market_heat_2026-07-12.json").write_text(
+                json.dumps({
+                    "captured_at": "2026-07-12T13:30:00+08:00",
+                    "matches": [{
+                        "match_id": "001", "market_scope": "90m", "quality": "high",
+                        "favorite_movement": -0.05, "regional_gap": 0.06,
+                        "sources": {
+                            "domestic": {"market_type": "win_draw_loss", "settlement_minutes": 90, "includes_extra_time": False},
+                            "professional": {"market_type": "win_draw_loss", "settlement_minutes": 90, "includes_extra_time": False},
+                        },
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            (root / "output" / "draw_alert_metrics.json").write_text(
+                json.dumps({"cold_draw": {"promoted": True}}), encoding="utf-8"
+            )
+            (root / "output" / "draw_model_registry.json").write_text(
+                json.dumps({"per_league": {"quarterfinal": {"paused": True}}}),
+                encoding="utf-8",
+            )
+
+            path = generate_alerts("2026-07-12", root)
+            with path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+
+            self.assertEqual(1, len(rows))
+            self.assertEqual("0", rows[0]["additional_stake"])
+            self.assertEqual("observation", rows[0]["settlement_mode"])
+
 
 if __name__ == "__main__":
     unittest.main()

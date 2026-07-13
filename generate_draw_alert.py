@@ -100,6 +100,7 @@ def generate_alerts(target_date: str, root: Path = ROOT) -> Path:
     domestic_odds = _load_json(root / "data" / f"sporttery_odds_{target_date}.json", {})
     main_plan = _load_csv(output_dir / f"betting_plan_{target_date}.csv")
     metrics = _load_json(output_dir / "draw_alert_metrics.json", {})
+    model_registry = _load_json(output_dir / "draw_model_registry.json", {})
     evidence_by_match = {
         str(row.get("match_id") or ""): row
         for row in market_heat.get("matches", [])
@@ -136,11 +137,14 @@ def generate_alerts(target_date: str, root: Path = ROOT) -> Path:
             int(draw_config.get("max_promoted_stake", 30)),
             int(app_config.get("max_daily_budget", 500)),
         )
+        subtype_metrics = _subtype_metrics(metrics, alert["subtype"])
+        if _league_is_paused(model_registry, alert["stage"]):
+            subtype_metrics = {**subtype_metrics, "promoted": False}
         result = attach_stake(
             alert,
             main_plan,
             rows,
-            _subtype_metrics(metrics, alert["subtype"]),
+            subtype_metrics,
             int(app_config.get("max_daily_budget", 500)),
             int(draw_config.get("daily_additional_budget", 80)),
             requested_stake,
@@ -294,6 +298,12 @@ def _subtype_metrics(metrics: dict, subtype: str) -> dict:
     subtypes = metrics.get("subtypes", metrics)
     value = subtypes.get(subtype, {}) if isinstance(subtypes, dict) else {}
     return value if isinstance(value, dict) else {}
+
+
+def _league_is_paused(registry: dict, stage: str) -> bool:
+    per_league = registry.get("per_league", {}) if isinstance(registry, dict) else {}
+    state = per_league.get(str(stage), {}) if isinstance(per_league, dict) else {}
+    return isinstance(state, dict) and state.get("paused") is True
 
 
 def _load_csv(path: Path) -> list[dict]:
