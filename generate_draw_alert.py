@@ -117,12 +117,13 @@ def _stake_amount(value: object, maximum: int) -> int | None:
     return int(parsed)
 
 
-def _total_valid_stakes(rows: list[dict], key: str, maximum: int) -> int:
+def _total_valid_stakes(rows: list[dict], key: str, maximum: int) -> int | None:
     total = 0
     for row in rows:
         stake = _stake_amount(row.get(key), maximum)
-        if stake is not None:
-            total += stake
+        if stake is None:
+            return None
+        total += stake
     return total
 
 
@@ -190,6 +191,13 @@ def attach_stake(alert: dict, main_plan: list[dict], existing_alerts: list[dict]
         alert_used = _total_valid_stakes(
             existing_alerts, "additional_stake", alert_budget
         )
+        if used is None or alert_used is None:
+            result.update(
+                additional_stake=0,
+                linked_main_stake=0,
+                settlement_mode="budget_capped_observation",
+            )
+            return result
         available = max(0, min(daily_budget - used - alert_used, alert_budget - alert_used))
         stake = min(requested_stake, available) if available >= minimum_stake else 0
         state = "standalone" if stake else "budget_capped_observation"
@@ -291,9 +299,27 @@ def _candidate_from_rows(
         xg_a, xg_b = float(prediction["xg_a"]), float(prediction["xg_b"])
     except (KeyError, TypeError, ValueError):
         return None
-    if not all(is_finite_between(value, 0.0, 10.0) for value in (xg_a, xg_b)):
+    if (
+        not all(
+            is_finite_between(value, 0.0, 1.0) for value in model_probabilities
+        )
+        or not math.isclose(sum(model_probabilities), 1.0, abs_tol=0.02)
+        or not all(is_finite_between(value, 0.0, 10.0) for value in (xg_a, xg_b))
+        or not is_finite_between(xg_a + xg_b, 0.0, 10.0)
+    ):
+        return None
+    favorite_movement = _number(evidence.get("favorite_movement"))
+    regional_gap = _number(evidence.get("regional_gap"))
+    if not (
+        favorite_movement is not None
+        and is_finite_between(favorite_movement, -1.0, 1.0)
+        and regional_gap is not None
+        and is_finite_between(regional_gap, -1.0, 1.0)
+    ):
         return None
     fair = fair_probabilities(*odds)
+    if fair is None:
+        return None
     stage = str(prediction.get("stage", ""))
     knockout_stages = {
         str(value).casefold() for value in app_config.get("knockout_stages", [])
@@ -304,8 +330,8 @@ def _candidate_from_rows(
         "favorite_probability": max(model_probabilities[0], model_probabilities[2]),
         "win_probability_gap": abs(model_probabilities[0] - model_probabilities[2]),
         "xg_total": xg_a + xg_b,
-        "favorite_movement": _number(evidence.get("favorite_movement")) or 0.0,
-        "regional_gap": _number(evidence.get("regional_gap")) or 0.0,
+        "favorite_movement": favorite_movement,
+        "regional_gap": regional_gap,
         "source_count": len(market_sources),
         "is_knockout": int(stage.casefold() in knockout_stages),
         "is_balanced": int(
@@ -341,8 +367,8 @@ def _candidate_from_rows(
         source_count=len(market_sources),
         market_sources=tuple(market_sources),
         market_scope=evidence.get("market_scope", ""),
-        favorite_movement=_number(evidence.get("favorite_movement")),
-        regional_gap=_number(evidence.get("regional_gap")),
+        favorite_movement=favorite_movement,
+        regional_gap=regional_gap,
         underdog_win_probability=underdog_win,
         underdog_not_lose_probability=underdog_win + calibrated_draw_probability,
         structural_signals=signals,

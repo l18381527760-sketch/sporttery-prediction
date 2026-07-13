@@ -207,6 +207,53 @@ class GenerateDrawAlertTest(unittest.TestCase):
 
         self.assertIsNone(candidate)
 
+    def test_out_of_range_probabilities_are_rejected_before_snapshot_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = {
+                "kickoff_at": "2026-07-12T12:00:00+00:00",
+                "market_scope": "90m",
+                "quality": "high",
+                "favorite_movement": -0.05,
+                "regional_gap": 0.06,
+                "sources": {
+                    "domestic": source_record(),
+                    "professional": source_record(),
+                },
+            }
+
+            candidate = _candidate_from_rows(
+                {
+                    "date": "2026-07-12",
+                    "match_id": "001",
+                    "team_a": "A",
+                    "team_b": "B",
+                    "stage": "quarterfinal",
+                    "xg_a": "1.0",
+                    "xg_b": "1.0",
+                    "p_a": "1.2",
+                    "p_draw": "-0.3",
+                    "p_b": "0.1",
+                },
+                evidence,
+                {"001": {"had": {"h": "1.60", "d": "4.00", "a": "6.00"}}},
+                datetime(2026, 7, 12, 11, 0, tzinfo=timezone.utc),
+                {
+                    "min_draw_probability": 0.27,
+                    "min_draw_edge": 0.04,
+                    "min_expected_value": 1.05,
+                    "max_xg_total": 2.5,
+                    "cold_favorite_probability": 0.55,
+                    "balanced_max_win_gap": 0.1,
+                    "balanced_max_xg_total": 2.35,
+                },
+                {"knockout_stages": ["quarterfinal"]},
+                root=root,
+            )
+
+            self.assertIsNone(candidate)
+            self.assertFalse((root / "data" / "draw_feature_snapshots").exists())
+
     def test_nonfinite_market_probability_cannot_be_a_qualifying_source(self):
         records = _qualifying_source_records({
             "sources": {
@@ -333,19 +380,27 @@ class GenerateDrawAlertTest(unittest.TestCase):
                 self.assertEqual(0, result["additional_stake"])
                 self.assertEqual(0, result["linked_main_stake"])
 
-    def test_invalid_unrelated_stakes_do_not_break_budget_calculation(self):
-        result = attach_stake(
-            {"match_id": "002", "subtype": "cold_draw"},
-            [{"match_id": "001", "stake": "NaN", "selection": "胜"}],
-            [{"additional_stake": "Infinity"}, {"additional_stake": "-20"}],
-            {"promoted": True},
-            500,
-            80,
-            30,
+    def test_any_invalid_budget_amount_closes_new_alert_staking(self):
+        cases = (
+            ([{"match_id": "001", "stake": "499.5", "selection": "胜"}], []),
+            ([{"match_id": "001", "stake": "NaN", "selection": "胜"}], []),
+            ([], [{"additional_stake": "Infinity"}]),
+            ([], [{"additional_stake": "-20"}]),
         )
+        for main_plan, existing_alerts in cases:
+            with self.subTest(main_plan=main_plan, existing_alerts=existing_alerts):
+                result = attach_stake(
+                    {"match_id": "002", "subtype": "cold_draw"},
+                    main_plan,
+                    existing_alerts,
+                    {"promoted": True},
+                    500,
+                    80,
+                    30,
+                )
 
-        self.assertEqual("standalone", result["settlement_mode"])
-        self.assertEqual(30, result["additional_stake"])
+                self.assertEqual("budget_capped_observation", result["settlement_mode"])
+                self.assertEqual(0, result["additional_stake"])
 
     def test_combo_draw_leg_uses_date_and_forward_team_order_as_fallback(self):
         alert = {"match_id": "001", "date": "2026-07-12", "team_a": "A", "team_b": "B", "subtype": "cold_draw"}

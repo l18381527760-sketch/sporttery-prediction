@@ -39,6 +39,19 @@ FEATURES = [
     "is_balanced",
 ]
 SMALL_SAMPLE_FEATURES = FEATURES[:2]
+FEATURE_RANGES = {
+    "base_draw_probability": (0.0, 1.0),
+    "market_draw_probability": (0.0, 1.0),
+    "favorite_probability": (0.0, 1.0),
+    "win_probability_gap": (0.0, 1.0),
+    "xg_total": (0.0, 10.0),
+    "favorite_movement": (-1.0, 1.0),
+    "regional_gap": (-1.0, 1.0),
+    "source_count": (0.0, 100.0),
+    "is_knockout": (0.0, 1.0),
+    "is_balanced": (0.0, 1.0),
+}
+INTEGER_FEATURES = {"source_count", "is_knockout", "is_balanced"}
 SAMPLE_FIELDS = [
     "date",
     "match_id",
@@ -998,7 +1011,7 @@ def _required_feature_vector(features, feature_order):
         if name not in features:
             raise ValueError(f"required model feature is missing: {name}")
         value = _number(features[name])
-        if value is None:
+        if value is None or not _feature_value_is_valid(name, value):
             raise ValueError(f"required model feature is invalid: {name}")
         values.append(value)
     return values
@@ -1042,10 +1055,13 @@ def _valid_snapshot(path, root, cutoff):
         normalized_features = {
             name: _number(features.get(name)) for name in FEATURES
         }
-        if any(value is None for value in normalized_features.values()):
+        if any(
+            value is None or not _feature_value_is_valid(name, value)
+            for name, value in normalized_features.items()
+        ):
             return None
         odds = _number(payload.get("domestic_draw_odds"))
-        if odds is None or odds <= 1:
+        if odds is None or not 1.01 <= odds <= 100.0:
             return None
         return {
             "date": target_date.isoformat(),
@@ -1062,6 +1078,13 @@ def _valid_snapshot(path, root, cutoff):
         }
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return None
+
+
+def _feature_value_is_valid(name, value):
+    bounds = FEATURE_RANGES.get(name)
+    if bounds is None or not bounds[0] <= value <= bounds[1]:
+        return False
+    return name not in INTEGER_FEATURES or value.is_integer()
 
 
 def _challenger_start(challenger, created_on):

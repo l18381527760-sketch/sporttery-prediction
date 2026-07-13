@@ -470,6 +470,41 @@ class DrawModelLearningTest(unittest.TestCase):
 
         self.assertEqual([], build_training_samples(self.temp_root, as_of=date(2026, 1, 2)))
 
+    def test_training_skips_signed_snapshots_with_out_of_range_features(self):
+        invalid_features = {
+            "base_draw_probability": -0.3,
+            "market_draw_probability": 1.2,
+            "favorite_probability": 1.2,
+            "win_probability_gap": -0.1,
+            "xg_total": 10.1,
+            "favorite_movement": -1.1,
+            "regional_gap": 1.1,
+            "source_count": 2.5,
+            "is_knockout": 2,
+            "is_balanced": -1,
+        }
+        for feature, value in invalid_features.items():
+            with self.subTest(feature=feature, value=value):
+                snapshot = self._write_snapshot(
+                    f"invalid-{feature}",
+                    feature_overrides={feature: value}
+                )
+                self._write_csv(
+                    self.temp_root / "data" / "bet_results.csv",
+                    [{
+                        "date": "2026-01-02",
+                        "team_a": "A",
+                        "team_b": "B",
+                        "home_goals": "1",
+                        "away_goals": "1",
+                    }],
+                )
+
+                self.assertEqual(
+                    [], build_training_samples(self.temp_root, as_of=date(2026, 1, 2))
+                )
+                snapshot.unlink()
+
     def test_snapshot_digest_rejects_tampering_and_arbitrary_names(self):
         valid_path = self._write_snapshot("valid")
         arbitrary = valid_path.with_name("arbitrary.json")
@@ -1280,9 +1315,12 @@ class DrawModelLearningTest(unittest.TestCase):
         kickoff_at="2026-01-02T12:00:00Z",
         base_probability=0.32,
         market_probability=0.25,
+        feature_overrides=None,
     ):
         directory = self.temp_root / "data" / "draw_feature_snapshots"
         directory.mkdir(parents=True, exist_ok=True)
+        features = self._feature_values(base_probability, market_probability)
+        features.update(feature_overrides or {})
         payload = {
             "snapshot_schema_version": 1,
             "date": date_value,
@@ -1293,7 +1331,7 @@ class DrawModelLearningTest(unittest.TestCase):
             "captured_at": captured_at,
             "kickoff_at": kickoff_at,
             "domestic_draw_odds": 4.0,
-            "features": self._feature_values(base_probability, market_probability),
+            "features": features,
         }
         serialized = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
