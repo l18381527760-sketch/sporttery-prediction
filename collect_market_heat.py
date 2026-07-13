@@ -3,6 +3,8 @@
 import argparse
 import csv
 import json
+import os
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -115,6 +117,7 @@ def build_evidence(fixture: dict, snapshots: dict, polymarket: list[dict]) -> di
         "match_id": fixture["match_id"],
         "team_a": fixture["team_a"],
         "team_b": fixture["team_b"],
+        "kickoff_at": fixture.get("kickoff_at", ""),
         "market_scope": "90m",
         "sources": sources,
         "source_count": source_count,
@@ -154,7 +157,19 @@ def write_payload(path: Path, target_date: str, matches: list[dict], errors: lis
         "errors": errors,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
 
 

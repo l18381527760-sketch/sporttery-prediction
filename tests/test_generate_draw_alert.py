@@ -2,14 +2,14 @@ import csv
 import json
 import tempfile
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import joblib
 
 from draw_model_learning import FEATURES, _train_artifact, predict_draw_probability
-from generate_draw_alert import FIELDS, _calibrated_probability, attach_stake, derive_structural_signals, generate_alerts, select_alerts
+from generate_draw_alert import FIELDS, _calibrated_probability, _capture_feature_snapshot, attach_stake, derive_structural_signals, generate_alerts, select_alerts
 
 
 class GenerateDrawAlertTest(unittest.TestCase):
@@ -28,6 +28,20 @@ class GenerateDrawAlertTest(unittest.TestCase):
                 reader = csv.DictReader(handle)
                 self.assertEqual(FIELDS, reader.fieldnames)
                 self.assertEqual([], list(reader))
+
+    def test_alert_csv_failure_preserves_previous_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "output").mkdir()
+            (root / "data").mkdir()
+            path = root / "output" / "draw_alert_2026-07-12.csv"
+            path.write_text("previous", encoding="utf-8")
+
+            with patch("generate_draw_alert.Path.replace", side_effect=OSError("replace failed")):
+                with self.assertRaises(OSError):
+                    generate_alerts("2026-07-12", root)
+
+            self.assertEqual("previous", path.read_text(encoding="utf-8"))
 
     def test_generation_uses_90_minute_evidence_and_main_plan_team_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -231,7 +245,7 @@ class GenerateDrawAlertTest(unittest.TestCase):
             )
             (root / "data" / "market_heat_2026-07-12.json").write_text(
                 json.dumps({
-                    "captured_at": "2026-07-12T10:00:00+00:00",
+                    "captured_at": "2026-07-01T10:00:00+00:00",
                     "matches": [{
                         "match_id": "001",
                         "kickoff_at": "2026-07-12T12:00:00+00:00",
@@ -251,10 +265,15 @@ class GenerateDrawAlertTest(unittest.TestCase):
                 json.dumps({"balanced_draw": {"promoted": False}}), encoding="utf-8"
             )
 
-            path = generate_alerts("2026-07-12", root)
+            path = generate_alerts(
+                "2026-07-12",
+                root,
+                snapshot_time=datetime(2026, 7, 12, 11, 0, tzinfo=timezone.utc),
+            )
             snapshots = list((root / "data" / "draw_feature_snapshots").glob("*.json"))
             self.assertEqual(1, len(snapshots))
             snapshot = json.loads(snapshots[0].read_text(encoding="utf-8"))
+            self.assertEqual("2026-07-12T19:00:00+08:00", snapshot["captured_at"])
             self.assertEqual(FEATURES, list(snapshot["features"]))
             self.assertEqual(0.20, snapshot["features"]["favorite_probability"])
             self.assertEqual(0.0, snapshot["features"]["win_probability_gap"])
@@ -267,10 +286,45 @@ class GenerateDrawAlertTest(unittest.TestCase):
             self.assertEqual(1, len(rows))
             self.assertAlmostEqual(expected, float(rows[0]["model_draw_probability"]))
 
-            generate_alerts("2026-07-12", root)
+            generate_alerts(
+                "2026-07-12",
+                root,
+                snapshot_time=datetime(2026, 7, 12, 11, 0, tzinfo=timezone.utc),
+            )
             self.assertEqual(
                 1, len(list((root / "data" / "draw_feature_snapshots").glob("*.json")))
             )
+
+    def test_snapshot_capture_rejects_post_kickoff_write_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = _capture_feature_snapshot(
+                root,
+                {
+                    "date": "2026-07-12",
+                    "match_id": "001",
+                    "team_a": "A",
+                    "team_b": "B",
+                    "stage": "quarterfinal",
+                },
+                {"kickoff_at": "2026-07-12 20:00:00"},
+                datetime(2026, 7, 12, 12, 0, 1, tzinfo=timezone.utc),
+                4.0,
+                {
+                    "base_draw_probability": 0.32,
+                    "market_draw_probability": 0.25,
+                    "favorite_probability": 0.54,
+                    "win_probability_gap": 0.42,
+                    "xg_total": 2.30,
+                    "favorite_movement": -0.05,
+                    "regional_gap": 0.06,
+                    "source_count": 2,
+                    "is_knockout": 1,
+                    "is_balanced": 0,
+                },
+            )
+
+        self.assertIsNone(path)
 
     @staticmethod
     def _full_feature_samples():

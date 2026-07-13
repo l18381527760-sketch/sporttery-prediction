@@ -1,13 +1,18 @@
 import csv
+import hashlib
 import json
 import random
 import tempfile
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import joblib
+import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from draw_model_learning import (
     FEATURES,
@@ -19,6 +24,7 @@ from draw_model_learning import (
     _rollback_if_needed,
     _shadow_metrics,
     _train_artifact,
+    _validate_artifact,
     build_training_samples,
     chronological_splits,
     league_pause_states,
@@ -28,24 +34,6 @@ from draw_model_learning import (
     rollback_decision,
     update_draw_model,
 )
-
-
-class FixedProbabilityModel:
-    def __init__(self, probability, feature_count=2):
-        self.probability = probability
-        self.n_features_in_ = feature_count
-
-    def predict_proba(self, rows):
-        return [[1.0 - self.probability, self.probability] for _ in rows]
-
-
-class BaseDrivenModel:
-    def __init__(self, feature_count=10):
-        self.n_features_in_ = feature_count
-
-    def predict_proba(self, rows):
-        probabilities = [0.60 if float(row[0]) > 0.5 else 0.10 for row in rows]
-        return [[1.0 - probability, probability] for probability in probabilities]
 
 
 class DrawModelLearningTest(unittest.TestCase):
@@ -96,7 +84,7 @@ class DrawModelLearningTest(unittest.TestCase):
 
     def test_full_feature_champion_fails_closed_when_required_feature_is_missing(self):
         artifact = self._artifact(0.66, FEATURES, "full-v1")
-        self._install_artifact(artifact, "draw-full-v1.joblib", role="champion")
+        self._install_artifact(artifact, "full-v1.joblib", role="champion")
         features = self._feature_values()
         features.pop("is_balanced")
         self.assertEqual(
@@ -126,21 +114,21 @@ class DrawModelLearningTest(unittest.TestCase):
     def test_artifact_validation_rejects_order_kind_count_and_version_mismatch(self):
         cases = []
         wrong_order = self._artifact(0.66, list(reversed(SMALL_SAMPLE_FEATURES)), "wrong-order")
-        cases.append((wrong_order, "wrong-order", "wrong-order"))
+        cases.append((wrong_order, "wrong-order"))
         wrong_kind = self._artifact(0.66, SMALL_SAMPLE_FEATURES, "wrong-kind")
         wrong_kind["metadata"]["model_kind"] = "full_feature_logistic"
-        cases.append((wrong_kind, "wrong-kind", "wrong-kind"))
+        cases.append((wrong_kind, "wrong-kind"))
         wrong_count = self._artifact(0.66, SMALL_SAMPLE_FEATURES, "wrong-count")
         wrong_count["model"].n_features_in_ = 10
-        cases.append((wrong_count, "wrong-count", "wrong-count"))
+        cases.append((wrong_count, "wrong-count"))
         version_mismatch = self._artifact(0.66, SMALL_SAMPLE_FEATURES, "artifact-version")
-        cases.append((version_mismatch, "registry-version", "version-mismatch"))
+        cases.append((version_mismatch, "registry-version"))
 
-        for artifact, registry_version, filename in cases:
-            with self.subTest(filename=filename):
+        for artifact, registry_version in cases:
+            with self.subTest(version=registry_version):
                 self._install_artifact(
                     artifact,
-                    f"draw-{filename}.joblib",
+                    f"{registry_version}.joblib",
                     role="champion",
                     registry_version=registry_version,
                 )
@@ -152,12 +140,54 @@ class DrawModelLearningTest(unittest.TestCase):
                     ),
                 )
 
+    def test_artifact_validation_requires_exact_version_filename(self):
+        artifact = self._artifact(0.66, SMALL_SAMPLE_FEATURES, "exact-v1")
+        self._install_artifact(artifact, "renamed-exact-v1.joblib", role="champion")
+
+        self.assertEqual(
+            0.31,
+            predict_draw_probability(
+                {"base_draw_probability": 0.31, "market_draw_probability": 0.30},
+                root=self.temp_root,
+            ),
+        )
+
+    def test_artifact_validation_rejects_wrong_concrete_estimators_and_parameters(self):
+        cases = []
+        wrong_small = self._artifact(0.66, SMALL_SAMPLE_FEATURES, "wrong-small")
+        wrong_small["model"].set_params(C=1.0)
+        cases.append(wrong_small)
+        wrong_full = self._artifact(0.66, FEATURES, "wrong-full")
+        wrong_full["model"].set_params(standardscaler__with_mean=False)
+        cases.append(wrong_full)
+        not_pipeline = self._artifact(0.66, SMALL_SAMPLE_FEATURES, "not-pipeline")
+        not_pipeline["feature_order"] = list(FEATURES)
+        not_pipeline["metadata"]["model_kind"] = "full_feature_logistic"
+        not_pipeline["model"].n_features_in_ = len(FEATURES)
+        cases.append(not_pipeline)
+
+        for artifact in cases:
+            version = artifact["metadata"]["version"]
+            with self.subTest(version=version):
+                self._install_artifact(artifact, f"{version}.joblib", role="champion")
+                self.assertEqual(
+                    0.31,
+                    predict_draw_probability(self._feature_values(0.31, 0.30), root=self.temp_root),
+                )
+
+    def test_artifact_validation_rejects_nonfinite_estimator_capability(self):
+        artifact = self._artifact(0.66, SMALL_SAMPLE_FEATURES, "nan-v1")
+        artifact["model"].intercept_[:] = np.nan
+
+        with self.assertRaises(ValueError):
+            _validate_artifact(artifact)
+
     def test_corrupt_joblib_safely_falls_back(self):
-        path = self.temp_root / "data" / "models" / "draw-corrupt.joblib"
+        path = self.temp_root / "data" / "models" / "corrupt-v1.joblib"
         path.write_bytes(b"\x80")
         self._write_registry({
             "champion": self._model_registry_entry(
-                "corrupt-v1", "data/models/draw-corrupt.joblib"
+                "corrupt-v1", "data/models/corrupt-v1.joblib"
             )
         })
         self.assertEqual(
@@ -217,7 +247,7 @@ class DrawModelLearningTest(unittest.TestCase):
         self.assertTrue(league_pause_states(shuffled)["L1"]["paused"])
 
     def test_training_samples_use_immutable_prematch_snapshot_and_exact_90_minute_result(self):
-        self._write_snapshot(
+        entry_path = self._write_snapshot(
             "entry.json",
             date_value="2026-01-02",
             match_id="1",
@@ -275,7 +305,7 @@ class DrawModelLearningTest(unittest.TestCase):
         self.assertAlmostEqual(0.25, rows[0]["market_draw_probability"])
         self.assertEqual(0.32, rows[0]["base_draw_probability"])
         self.assertEqual(0.28, rows[0]["closing_market_draw_probability"])
-        self.assertEqual("data/draw_feature_snapshots/entry.json", rows[0]["snapshot_path"])
+        self.assertEqual(entry_path.relative_to(self.temp_root).as_posix(), rows[0]["snapshot_path"])
         self.assertNotIn("half_home_goals", rows[0])
         self.assertNotIn("post_match_xg", rows[0])
 
@@ -287,6 +317,30 @@ class DrawModelLearningTest(unittest.TestCase):
             kickoff_at="2026-01-02T12:00:00Z",
         )
         self._write_snapshot("bad.json", captured_at="not-a-time", kickoff_at="also-bad")
+        self._write_csv(
+            self.temp_root / "data" / "bet_results.csv",
+            [{"date": "2026-01-02", "team_a": "A", "team_b": "B", "home_goals": "1", "away_goals": "1"}],
+        )
+
+        self.assertEqual([], build_training_samples(self.temp_root, as_of=date(2026, 1, 2)))
+
+    def test_snapshot_digest_rejects_tampering_and_arbitrary_names(self):
+        valid_path = self._write_snapshot("valid")
+        arbitrary = valid_path.with_name("arbitrary.json")
+        arbitrary.write_bytes(valid_path.read_bytes())
+        payload = json.loads(valid_path.read_text(encoding="utf-8"))
+        payload["features"]["xg_total"] = 9.9
+        valid_path.write_text(json.dumps(payload), encoding="utf-8")
+        self._write_csv(
+            self.temp_root / "data" / "bet_results.csv",
+            [{"date": "2026-01-02", "team_a": "A", "team_b": "B", "home_goals": "1", "away_goals": "1"}],
+        )
+
+        self.assertEqual([], build_training_samples(self.temp_root, as_of=date(2026, 1, 2)))
+
+    def test_equal_timestamp_distinct_snapshots_fail_closed(self):
+        self._write_snapshot("first", base_probability=0.32)
+        self._write_snapshot("retry", base_probability=0.36)
         self._write_csv(
             self.temp_root / "data" / "bet_results.csv",
             [{"date": "2026-01-02", "team_a": "A", "team_b": "B", "home_goals": "1", "away_goals": "1"}],
@@ -326,20 +380,22 @@ class DrawModelLearningTest(unittest.TestCase):
 
         registry = self._read_registry()
         self.assertIsNotNone(registry["challenger"])
+        self.assertEqual(self._simulation_policy(), registry["challenger"]["simulation_policy"])
         self.assertEqual("2026-07-12", registry["last_training_date"])
 
     def test_active_challenger_is_not_replaced_even_when_forced(self):
-        challenger_path = self.temp_root / "data" / "models" / "draw-fixed-v1.joblib"
+        challenger_path = self.temp_root / "data" / "models" / "fixed-v1.joblib"
         artifact = self._artifact(0.30, SMALL_SAMPLE_FEATURES, "fixed-v1")
         joblib.dump(artifact, challenger_path)
         self._write_registry(
             {
                 "challenger": {
                     "version": "fixed-v1",
-                    "artifact": "data/models/draw-fixed-v1.joblib",
+                    "artifact": "data/models/fixed-v1.joblib",
                     "feature_order": list(SMALL_SAMPLE_FEATURES),
                     "model_kind": "sigmoid_calibrator",
                     "created_on": "2026-06-20",
+                    "simulation_policy": self._simulation_policy(),
                     "shadow_days": 0,
                 },
                 "last_training_date": "2026-06-20",
@@ -357,17 +413,18 @@ class DrawModelLearningTest(unittest.TestCase):
         self.assertEqual(22, registry["challenger"]["shadow_days"])
 
     def test_challenger_shadow_metrics_exclude_its_training_history(self):
-        challenger_path = self.temp_root / "data" / "models" / "draw-fixed-v1.joblib"
+        challenger_path = self.temp_root / "data" / "models" / "fixed-v1.joblib"
         artifact = self._artifact(0.30, SMALL_SAMPLE_FEATURES, "fixed-v1")
         joblib.dump(artifact, challenger_path)
         self._write_registry(
             {
                 "challenger": {
                     "version": "fixed-v1",
-                    "artifact": "data/models/draw-fixed-v1.joblib",
+                    "artifact": "data/models/fixed-v1.joblib",
                     "feature_order": list(SMALL_SAMPLE_FEATURES),
                     "model_kind": "sigmoid_calibrator",
                     "created_on": "2025-01-20",
+                    "simulation_policy": self._simulation_policy(),
                     "shadow_days": 0,
                 },
                 "last_training_date": "2025-01-20",
@@ -398,13 +455,16 @@ class DrawModelLearningTest(unittest.TestCase):
         )
         self._install_artifact(
             self._artifact(0.40, FEATURES, "champion-v1"),
-            "draw-champion-v1.joblib",
+            "champion-v1.joblib",
             role="champion",
         )
         challenger = self._artifact(0.20, FEATURES, "challenger-v1")
 
         metrics = _shadow_metrics(
-            challenger, self._samples(200), self.temp_root, since=date(2025, 1, 1)
+            challenger,
+            self._samples(200),
+            policy=self._simulation_policy(),
+            reference_artifact=self._artifact(0.40, FEATURES, "reference-v1"),
         )
 
         self.assertEqual(0, metrics["bet_count"])
@@ -416,14 +476,17 @@ class DrawModelLearningTest(unittest.TestCase):
     def test_challenger_qualifying_bets_own_losses_roi_clv_and_drawdown(self):
         self._install_artifact(
             self._artifact(0.40, FEATURES, "champion-v1"),
-            "draw-champion-v1.joblib",
+            "champion-v1.joblib",
             role="champion",
         )
         challenger = self._artifact(0.60, FEATURES, "challenger-v1")
         samples = self._samples(30, all_losses=True)
 
         metrics = _shadow_metrics(
-            challenger, samples, self.temp_root, since=date(2025, 1, 1)
+            challenger,
+            samples,
+            policy=self._simulation_policy(),
+            reference_artifact=self._artifact(0.40, FEATURES, "reference-v1"),
         )
 
         self.assertEqual(30, metrics["bet_count"])
@@ -431,17 +494,42 @@ class DrawModelLearningTest(unittest.TestCase):
         self.assertAlmostEqual(0.01, metrics["clv"])
         self.assertEqual(300.0, metrics["max_drawdown"])
 
+    def test_shadow_economics_reuse_policy_frozen_at_challenger_creation(self):
+        challenger = self._artifact(0.60, FEATURES, "challenger-v1")
+        samples = self._samples(30, all_losses=True)
+        frozen = self._simulation_policy(min_draw_probability=0.70)
+        before = _shadow_metrics(challenger, samples, policy=frozen)
+        (self.temp_root / "betting_config.json").write_text(
+            json.dumps(
+                {
+                    "draw_alert": {
+                        "min_draw_probability": 0.01,
+                        "min_draw_edge": -1,
+                        "min_expected_value": 0,
+                        "max_xg_total": 99,
+                        "hypothetical_stake": 1000,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        after = _shadow_metrics(challenger, samples, policy=frozen)
+
+        self.assertEqual(0, before["bet_count"])
+        self.assertEqual(before, after)
+
     def test_day_28_under_minimum_evidence_keeps_same_challenger(self):
         challenger = self._artifact(0.20, FEATURES, "challenger-v1")
-        challenger_path = self.temp_root / "data" / "models" / "draw-challenger-v1.joblib"
+        challenger_path = self.temp_root / "data" / "models" / "challenger-v1.joblib"
         joblib.dump(challenger, challenger_path)
         registry = {
             "champion": None,
             "challenger": {
                 **self._model_registry_entry(
-                    "challenger-v1", "data/models/draw-challenger-v1.joblib", FEATURES
+                    "challenger-v1", "data/models/challenger-v1.joblib", FEATURES
                 ),
                 "created_on": "2025-01-01",
+                "simulation_policy": self._simulation_policy(),
                 "shadow_days": 0,
             },
             "previous_champion": None,
@@ -457,24 +545,24 @@ class DrawModelLearningTest(unittest.TestCase):
 
     def test_same_challenger_promotes_later_after_real_evidence_clears_all_gates(self):
         champion = self._artifact(0.40, FEATURES, "champion-v1")
-        challenger = self._artifact(0.20, FEATURES, "challenger-v1")
-        challenger["model"] = BaseDrivenModel(10)
-        champion_path = self.temp_root / "data" / "models" / "draw-champion-v1.joblib"
-        challenger_path = self.temp_root / "data" / "models" / "draw-challenger-v1.joblib"
+        challenger = self._base_driven_artifact("challenger-v1")
+        champion_path = self.temp_root / "data" / "models" / "champion-v1.joblib"
+        challenger_path = self.temp_root / "data" / "models" / "challenger-v1.joblib"
         joblib.dump(champion, champion_path)
         joblib.dump(challenger, challenger_path)
         registry = {
             "champion": {
                 **self._model_registry_entry(
-                    "champion-v1", "data/models/draw-champion-v1.joblib", FEATURES
+                    "champion-v1", "data/models/champion-v1.joblib", FEATURES
                 ),
                 "max_drawdown": 100,
             },
             "challenger": {
                 **self._model_registry_entry(
-                    "challenger-v1", "data/models/draw-challenger-v1.joblib", FEATURES
+                    "challenger-v1", "data/models/challenger-v1.joblib", FEATURES
                 ),
                 "created_on": "2025-01-01",
+                "simulation_policy": self._simulation_policy(),
                 "shadow_days": 0,
             },
             "previous_champion": None,
@@ -506,24 +594,100 @@ class DrawModelLearningTest(unittest.TestCase):
         self.assertEqual(before, champion.read_bytes())
         self.assertIn("fit failed", self._read_registry()["last_training_error"])
 
+    def test_invalid_challenger_is_quarantined_and_due_training_continues(self):
+        artifact = self._artifact(0.30, SMALL_SAMPLE_FEATURES, "stuck-v1")
+        self._install_artifact(artifact, "stuck-v1.joblib", role="challenger")
+        registry = self._read_registry()
+        registry["challenger"].update(
+            created_on="not-a-date", simulation_policy=self._simulation_policy()
+        )
+        registry["last_training_date"] = "2025-01-01"
+        self._write_registry(registry)
+
+        with patch(
+            "draw_model_learning.build_training_samples", return_value=self._samples(40)
+        ):
+            update_draw_model(
+                self.temp_root,
+                as_of=date(2026, 7, 12),
+                force_train=True,
+            )
+            first = self._read_registry()
+            update_draw_model(self.temp_root, as_of=date(2026, 7, 12))
+            second = self._read_registry()
+
+        self.assertIsNotNone(first["challenger"])
+        self.assertNotEqual("stuck-v1", first["challenger"]["version"])
+        events = [event for event in first["event_history"] if event["type"] == "role_recovery"]
+        self.assertEqual(1, len(events))
+        self.assertEqual(first["challenger"]["version"], second["challenger"]["version"])
+
+    def test_invalid_previous_is_cleared_without_harming_champion_or_repeating(self):
+        champion = self._artifact(0.30, SMALL_SAMPLE_FEATURES, "champion-v1")
+        self._install_artifact(champion, "champion-v1.joblib", role="champion")
+        registry = self._read_registry()
+        registry["previous_champion"] = self._model_registry_entry(
+            "missing-v1", "data/models/missing-v1.joblib"
+        )
+        registry["last_training_date"] = "2026-07-12"
+        self._write_registry(registry)
+
+        update_draw_model(self.temp_root, as_of=date(2026, 7, 12))
+        first = self._read_registry()
+        update_draw_model(self.temp_root, as_of=date(2026, 7, 12))
+        second = self._read_registry()
+
+        self.assertEqual("champion-v1", first["champion"]["version"])
+        self.assertIsNone(first["previous_champion"])
+        self.assertEqual(first["event_history"], second["event_history"])
+
+    def test_invalid_champion_recovers_previous_or_clears_to_base(self):
+        previous = self._artifact(0.30, SMALL_SAMPLE_FEATURES, "previous-v1")
+        self._install_artifact(previous, "previous-v1.joblib", role="previous_champion")
+        registry = self._read_registry()
+        registry["champion"] = self._model_registry_entry(
+            "missing-v1", "data/models/missing-v1.joblib"
+        )
+        registry["last_training_date"] = "2026-07-12"
+        self._write_registry(registry)
+
+        update_draw_model(self.temp_root, as_of=date(2026, 7, 12))
+        recovered = self._read_registry()
+        self.assertEqual("previous-v1", recovered["champion"]["version"])
+        self.assertIsNone(recovered["previous_champion"])
+
+        recovered["champion"] = self._model_registry_entry(
+            "missing-v2", "data/models/missing-v2.joblib"
+        )
+        recovered["previous_champion"] = None
+        self._write_registry(recovered)
+        update_draw_model(self.temp_root, as_of=date(2026, 7, 12))
+        cleared = self._read_registry()
+        self.assertIsNone(cleared["champion"])
+        self.assertEqual(
+            0.31,
+            predict_draw_probability({"base_draw_probability": 0.31}, root=self.temp_root),
+        )
+
     def test_promotion_switches_registry_pointers_without_rewriting_artifacts(self):
-        champion_path = self.temp_root / "data" / "models" / "draw-champion-v1.joblib"
-        challenger_path = self.temp_root / "data" / "models" / "draw-challenger-v2.joblib"
+        champion_path = self.temp_root / "data" / "models" / "champion-v1.joblib"
+        challenger_path = self.temp_root / "data" / "models" / "challenger-v2.joblib"
         joblib.dump(self._artifact(0.40, SMALL_SAMPLE_FEATURES, "champion-v1"), champion_path)
         joblib.dump(self._artifact(0.30, SMALL_SAMPLE_FEATURES, "challenger-v2"), challenger_path)
         champion_bytes = champion_path.read_bytes()
         challenger_bytes = challenger_path.read_bytes()
         champion_entry = {
             **self._model_registry_entry(
-                "champion-v1", "data/models/draw-champion-v1.joblib"
+                "champion-v1", "data/models/champion-v1.joblib"
             ),
             "max_drawdown": 90,
         }
         challenger_entry = {
             **self._model_registry_entry(
-                "challenger-v2", "data/models/draw-challenger-v2.joblib"
+                "challenger-v2", "data/models/challenger-v2.joblib"
             ),
             "created_on": "2025-01-01",
+            "simulation_policy": self._simulation_policy(),
             "shadow_days": 28,
         }
         registry = {
@@ -543,25 +707,25 @@ class DrawModelLearningTest(unittest.TestCase):
         self.assertEqual("challenger-v2", registry["champion"]["version"])
         self.assertEqual("champion-v1", registry["previous_champion"]["version"])
         self.assertIsNone(registry["challenger"])
-        self.assertEqual("data/models/draw-challenger-v2.joblib", registry["champion"]["artifact"])
-        self.assertEqual("data/models/draw-champion-v1.joblib", registry["previous_champion"]["artifact"])
+        self.assertEqual("data/models/challenger-v2.joblib", registry["champion"]["artifact"])
+        self.assertEqual("data/models/champion-v1.joblib", registry["previous_champion"]["artifact"])
         self.assertEqual(champion_bytes, champion_path.read_bytes())
         self.assertEqual(challenger_bytes, challenger_path.read_bytes())
         self.assertFalse((self.temp_root / "data" / "models" / "draw_champion.joblib").exists())
 
     def test_update_rolls_back_to_previous_champion_on_latest_fifty(self):
-        champion_path = self.temp_root / "data" / "models" / "draw-bad-v2.joblib"
-        previous_path = self.temp_root / "data" / "models" / "draw-good-v1.joblib"
+        champion_path = self.temp_root / "data" / "models" / "bad-v2.joblib"
+        previous_path = self.temp_root / "data" / "models" / "good-v1.joblib"
         joblib.dump(self._artifact(0.90, SMALL_SAMPLE_FEATURES, "bad-v2"), champion_path)
         joblib.dump(self._artifact(0.05, SMALL_SAMPLE_FEATURES, "good-v1"), previous_path)
         champion_bytes = champion_path.read_bytes()
         previous_bytes = previous_path.read_bytes()
         registry = {
             "champion": self._model_registry_entry(
-                "bad-v2", "data/models/draw-bad-v2.joblib"
+                "bad-v2", "data/models/bad-v2.joblib"
             ),
             "previous_champion": self._model_registry_entry(
-                "good-v1", "data/models/draw-good-v1.joblib"
+                "good-v1", "data/models/good-v1.joblib"
             ),
             "challenger": None,
         }
@@ -570,28 +734,67 @@ class DrawModelLearningTest(unittest.TestCase):
         _rollback_if_needed(self.temp_root, registry, samples, date(2026, 7, 12))
 
         self.assertEqual("good-v1", registry["champion"]["version"])
-        self.assertEqual("bad-v2", registry["previous_champion"]["version"])
+        self.assertIsNone(registry["previous_champion"])
         self.assertEqual("rollback", registry["last_model_event"]["type"])
-        self.assertEqual("data/models/draw-good-v1.joblib", registry["champion"]["artifact"])
-        self.assertEqual("data/models/draw-bad-v2.joblib", registry["previous_champion"]["artifact"])
+        self.assertEqual("data/models/good-v1.joblib", registry["champion"]["artifact"])
+        self.assertEqual("bad-v2", registry["last_model_event"]["displaced_champion"]["version"])
         self.assertEqual(champion_bytes, champion_path.read_bytes())
         self.assertEqual(previous_bytes, previous_path.read_bytes())
 
+    def test_rollback_tradeoff_is_one_way_across_repeated_runs(self):
+        current = self._artifact(0.03, SMALL_SAMPLE_FEATURES, "current-v2")
+        previous = self._artifact(0.20, SMALL_SAMPLE_FEATURES, "previous-v1")
+        current_path = self.temp_root / "data" / "models" / "current-v2.joblib"
+        previous_path = self.temp_root / "data" / "models" / "previous-v1.joblib"
+        joblib.dump(current, current_path)
+        joblib.dump(previous, previous_path)
+        registry = {
+            "champion": self._model_registry_entry(
+                "current-v2", "data/models/current-v2.joblib"
+            ),
+            "previous_champion": self._model_registry_entry(
+                "previous-v1", "data/models/previous-v1.joblib"
+            ),
+            "challenger": None,
+            "event_history": [],
+        }
+        samples = self._samples(50, all_losses=True)
+        for index in range(5):
+            samples[index]["outcome"] = 1
+
+        _rollback_if_needed(self.temp_root, registry, samples, date(2026, 7, 12))
+        event = registry["last_model_event"]
+        self.assertLess(
+            event["current_recent_50"]["brier"],
+            event["previous_recent_50"]["brier"],
+        )
+        self.assertGreater(
+            event["current_recent_50"]["log_loss"],
+            event["previous_recent_50"]["log_loss"],
+        )
+        self.assertEqual("previous-v1", registry["champion"]["version"])
+        self.assertIsNone(registry["previous_champion"])
+
+        _rollback_if_needed(self.temp_root, registry, samples, date(2026, 7, 13))
+        self.assertEqual("previous-v1", registry["champion"]["version"])
+        self.assertIsNone(registry["previous_champion"])
+
     def test_promotion_registry_write_failure_leaves_old_pointer_and_artifact_bytes(self):
-        champion_path = self.temp_root / "data" / "models" / "draw_champion.joblib"
-        challenger_path = self.temp_root / "data" / "models" / "draw-challenger-v2.joblib"
+        champion_path = self.temp_root / "data" / "models" / "champion-v1.joblib"
+        challenger_path = self.temp_root / "data" / "models" / "challenger-v2.joblib"
         joblib.dump(self._artifact(0.40, SMALL_SAMPLE_FEATURES, "champion-v1"), champion_path)
         joblib.dump(self._artifact(0.30, SMALL_SAMPLE_FEATURES, "challenger-v2"), challenger_path)
         old_registry = {
             "schema_version": 1,
             "champion": self._model_registry_entry(
-                "champion-v1", "data/models/draw_champion.joblib"
+                "champion-v1", "data/models/champion-v1.joblib"
             ),
             "challenger": {
                 **self._model_registry_entry(
-                    "challenger-v2", "data/models/draw-challenger-v2.joblib"
+                    "challenger-v2", "data/models/challenger-v2.joblib"
                 ),
                 "created_on": "2025-01-01",
+                "simulation_policy": self._simulation_policy(),
             },
             "previous_champion": None,
         }
@@ -622,17 +825,17 @@ class DrawModelLearningTest(unittest.TestCase):
         self.assertEqual(challenger_bytes, challenger_path.read_bytes())
 
     def test_rollback_registry_write_failure_leaves_old_pointer_and_artifact_bytes(self):
-        champion_path = self.temp_root / "data" / "models" / "draw_champion.joblib"
-        previous_path = self.temp_root / "data" / "models" / "draw_previous_champion.joblib"
+        champion_path = self.temp_root / "data" / "models" / "bad-v2.joblib"
+        previous_path = self.temp_root / "data" / "models" / "good-v1.joblib"
         joblib.dump(self._artifact(0.90, SMALL_SAMPLE_FEATURES, "bad-v2"), champion_path)
         joblib.dump(self._artifact(0.05, SMALL_SAMPLE_FEATURES, "good-v1"), previous_path)
         old_registry = {
             "schema_version": 1,
             "champion": self._model_registry_entry(
-                "bad-v2", "data/models/draw_champion.joblib"
+                "bad-v2", "data/models/bad-v2.joblib"
             ),
             "previous_champion": self._model_registry_entry(
-                "good-v1", "data/models/draw_previous_champion.joblib"
+                "good-v1", "data/models/good-v1.joblib"
             ),
             "challenger": None,
         }
@@ -695,7 +898,7 @@ class DrawModelLearningTest(unittest.TestCase):
         artifact = self._artifact(probability, feature_order, "champion-v1")
         self._install_artifact(
             artifact,
-            "draw-champion-v1.joblib",
+            "champion-v1.joblib",
             role="champion",
         )
 
@@ -705,12 +908,60 @@ class DrawModelLearningTest(unittest.TestCase):
             if list(feature_order) == list(SMALL_SAMPLE_FEATURES)
             else "full_feature_logistic"
         )
+        feature_count = len(feature_order)
+        x_values = np.asarray(
+            [
+                [0.0] * feature_count,
+                [1.0] * feature_count,
+                [0.2] * feature_count,
+                [0.8] * feature_count,
+            ],
+            dtype=float,
+        )
+        outcomes = np.asarray([0, 1, 0, 1], dtype=int)
+        logistic = LogisticRegression(C=0.5, max_iter=1000, random_state=42)
+        if model_kind == "full_feature_logistic":
+            model = Pipeline(
+                [("standardscaler", StandardScaler()), ("logisticregression", logistic)]
+            )
+            model.fit(x_values, outcomes)
+            fitted_logistic = model.named_steps["logisticregression"]
+        else:
+            model = logistic.fit(x_values, outcomes)
+            fitted_logistic = model
+        fitted_logistic.coef_[:] = 0.0
+        fitted_logistic.intercept_[:] = np.log(probability / (1.0 - probability))
         return {
             "artifact_schema_version": 1,
             "feature_order": list(feature_order),
             "metadata": {"version": version, "model_kind": model_kind},
-            "model": FixedProbabilityModel(probability, len(feature_order)),
+            "model": model,
         }
+
+    def _base_driven_artifact(self, version):
+        artifact = self._artifact(0.30, FEATURES, version)
+        model = artifact["model"]
+        scaler = model.named_steps["standardscaler"]
+        scaler.mean_[:] = 0.0
+        scaler.scale_[:] = 1.0
+        scaler.var_[:] = 1.0
+        logistic = model.named_steps["logisticregression"]
+        logistic.coef_[:] = 0.0
+        logistic.coef_[0, 0] = 6.506
+        logistic.intercept_[:] = -3.498
+        return artifact
+
+    @staticmethod
+    def _simulation_policy(**overrides):
+        policy = {
+            "min_draw_probability": 0.27,
+            "min_draw_edge": 0.04,
+            "min_expected_value": 1.05,
+            "max_xg_total": 2.5,
+            "hypothetical_stake": 10.0,
+        }
+        policy.update(overrides)
+        return policy
 
     @staticmethod
     def _model_registry_entry(version, artifact_path, feature_order=None):
@@ -780,7 +1031,7 @@ class DrawModelLearningTest(unittest.TestCase):
 
     def _write_snapshot(
         self,
-        filename,
+        label,
         date_value="2026-01-02",
         match_id="1",
         team_a="A",
@@ -804,8 +1055,18 @@ class DrawModelLearningTest(unittest.TestCase):
             "domestic_draw_odds": 4.0,
             "features": self._feature_values(base_probability, market_probability),
         }
-        (directory / filename).write_text(json.dumps(payload), encoding="utf-8")
-        return payload
+        serialized = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        try:
+            captured = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+            timestamp = captured.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        except ValueError:
+            timestamp = "20260102T000000Z"
+        path = directory / f"{timestamp}-{digest}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
 
     @staticmethod
     def _promotion_metrics(shadow_days):

@@ -1,17 +1,21 @@
+import csv
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import collect_market_heat as collector
 import capture_odds_snapshot as snapshot
+from draw_model_learning import build_training_samples
+from generate_draw_alert import generate_alerts
 
 
 def fixture() -> dict:
     return {
         "match_id": "001",
+        "kickoff_at": "2026-07-12T20:00:00+08:00",
         "team_a": "Norway",
         "team_b": "England",
         "odds_a": "3.8",
@@ -32,6 +36,7 @@ class MarketHeatCollectorTest(unittest.TestCase):
         )
 
         self.assertEqual("90m", evidence["market_scope"])
+        self.assertEqual("2026-07-12T20:00:00+08:00", evidence["kickoff_at"])
         self.assertEqual(2, evidence["source_count"])
         self.assertIn("domestic_sporttery", evidence["sources"])
         self.assertIn("zgzcw_professional", evidence["sources"])
@@ -85,6 +90,16 @@ class MarketHeatCollectorTest(unittest.TestCase):
         self.assertEqual(["polymarket: timeout"], payload["errors"])
         self.assertEqual("2026-07-12", payload["target_date"])
         self.assertIn("captured_at", payload)
+
+    def test_write_payload_failure_preserves_previous_json(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "heat.json"
+            path.write_text('{"previous": true}', encoding="utf-8")
+            with patch("collect_market_heat.Path.replace", side_effect=OSError("replace failed")):
+                with self.assertRaises(OSError):
+                    collector.write_payload(path, "2026-07-12", [], [])
+
+            self.assertEqual('{"previous": true}', path.read_text(encoding="utf-8"))
 
     def test_offline_collection_skips_public_market_request(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -187,6 +202,71 @@ class MarketHeatCollectorTest(unittest.TestCase):
         self.assertEqual("win_draw_loss", match["market_type"])
         self.assertEqual(90, match["settlement_minutes"])
         self.assertIs(False, match["includes_extra_time"])
+
+    def test_collector_payload_flows_to_verified_training_snapshot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data_dir = root / "data"
+            output_dir = root / "output"
+            data_dir.mkdir()
+            output_dir.mkdir()
+            (data_dir / "fixtures.csv").write_text(
+                "date,team_a,team_b,kickoff_at,odds_a,odds_draw,odds_b,"
+                "market_odds_a,market_odds_draw,market_odds_b,match_id\n"
+                "2026-07-12,Norway,England,2026-07-12T20:00:00+08:00,"
+                "3.8,3.6,1.95,3.9,3.5,1.9,001\n",
+                encoding="utf-8",
+            )
+            with patch.object(collector, "ROOT", root):
+                collector.collect(date(2026, 7, 12), offline=True)
+            (root / "betting_config.json").write_text(
+                (Path(__file__).resolve().parents[1] / "betting_config.json").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            (root / "config.json").write_text(
+                json.dumps({"knockout_stages": ["quarterfinal"]}), encoding="utf-8"
+            )
+            (output_dir / "predictions_2026-07-12.csv").write_text(
+                "date,match_id,team_a,team_b,stage,xg_a,xg_b,p_a,p_draw,p_b\n"
+                "2026-07-12,001,Norway,England,quarterfinal,1.0,1.0,0.20,0.60,0.20\n",
+                encoding="utf-8",
+            )
+            (data_dir / "sporttery_odds_2026-07-12.json").write_text(
+                json.dumps({"001": {"had": {"h": "3.8", "d": "3.6", "a": "1.95"}}}),
+                encoding="utf-8",
+            )
+
+            generate_alerts(
+                "2026-07-12",
+                root,
+                snapshot_time=datetime(2026, 7, 12, 11, 0, tzinfo=timezone.utc),
+            )
+            with (data_dir / "bet_results.csv").open(
+                "w", encoding="utf-8", newline=""
+            ) as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["date", "team_a", "team_b", "home_goals", "away_goals"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "date": "2026-07-12",
+                        "team_a": "Norway",
+                        "team_b": "England",
+                        "home_goals": "1",
+                        "away_goals": "1",
+                    }
+                )
+
+            samples = build_training_samples(root, as_of=date(2026, 7, 12))
+
+        self.assertEqual(1, len(samples))
+        self.assertEqual("2026-07-12T20:00:00+08:00", samples[0]["kickoff_at"])
+        self.assertEqual("2026-07-12T19:00:00+08:00", samples[0]["captured_at"])
+        self.assertEqual(1, samples[0]["outcome"])
 
 
 if __name__ == "__main__":

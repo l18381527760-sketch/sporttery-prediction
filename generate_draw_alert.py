@@ -7,13 +7,14 @@ import importlib
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from draw_alert_core import DrawInputs, MarketEvidence, classify_candidate, fair_probabilities
 
 
 ROOT = Path(__file__).resolve().parent
+BEIJING = timezone(timedelta(hours=8))
 
 FIELDS = [
     "date", "rank", "match_id", "match", "team_a", "team_b", "stage", "subtype", "selection", "domestic_draw_odds",
@@ -98,7 +99,12 @@ def attach_stake(alert: dict, main_plan: list[dict], existing_alerts: list[dict]
     return result
 
 
-def generate_alerts(target_date: str, root: Path = ROOT) -> Path:
+def generate_alerts(
+    target_date: str,
+    root: Path = ROOT,
+    *,
+    snapshot_time: datetime | None = None,
+) -> Path:
     root = Path(root)
     output_dir = root / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +115,7 @@ def generate_alerts(target_date: str, root: Path = ROOT) -> Path:
     main_plan = _load_csv(output_dir / f"betting_plan_{target_date}.csv")
     metrics = _load_json(output_dir / "draw_alert_metrics.json", {})
     model_registry = _load_json(output_dir / "draw_model_registry.json", {})
+    write_time = _snapshot_write_time(snapshot_time)
     evidence_by_match = {
         str(row.get("match_id") or ""): row
         for row in market_heat.get("matches", [])
@@ -120,7 +127,7 @@ def generate_alerts(target_date: str, root: Path = ROOT) -> Path:
             prediction,
             evidence_by_match.get(str(prediction.get("match_id") or "")),
             domestic_odds,
-            market_heat.get("captured_at", ""),
+            write_time,
             draw_config,
             app_config,
             root,
@@ -161,10 +168,7 @@ def generate_alerts(target_date: str, root: Path = ROOT) -> Path:
         )
         rows.append(result)
     path = output_dir / f"draw_alert_{target_date}.csv"
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    _atomic_write_csv(path, rows)
     return path
 
 
@@ -172,7 +176,7 @@ def _candidate_from_rows(
     prediction: dict,
     evidence: dict | None,
     domestic: dict,
-    captured_at: str,
+    snapshot_time: datetime,
     draw_config: dict,
     app_config: dict,
     root: Path = ROOT,
@@ -213,7 +217,7 @@ def _candidate_from_rows(
         root,
         prediction,
         evidence,
-        captured_at,
+        snapshot_time,
         odds[1],
         features,
     )
@@ -264,7 +268,7 @@ def _candidate_from_rows(
         "xg_total": inputs.xg_total,
         "evidence_json": json.dumps(_qualifying_source_records(evidence), ensure_ascii=False, sort_keys=True),
         "data_quality": inputs.data_quality,
-        "captured_at": captured_at,
+        "captured_at": snapshot_time.isoformat(),
         "alert_level": f"rank_{len(signals)}",
         "strategy_version": app_config.get("strategy_version", ""),
         "feature_version": draw_config.get("feature_version", ""),
@@ -328,13 +332,13 @@ def _capture_feature_snapshot(
     root: Path,
     prediction: dict,
     evidence: dict,
-    captured_at: str,
+    snapshot_time: datetime,
     domestic_draw_odds: float,
     features: dict,
 ) -> Path | None:
-    captured = _timestamp(captured_at)
+    captured = _snapshot_write_time(snapshot_time)
     kickoff = _timestamp(evidence.get("kickoff_at"))
-    if captured is None or kickoff is None or captured > kickoff:
+    if kickoff is None or captured > kickoff:
         return None
     if list(features) != DRAW_MODEL_FEATURES:
         return None
@@ -345,7 +349,7 @@ def _capture_feature_snapshot(
         "team_a": str(prediction.get("team_a") or ""),
         "team_b": str(prediction.get("team_b") or ""),
         "stage": str(prediction.get("stage") or ""),
-        "captured_at": captured_at,
+        "captured_at": captured.isoformat(),
         "kickoff_at": str(evidence.get("kickoff_at") or ""),
         "domestic_draw_odds": float(domestic_draw_odds),
         "features": features,
@@ -355,11 +359,19 @@ def _capture_feature_snapshot(
     serialized = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
-    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     timestamp = captured.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = Path(root) / "data" / "draw_feature_snapshots" / f"{timestamp}-{digest}.json"
     _atomic_create_json(path, payload)
     return path
+
+
+def _snapshot_write_time(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.now(BEIJING)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=BEIJING)
+    return value.astimezone(BEIJING)
 
 
 def _atomic_create_json(path: Path, payload: dict) -> None:
@@ -384,6 +396,24 @@ def _atomic_create_json(path: Path, payload: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _atomic_write_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=FIELDS, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _timestamp(value) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -391,7 +421,7 @@ def _timestamp(value) -> datetime | None:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=BEIJING)
 
 
 def _quarter_kelly_stake(probability: float, odds: float, minimum: int, maximum: int, bankroll: int) -> int:

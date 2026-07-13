@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 from datetime import date, datetime, time, timedelta, timezone
@@ -22,6 +23,7 @@ from sklearn.preprocessing import StandardScaler
 
 
 ROOT = Path(__file__).resolve().parent
+BEIJING = timezone(timedelta(hours=8))
 FEATURES = [
     "base_draw_probability",
     "market_draw_probability",
@@ -57,6 +59,14 @@ MIN_SHADOW_SAMPLES = 200
 MIN_SHADOW_BETS = 100
 TRAINING_INTERVAL_DAYS = 7
 WEIGHT_HALF_LIFE_DAYS = 180
+SNAPSHOT_FILENAME = re.compile(r"^\d{8}T\d{6}Z-([0-9a-f]{64})\.json$")
+SIMULATION_POLICY_FIELDS = (
+    "min_draw_probability",
+    "min_draw_edge",
+    "min_expected_value",
+    "max_xg_total",
+    "hypothetical_stake",
+)
 
 
 def chronological_splits(dates: list[date], n_splits: int):
@@ -182,7 +192,10 @@ def build_training_samples(root: Path = ROOT, as_of: date | None = None) -> list
         away_goals = _goal(result.get("away_goals"))
         if home_goals is None or away_goals is None:
             continue
-        captures.sort(key=lambda item: (item["captured_time"], item["snapshot_path"]))
+        captured_times = [item["captured_time"] for item in captures]
+        if len(set(captured_times)) != len(captured_times):
+            continue
+        captures.sort(key=lambda item: item["captured_time"])
         entry = captures[0]
         closing = captures[-1]
         row = {
@@ -227,20 +240,22 @@ def update_draw_model(
     original = _load_or_initialize_registry(registry_path)
     registry = copy.deepcopy(original)
 
-    try:
-        samples = build_training_samples(root, as_of=current_date)
-        _atomic_write_csv(root / "data" / "draw_training_samples.csv", SAMPLE_FIELDS, samples)
-        registry["per_league"] = league_pause_states(
-            _read_csv(output_dir / "draw_alert_ledger.csv")
-        )
-        _rollback_if_needed(root, registry, samples, current_date)
-        resolved_challenger = _advance_challenger(root, registry, samples, current_date)
+    registry["last_training_error"] = None
+    recovery_errors = _sanitize_registry_roles(root, registry, current_date)
+    samples = build_training_samples(root, as_of=current_date)
+    _atomic_write_csv(root / "data" / "draw_training_samples.csv", SAMPLE_FIELDS, samples)
+    registry["per_league"] = league_pause_states(
+        _read_csv(output_dir / "draw_alert_ledger.csv")
+    )
+    _rollback_if_needed(root, registry, samples, current_date)
+    resolved_challenger = _advance_challenger(root, registry, samples, current_date)
 
-        if (
-            registry.get("challenger") is None
-            and not resolved_challenger
-            and _training_is_due(registry, current_date, force_train)
-        ):
+    if (
+        registry.get("challenger") is None
+        and not resolved_challenger
+        and _training_is_due(registry, current_date, force_train)
+    ):
+        try:
             artifact = _train_artifact(samples, as_of=current_date)
             challenger_path = model_dir / f"{artifact['metadata']['version']}.joblib"
             _persist_immutable_artifact(artifact, challenger_path)
@@ -248,10 +263,10 @@ def update_draw_model(
                 artifact, root, challenger_path, current_date
             )
             registry["last_training_date"] = current_date.isoformat()
-            registry["last_training_error"] = None
-    except Exception as error:
-        registry = copy.deepcopy(original)
-        registry["last_training_error"] = f"{type(error).__name__}: {error}"
+        except Exception as error:
+            registry["last_training_error"] = f"{type(error).__name__}: {error}"
+    if recovery_errors and registry.get("last_training_error") is None:
+        registry["last_training_error"] = "; ".join(recovery_errors)
 
     registry["schema_version"] = REGISTRY_SCHEMA_VERSION
     registry["updated_at"] = current_date.isoformat()
@@ -363,6 +378,84 @@ def _sample_weights(rows, as_of):
     ])
 
 
+def _sanitize_registry_roles(root, registry, current_date):
+    errors = []
+    valid_previous = _sanitize_role(root, registry, "previous_champion", current_date, errors)
+    champion = registry.get("champion")
+    champion_valid = _role_is_valid(root, champion, "champion")
+    if champion is not None and not champion_valid:
+        invalid = copy.deepcopy(champion)
+        if valid_previous:
+            registry["champion"] = copy.deepcopy(registry["previous_champion"])
+            registry["previous_champion"] = None
+            action = "recovered_from_previous"
+        else:
+            registry["champion"] = None
+            action = "cleared_to_base"
+        message = f"invalid champion {action}"
+        errors.append(message)
+        _record_event(
+            registry,
+            {
+                "type": "role_recovery",
+                "role": "champion",
+                "action": action,
+                "date": current_date.isoformat(),
+                "quarantined_entry": invalid,
+            },
+        )
+    _sanitize_role(root, registry, "challenger", current_date, errors)
+    return errors
+
+
+def _sanitize_role(root, registry, role, current_date, errors):
+    entry = registry.get(role)
+    if entry is None:
+        return False
+    if _role_is_valid(root, entry, role):
+        return True
+    registry[role] = None
+    message = f"invalid {role} cleared"
+    errors.append(message)
+    _record_event(
+        registry,
+        {
+            "type": "role_recovery",
+            "role": role,
+            "action": "cleared",
+            "date": current_date.isoformat(),
+            "quarantined_entry": copy.deepcopy(entry),
+        },
+    )
+    return False
+
+
+def _role_is_valid(root, entry, role):
+    if not isinstance(entry, dict):
+        return False
+    try:
+        _load_registry_artifact(root, entry)
+        if role == "challenger":
+            if _parse_date(entry.get("created_on")) is None:
+                raise ValueError("challenger creation date is invalid")
+            if entry.get("created_at") is not None and _timestamp(entry.get("created_at")) is None:
+                raise ValueError("challenger creation timestamp is invalid")
+            _validate_simulation_policy(entry.get("simulation_policy"))
+        return True
+    except Exception:
+        return False
+
+
+def _record_event(registry, event):
+    saved = copy.deepcopy(event)
+    history = registry.setdefault("event_history", [])
+    if not isinstance(history, list):
+        history = []
+        registry["event_history"] = history
+    history.append(saved)
+    registry["last_model_event"] = saved
+
+
 def _advance_challenger(root, registry, samples, current_date):
     challenger = registry.get("challenger")
     if not isinstance(challenger, dict):
@@ -388,8 +481,7 @@ def _advance_challenger(root, registry, samples, current_date):
         _shadow_metrics(
             artifact,
             shadow_samples,
-            root,
-            since=created_on,
+            policy=challenger["simulation_policy"],
             reference_artifact=reference_artifact,
         )
     )
@@ -403,11 +495,11 @@ def _advance_challenger(root, registry, samples, current_date):
     if promotion_decision(challenger, champion or {}):
         _promote_challenger(root, registry, artifact, challenger, current_date)
         return True
-    registry["last_model_event"] = {
+    _record_event(registry, {
         "type": "rejection",
         "version": challenger.get("version"),
         "date": current_date.isoformat(),
-    }
+    })
     registry["challenger"] = None
     return True
 
@@ -421,11 +513,11 @@ def _promote_challenger(root, registry, artifact, challenger, current_date):
         "promoted_on": current_date.isoformat(),
     }
     registry["challenger"] = None
-    registry["last_model_event"] = {
+    _record_event(registry, {
         "type": "promotion",
         "version": challenger.get("version"),
         "date": current_date.isoformat(),
-    }
+    })
 
 
 def _rollback_if_needed(root, registry, samples, current_date):
@@ -446,18 +538,19 @@ def _rollback_if_needed(root, registry, samples, current_date):
         **copy.deepcopy(previous),
         "recent_50": previous_metrics,
     }
-    registry["previous_champion"] = {
-        **copy.deepcopy(champion),
-        "recent_50": current_metrics,
-    }
-    registry["last_model_event"] = {
+    registry["previous_champion"] = None
+    _record_event(registry, {
         "type": "rollback",
         "from_version": champion.get("version"),
         "to_version": previous.get("version"),
         "date": current_date.isoformat(),
         "current_recent_50": current_metrics,
         "previous_recent_50": previous_metrics,
-    }
+        "displaced_champion": {
+            **copy.deepcopy(champion),
+            "recent_50": current_metrics,
+        },
+    })
 
 
 def _challenger_entry(artifact, root, path, current_date):
@@ -479,24 +572,18 @@ def _challenger_entry(artifact, root, path, current_date):
         "clv": None,
         "roi": 0.0,
         "max_drawdown": 0.0,
+        "simulation_policy": _simulation_policy(root),
     }
 
 
 def _shadow_metrics(
     artifact,
     samples,
-    root,
-    since,
+    *,
+    policy,
     reference_artifact=None,
 ):
-    if reference_artifact is None:
-        try:
-            registry = _read_registry(Path(root) / "output" / "draw_model_registry.json")
-            champion = registry.get("champion")
-            if isinstance(champion, dict):
-                reference_artifact = _load_registry_artifact(Path(root), champion)
-        except Exception:
-            reference_artifact = None
+    policy = _validate_simulation_policy(policy)
     probabilities = _artifact_probabilities(artifact, samples)
     outcomes = [int(row["outcome"]) for row in samples]
     reference_probabilities = (
@@ -509,12 +596,11 @@ def _shadow_metrics(
     reference_metrics = _probability_metrics(outcomes, reference_probabilities)
     market_metrics = _probability_metrics(outcomes, market_probabilities)
 
-    config = _read_json(Path(root) / "betting_config.json", {}).get("draw_alert", {})
-    minimum_probability = float(config.get("min_draw_probability", 0.27))
-    minimum_edge = float(config.get("min_draw_edge", 0.04))
-    minimum_ev = float(config.get("min_expected_value", 1.05))
-    maximum_xg = float(config.get("max_xg_total", 2.5))
-    stake = float(config.get("hypothetical_stake", 10))
+    minimum_probability = policy["min_draw_probability"]
+    minimum_edge = policy["min_draw_edge"]
+    minimum_ev = policy["min_expected_value"]
+    maximum_xg = policy["max_xg_total"]
+    stake = policy["hypothetical_stake"]
     profits = []
     clv_values = []
     for row, probability in zip(samples, probabilities):
@@ -589,6 +675,33 @@ def _relative_improvement(reference, candidate):
     return (reference - candidate) / reference
 
 
+def _simulation_policy(root):
+    config = _read_json(Path(root) / "betting_config.json", {}).get("draw_alert", {})
+    return _validate_simulation_policy({
+        "min_draw_probability": config.get("min_draw_probability", 0.27),
+        "min_draw_edge": config.get("min_draw_edge", 0.04),
+        "min_expected_value": config.get("min_expected_value", 1.05),
+        "max_xg_total": config.get("max_xg_total", 2.5),
+        "hypothetical_stake": config.get("hypothetical_stake", 10),
+    })
+
+
+def _validate_simulation_policy(policy):
+    if not isinstance(policy, dict) or set(policy) != set(SIMULATION_POLICY_FIELDS):
+        raise ValueError("challenger simulation policy is invalid")
+    normalized = {}
+    for name in SIMULATION_POLICY_FIELDS:
+        value = _number(policy.get(name))
+        if value is None:
+            raise ValueError(f"challenger simulation policy {name} is invalid")
+        normalized[name] = value
+    if not 0 <= normalized["min_draw_probability"] <= 1:
+        raise ValueError("challenger probability gate is invalid")
+    if normalized["max_xg_total"] < 0 or normalized["hypothetical_stake"] <= 0:
+        raise ValueError("challenger simulation bounds are invalid")
+    return normalized
+
+
 def _training_is_due(registry, current_date, force_train):
     if force_train:
         return True
@@ -606,6 +719,7 @@ def _load_or_initialize_registry(path):
             "per_league": {},
             "last_training_date": None,
             "last_training_error": None,
+            "event_history": [],
         }
     registry = _read_registry(path)
     if not isinstance(registry, dict):
@@ -618,6 +732,7 @@ def _load_or_initialize_registry(path):
     registry.setdefault("per_league", {})
     registry.setdefault("last_training_date", None)
     registry.setdefault("last_training_error", None)
+    registry.setdefault("event_history", [])
     return registry
 
 
@@ -695,6 +810,8 @@ def _temporary_path(path):
 
 def _load_registry_artifact(root, entry):
     path = _registry_artifact_path(root, entry)
+    if path.name != f"{entry.get('version')}.joblib":
+        raise ValueError("model artifact filename must match its version")
     artifact = _load_artifact(path)
     _validate_artifact(artifact, entry)
     return artifact
@@ -722,8 +839,7 @@ def _validate_artifact(artifact, entry=None):
     if metadata.get("model_kind") != expected_kind:
         raise ValueError("model artifact kind does not match its feature order")
     model = artifact.get("model")
-    if not callable(getattr(model, "predict_proba", None)):
-        raise ValueError("model artifact cannot predict probabilities")
+    _validate_concrete_estimator(model, expected_kind, len(feature_order))
     feature_count = getattr(model, "n_features_in_", None)
     if feature_count is None or int(feature_count) != len(feature_order):
         raise ValueError("model artifact feature count does not match feature order")
@@ -735,6 +851,57 @@ def _validate_artifact(artifact, entry=None):
         if entry.get("model_kind") != expected_kind:
             raise ValueError("registry and artifact model kinds differ")
     return artifact
+
+
+def _validate_concrete_estimator(model, model_kind, feature_count):
+    if model_kind == "sigmoid_calibrator":
+        if type(model) is not LogisticRegression:
+            raise ValueError("small model must be LogisticRegression")
+        logistic = model
+    else:
+        if type(model) is not Pipeline:
+            raise ValueError("full model must be a Pipeline")
+        if [name for name, _ in model.steps] != ["standardscaler", "logisticregression"]:
+            raise ValueError("full model pipeline steps are invalid")
+        scaler = model.named_steps["standardscaler"]
+        logistic = model.named_steps["logisticregression"]
+        if type(scaler) is not StandardScaler or type(logistic) is not LogisticRegression:
+            raise ValueError("full model pipeline estimator types are invalid")
+        if scaler.get_params(deep=False) != {
+            "copy": True,
+            "with_mean": True,
+            "with_std": True,
+        }:
+            raise ValueError("full model scaler parameters are invalid")
+        if int(getattr(scaler, "n_features_in_", -1)) != feature_count:
+            raise ValueError("full model scaler feature count is invalid")
+    parameters = logistic.get_params(deep=False)
+    if (
+        parameters.get("C") != 0.5
+        or parameters.get("max_iter") != 1000
+        or parameters.get("random_state") != 42
+    ):
+        raise ValueError("logistic regression parameters are invalid")
+    if not callable(getattr(model, "predict_proba", None)):
+        raise ValueError("model artifact cannot predict probabilities")
+    classes = getattr(logistic, "classes_", None)
+    coefficients = getattr(logistic, "coef_", None)
+    if classes is None or list(classes) != [0, 1]:
+        raise ValueError("logistic regression classes are invalid")
+    if coefficients is None or tuple(coefficients.shape) != (1, feature_count):
+        raise ValueError("logistic regression coefficients are invalid")
+    try:
+        probabilities = np.asarray(
+            model.predict_proba(np.zeros((1, feature_count), dtype=float)), dtype=float
+        )
+    except Exception as error:
+        raise ValueError("model artifact prediction capability is invalid") from error
+    if (
+        probabilities.shape != (1, 2)
+        or not np.isfinite(probabilities).all()
+        or not 0 <= probabilities[0, 1] <= 1
+    ):
+        raise ValueError("model artifact prediction capability is invalid")
 
 
 def _registry_artifact_path(root, entry):
@@ -771,6 +938,15 @@ def _valid_snapshot(path, root, cutoff):
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(payload, dict):
+            return None
+        match = SNAPSHOT_FILENAME.fullmatch(path.name)
+        if match is None:
+            return None
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if digest != match.group(1):
             return None
         if payload.get("snapshot_schema_version") != SNAPSHOT_SCHEMA_VERSION:
             return None
@@ -862,7 +1038,7 @@ def _timestamp(value):
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=BEIJING)
 
 
 def _goal(value):
