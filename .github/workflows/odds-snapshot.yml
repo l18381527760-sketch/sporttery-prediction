@@ -3,8 +3,8 @@ name: Sporttery Odds Snapshots
 on:
   workflow_dispatch:
   schedule:
-    # 13:30, 18:30 and 22:30 Beijing time.
-    - cron: "30 5,10,14 * * *"
+    # Frequent snapshots improve the chance of recording odds near kickoff.
+    - cron: "*/30 * * * *"
 
 permissions:
   contents: write
