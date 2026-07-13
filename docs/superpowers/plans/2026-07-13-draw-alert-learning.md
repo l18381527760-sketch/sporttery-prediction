@@ -573,6 +573,8 @@ git commit -m "feat: generate one value-gated draw alert"
 **Interfaces:**
 - Consumes: all `output/draw_alert_*.csv`, `data/bet_results.csv`, and pre-kickoff odds snapshots.
 - Produces: `output/draw_alert_ledger.csv` and `output/draw_alert_metrics.json` with separate `cold_draw` and `balanced_draw` blocks.
+- Public orchestration entry point: `update_draw_alert_ledger(root: Path = ROOT) -> tuple[Path, Path]`.
+- Match alerts to results by exact `date`, `team_a`, and `team_b`; never guess or reverse unmatched team names.
 
 - [ ] **Step 1: Write failing settlement and promotion tests**
 
@@ -602,6 +604,16 @@ class DrawAlertLedgerTest(unittest.TestCase):
     def test_each_subtype_needs_its_own_30_samples(self):
         rows = [{"status": "命中", "model_draw_probability": "0.34", "market_draw_probability": "0.28", "hypothetical_profit": "22", "clv": "0.01"} for _ in range(29)]
         self.assertFalse(compute_subtype_metrics(rows, min_samples=30, roi_gate=0.05, max_drawdown=100)["promoted"])
+
+    def test_missing_result_stays_unsettled_for_retry(self):
+        settled = settle_alert({"domestic_draw_odds": "3.20", "hypothetical_stake": "10", "additional_stake": "20", "settlement_mode": "standalone"}, None)
+        self.assertEqual("未结算", settled["status"])
+
+    def test_standalone_loss_counts_once(self):
+        alert = {"domestic_draw_odds": "3.20", "hypothetical_stake": "10", "additional_stake": "20", "settlement_mode": "standalone"}
+        settled = settle_alert(alert, {"home_goals": "1", "away_goals": "0"})
+        self.assertEqual(-10.0, settled["hypothetical_profit"])
+        self.assertEqual(-20.0, settled["actual_profit"])
 ```
 
 - [ ] **Step 2: Verify the tests fail**
@@ -630,6 +642,10 @@ Expected: FAIL because `draw_alert_ledger` does not exist.
 ```
 
 Use `outcome = 1.0` only when the two 90-minute goal fields are equal. Compute drawdown by accumulating hypothetical profit, tracking the running peak, and taking the largest `peak - cumulative`; compare recent-ten Brier with the immediately preceding ten when available. Treat missing CLV as a failed promotion gate, not as zero or positive CLV.
+
+`update_draw_alert_ledger()` reads every daily alert CSV, keeps exactly one row per `date + team_a + team_b + subtype`, and settles it against the exact result key. Preserve all alert fields and append `home_goals`, `away_goals`, `outcome`, `status`, `hypothetical_profit`, `actual_profit`, and `clv`. Observation and `budget_capped_observation` rows always have zero actual profit; linked rows also have zero actual profit because the main betting ledger owns that money. Unresolved rows keep blank outcome/profit fields and `status="未结算"` so a later run can settle them.
+
+For each alert, find the latest qualifying snapshot with the same date and teams from `data/odds_snapshots/*.json`. A qualifying snapshot must have `market_type="win_draw_loss"`, `settlement_minutes=90`, and `includes_extra_time=false`; when parseable timestamps are present, require `captured_at <= kickoff_at`. Calculate probability CLV as `closing_de_vig_draw_probability - stored_market_draw_probability`; leave CLV blank when no qualifying closing snapshot exists. Generate metrics separately from settled rows for `cold_draw` and `balanced_draw`, even when one subtype has zero rows.
 
 Preserve unresolved rows as `未结算`. Store one ledger row per alert, so linked rows cannot duplicate the main betting ledger.
 
