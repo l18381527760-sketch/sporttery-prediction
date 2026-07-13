@@ -58,5 +58,30 @@
     "high": 1.15,
     "medium": 0.9,
     "low": 0.55
+  },
+  "draw_alert": {
+    "feature_version": "draw-v1",
+    "min_draw_probability": 0.27,
+    "min_draw_edge": 0.04,
+    "min_expected_value": 1.05,
+    "max_xg_total": 2.5,
+    "cold_favorite_probability": 0.55,
+    "balanced_max_win_gap": 0.1,
+    "balanced_max_xg_total": 2.35,
+    "observation_samples_per_subtype": 30,
+    "hypothetical_stake": 10,
+    "min_promoted_stake": 10,
+    "max_promoted_stake": 30,
+    "max_alerts": 4,
+    "max_per_league": 2,
+    "daily_additional_budget": 80,
+    "rank_gates": [
+      {"min_probability": 0.27, "min_edge": 0.04, "min_expected_value": 1.05},
+      {"min_probability": 0.29, "min_edge": 0.05, "min_expected_value": 1.07},
+      {"min_probability": 0.31, "min_edge": 0.06, "min_expected_value": 1.09},
+      {"min_probability": 0.33, "min_edge": 0.07, "min_expected_value": 1.11}
+    ],
+    "promotion_roi": 0.05,
+    "max_drawdown": 100.0
   }
 }
