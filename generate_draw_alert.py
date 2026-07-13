@@ -73,6 +73,12 @@ def same_match(alert: dict, row: dict) -> bool:
 
 
 def _same_date_and_teams(alert: dict, leg: dict) -> bool:
+    if (
+        alert.get("match_id")
+        and leg.get("match_id")
+        and str(alert["match_id"]) != str(leg["match_id"])
+    ):
+        return False
     return (
         bool(alert.get("date") and alert.get("team_a") and alert.get("team_b"))
         and alert.get("date") == leg.get("date")

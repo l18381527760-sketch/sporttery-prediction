@@ -305,6 +305,22 @@ class GenerateDrawAlertTest(unittest.TestCase):
         self.assertEqual(30, result["additional_stake"])
         self.assertEqual(0, result["linked_main_stake"])
 
+    def test_combo_conflicting_nonempty_id_does_not_link(self):
+        alert = {"match_id": "001", "date": "2026-07-12", "team_a": "A", "team_b": "B", "subtype": "cold_draw"}
+        main = [{
+            "selection": "串关",
+            "stake": "60",
+            "legs_json": json.dumps([
+                {"match_id": "999", "date": "2026-07-12", "team_a": "A", "team_b": "B", "selection": "平"},
+            ]),
+        }]
+
+        result = attach_stake(alert, main, [], {"promoted": True}, 500, 80, 30)
+
+        self.assertEqual("standalone", result["settlement_mode"])
+        self.assertEqual(30, result["additional_stake"])
+        self.assertEqual(0, result["linked_main_stake"])
+
     def test_invalid_linked_main_stakes_fail_closed_without_crashing(self):
         alert = {"match_id": "001", "date": "2026-07-12", "team_a": "A", "team_b": "B", "subtype": "cold_draw"}
         for raw_stake in ("NaN", "Infinity", "-60", "501", "10.5"):
