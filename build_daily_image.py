@@ -72,8 +72,13 @@ def latest_plan() -> tuple[str, list[dict]]:
     return path.stem.removeprefix("betting_plan_"), read_csv(path)
 
 
+def observation_plan(report_date: str) -> list[dict]:
+    return read_csv(OUTPUT_DIR / f"observation_plan_{report_date}.csv")
+
+
 def draw_report() -> Path:
     report_date, plan = latest_plan()
+    observations = observation_plan(report_date)
     ledger = read_csv(OUTPUT_DIR / "betting_ledger.csv")
     all_metrics = read_metrics()
     metrics = all_metrics.get("overall", {})
@@ -81,7 +86,8 @@ def draw_report() -> Path:
     clv_metrics = all_metrics.get("clv", {})
     plan_height = max(1, len(plan)) * 124
     ledger_height = max(1, len(ledger)) * 76
-    height = 590 + plan_height + ledger_height
+    observation_height = (58 + len(observations) * 70) if observations else 0
+    height = 590 + plan_height + observation_height + ledger_height
     image = Image.new("RGB", (WIDTH, height), "#f3f6f4")
     draw = ImageDraw.Draw(image)
 
@@ -137,6 +143,17 @@ def draw_report() -> Path:
             value_edge = number(row, "value_edge")
             draw.text((960, y + 57), f"保守 {number(row, 'probability') * 100:.1f}%  原模型 {number(row, 'raw_model_probability') * 100:.1f}%  市场 {market_probability * 100:.1f}%  优势 {value_edge * 100:+.1f}%", font=font(19), fill=muted)
             y += 124
+
+    if observations:
+        draw.text((70, y), "零金额观察单", font=font(30), fill=ink)
+        draw.text((350, y + 5), "仅用于概率校准与CLV，不计入盈亏", font=font(20), fill=muted)
+        y += 48
+        for row in observations:
+            draw.rectangle((70, y, WIDTH - 70, y + 58), fill="white", outline=line)
+            draw.text((88, y + 15), row.get("match", "-"), font=font(19), fill=ink)
+            draw.text((520, y + 15), f"观察 {row.get('selection', '-')}  赔率 {row.get('odds', '-')}", font=font(19), fill=ink)
+            draw.text((930, y + 15), f"保守 {number(row, 'probability') * 100:.1f}%  原模型 {number(row, 'raw_model_probability') * 100:.1f}%  市场 {number(row, 'market_probability') * 100:.1f}%", font=font(18), fill=muted)
+            y += 70
 
     draw.line((70, y, WIDTH - 70, y), fill=line, width=2)
     y += 35

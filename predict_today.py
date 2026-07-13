@@ -40,6 +40,7 @@ class Fixture:
     market_odds_draw: float | None = None
     market_odds_b: float | None = None
     analysis_source: str = ""
+    is_single_had: bool = False
     match_num: str = ""
     match_id: str = ""
 
@@ -121,6 +122,7 @@ def load_fixtures() -> list[Fixture]:
                     market_odds_draw=to_optional_float(row.get("market_odds_draw", "")),
                     market_odds_b=to_optional_float(row.get("market_odds_b", "")),
                     analysis_source=(row.get("analysis_source", "") or "").strip(),
+                    is_single_had=(row.get("is_single_had", "") or "").strip().lower() in {"true", "1", "yes"},
                     match_num=(row.get("match_num", "") or "").strip(),
                     match_id=(row.get("match_id", "") or "").strip(),
                 )
@@ -285,6 +287,7 @@ def predict_fixture(fixture: Fixture, ratings: dict[str, TeamRating], config: di
         "pick": pick,
         "confidence": confidence(best_probability, config),
         "analysis_source": fixture.analysis_source or "竞彩足球市场",
+        "is_single_had": fixture.is_single_had,
         "top_scores": dist["top_scores"],
     }
 
@@ -342,6 +345,7 @@ def write_csv(predictions: list[dict], target_date: date) -> Path:
         "pick",
         "confidence",
         "analysis_source",
+        "is_single_had",
         "score_1",
         "score_1_prob",
         "score_2",

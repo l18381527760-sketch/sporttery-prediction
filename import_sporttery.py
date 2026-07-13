@@ -106,6 +106,7 @@ class ZgzcwMatchParser(HTMLParser):
                     "market_h": "",
                     "market_d": "",
                     "market_a": "",
+                    "isSingleHad": values.get("dg") == "1",
                 }
         elif self.current is not None and tag == "td":
             classes = values.get("class", "").split()
@@ -361,6 +362,7 @@ def attach_professional_market(matches: list[dict], market_matches: list[dict]) 
         row["market_d"] = market.get("market_d", row.get("market_d", ""))
         row["market_a"] = market.get("market_a", row.get("market_a", ""))
         row["analysis_source"] = "中国足彩网专业欧赔市场" if all(row.get(key) for key in ("market_h", "market_d", "market_a")) else "竞彩足球市场"
+        row["isSingleHad"] = bool(market.get("isSingleHad", row.get("isSingleHad", False)))
         enriched.append(row)
     return enriched
 
@@ -382,6 +384,7 @@ def write_fixtures(matches: list[dict], target_date: date) -> Path:
         "market_odds_draw",
         "market_odds_b",
         "analysis_source",
+        "is_single_had",
         "match_num",
         "match_id",
         "pool_status",
@@ -406,6 +409,7 @@ def write_fixtures(matches: list[dict], target_date: date) -> Path:
                     "market_odds_draw": item.get("market_d", ""),
                     "market_odds_b": item.get("market_a", ""),
                     "analysis_source": item.get("analysis_source", "竞彩足球市场"),
+                    "is_single_had": "true" if item.get("isSingleHad") else "false",
                     "match_num": match_number(item),
                     "match_id": item.get("matchId", ""),
                     "pool_status": item.get("poolStatus", item.get("matchStatus", "")),

@@ -45,6 +45,12 @@ def read_betting_plan(display_date: date | None) -> list[dict]:
     return read_csv_file(OUTPUT_DIR / f"betting_plan_{display_date.isoformat()}.csv")
 
 
+def read_observation_plan(display_date: date | None) -> list[dict]:
+    if display_date is None:
+        return []
+    return read_csv_file(OUTPUT_DIR / f"observation_plan_{display_date.isoformat()}.csv")
+
+
 def read_betting_ledger() -> list[dict]:
     return read_csv_file(OUTPUT_DIR / "betting_ledger.csv")
 
@@ -282,6 +288,32 @@ def render_betting_plan(plan: list[dict]) -> str:
     """
 
 
+def render_observations(observations: list[dict]) -> str:
+    if not observations:
+        return ""
+    rows = []
+    for item in observations:
+        rows.append(f"""
+          <tr>
+            <td>{html.escape(item.get("match", ""))}</td>
+            <td><strong>{html.escape(item.get("selection", ""))}</strong></td>
+            <td>{pct(as_float(item, "probability"))}</td>
+            <td>{pct(as_float(item, "raw_model_probability"))}</td>
+            <td>{pct(as_float(item, "market_probability"))}</td>
+            <td>{html.escape(item.get("odds", ""))}</td>
+          </tr>
+        """)
+    return f"""
+      <section class="betting-section">
+        <div class="section-title"><h2>零金额观察单</h2><span>只用于概率校准与CLV，不计入投入和盈亏</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>比赛</th><th>观察结果</th><th>保守概率</th><th>原模型</th><th>市场概率</th><th>赔率</th></tr></thead>
+          <tbody>{"".join(rows)}</tbody>
+        </table></div>
+      </section>
+    """
+
+
 def render_ledger(ledger: list[dict], model_metrics: dict) -> str:
     if not ledger:
         return ""
@@ -321,6 +353,7 @@ def render_site(rows: list[dict]) -> str:
     total_matches = len(rows)
     high_confidence = sum(1 for row in rows if row.get("confidence") in {"高", "High"})
     betting_plan = read_betting_plan(display_date)
+    observation_plan = read_observation_plan(display_date)
     betting_ledger = read_betting_ledger()
     model_metrics = read_model_metrics()
     source_status = read_source_status()
@@ -787,6 +820,7 @@ def render_site(rows: list[dict]) -> str:
 
     {render_ledger(betting_ledger, model_metrics)}
     {render_betting_plan(betting_plan)}
+    {render_observations(observation_plan)}
 
     <footer>
       预测是概率判断，不是确定赛果。建议每天比赛前更新赛程、球队评分、伤停和赔率后重新运行每日脚本。

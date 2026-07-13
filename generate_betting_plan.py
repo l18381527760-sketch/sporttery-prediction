@@ -325,7 +325,7 @@ def build_plan(target_date: date) -> list[dict]:
     return plan
 
 
-def build_value_plan(target_date: date) -> list[dict]:
+def build_value_plan(target_date: date) -> tuple[list[dict], list[dict]]:
     config = read_json(ROOT / "betting_config.json")
     strategy_version = str(config.get("strategy_version") or "value-v2")
     value = config.get("value_strategy", {})
@@ -337,14 +337,20 @@ def build_value_plan(target_date: date) -> list[dict]:
         odds_source = str(read_json(status_path).get("source") or odds_source)
 
     history = []
+    observation_history = []
     ledger_path = OUTPUT_DIR / "betting_ledger.csv"
     if ledger_path.exists():
         with ledger_path.open("r", encoding="utf-8-sig", newline="") as handle:
             history = list(csv.DictReader(handle))
-    metrics = summarize(history, strategy_version)
-    by_play = metrics.get("by_play", {})
-    paused_leagues = {league for league, item in metrics.get("by_league", {}).items() if item.get("paused")}
-    overall = metrics.get("active_strategy", {})
+    observation_ledger_path = OUTPUT_DIR / "observation_ledger.csv"
+    if observation_ledger_path.exists():
+        with observation_ledger_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            observation_history = list(csv.DictReader(handle))
+    bet_metrics = summarize(history, strategy_version)
+    observation_metrics = summarize(observation_history, strategy_version)
+    by_play = bet_metrics.get("by_play", {})
+    paused_leagues = {league for league, item in bet_metrics.get("by_league", {}).items() if item.get("paused")}
+    overall = observation_metrics.get("active_strategy", {})
 
     settled_count = int(overall.get("count") or 0)
     strict_mode = settled_count < int(value.get("strict_until_samples", 100))
@@ -386,6 +392,7 @@ def build_value_plan(target_date: date) -> list[dict]:
 
     singles = []
     combo_legs = []
+    observation_pool = []
     for row in predictions:
         league = row.get("stage", "") or "未知"
         if league in paused_leagues:
@@ -393,6 +400,8 @@ def build_value_plan(target_date: date) -> list[dict]:
         had = odds_by_match.get(row.get("match_id", ""), {}).get("had", {})
         fair = fair_probabilities(had)
         per_match_combo = []
+        per_match_observations = []
+        single_eligible = str(row.get("is_single_had", "")).lower() in {"true", "1", "yes"}
         for selection, raw_probability, price in [
             ("胜", as_float(row, "p_a"), official_float(had.get("h"))),
             ("平", as_float(row, "p_draw"), official_float(had.get("d"))),
@@ -411,9 +420,10 @@ def build_value_plan(target_date: date) -> list[dict]:
                 "value_edge": edge, "odds": price, "expected_value": expected_value,
                 "family": family,
             }
+            per_match_observations.append(candidate)
             edge_threshold = float(value.get("strict_min_probability_edge", 0.05) if strict_mode else value.get("min_probability_edge", 0.03))
             return_threshold = float(value.get("strict_min_expected_return", 1.06) if strict_mode else value.get("min_expected_return", 1.03))
-            if edge >= edge_threshold and expected_value >= return_threshold:
+            if single_eligible and edge >= edge_threshold and expected_value >= return_threshold:
                 stake = kelly_stake(probability, price, family)
                 if stake:
                     fraction = stake / float(value.get("reference_bankroll", 5000))
@@ -428,6 +438,8 @@ def build_value_plan(target_date: date) -> list[dict]:
                 per_match_combo.append(candidate)
         if per_match_combo:
             combo_legs.append(max(per_match_combo, key=lambda item: item["expected_value"]))
+        if per_match_observations:
+            observation_pool.append(max(per_match_observations, key=lambda item: item["raw_probability"]))
 
     plan = []
     used_matches: set[tuple[str, str]] = set()
@@ -446,7 +458,7 @@ def build_value_plan(target_date: date) -> list[dict]:
         single_budget -= stake
 
     available = [item for item in combo_legs if (item["row"]["team_a"], item["row"]["team_b"]) not in used_matches]
-    best_combo = None
+    best_by_size = {}
     for size in range(int(value.get("combo_min_legs", 3)), int(value.get("combo_max_legs", 4)) + 1):
         for selected in itertools.combinations(available, size):
             probability = math.prod(item["probability"] for item in selected)
@@ -456,8 +468,13 @@ def build_value_plan(target_date: date) -> list[dict]:
             expected_value = probability * odds
             candidate = {"selected": selected, "probability": probability, "raw_probability": raw_probability, "market_probability": market_probability, "value_edge": probability - market_probability, "odds": round(odds, 2), "expected_value": expected_value}
             combo_threshold = float(value.get("strict_min_combo_expected_return", 1.10) if strict_mode else value.get("min_combo_expected_return", 1.03))
-            if expected_value >= combo_threshold and (best_combo is None or expected_value > best_combo["expected_value"]):
-                best_combo = candidate
+            if expected_value >= combo_threshold and (size not in best_by_size or expected_value > best_by_size[size]["expected_value"]):
+                best_by_size[size] = candidate
+
+    best_combo = best_by_size.get(2)
+    trial_combo = best_by_size.get(3)
+    if trial_combo and (best_combo is None or trial_combo["expected_value"] >= best_combo["expected_value"] * float(value.get("three_leg_value_premium", 1.05))):
+        best_combo = trial_combo
 
     remaining_budget = int(config["max_daily_budget"]) - sum(item["stake"] for item in plan)
     combo_stake = int(value.get("strict_combo_stake", 20) if strict_mode else value.get("combo_stake", 30))
@@ -472,7 +489,11 @@ def build_value_plan(target_date: date) -> list[dict]:
     total = sum(item["stake"] for item in plan)
     if total > int(config["max_daily_budget"]):
         raise RuntimeError("今日模拟预算超过上限，请检查配置。")
-    return plan
+    observations = []
+    for item in sorted(observation_pool, key=lambda candidate: candidate["raw_probability"], reverse=True)[: int(value.get("observation_count", 5))]:
+        reason = f"零金额观察单；保守概率{pct(item['probability'])}，原模型{pct(item['raw_probability'])}，市场公平概率{pct(item['market_probability'])}，仅用于概率校准和CLV，不计入盈亏"
+        observations.append(make_item(item["row"], "观察单", item["selection"], item["probability"], item["odds"], 0, reason, market_probability=item["market_probability"], value_edge=item["value_edge"], raw_model_probability=item["raw_probability"], strategy_version=strategy_version))
+    return plan, observations
 
 
 def load_results() -> dict[tuple[str, str, str], dict]:
@@ -530,7 +551,7 @@ def settle_item(item: dict, result: dict | None) -> tuple[str, float]:
     half_away = int(result.get("half_away_goals") or 0)
     won = False
 
-    if item["play"] in {"胜平负", "胜平负单场", "平局单场"}:
+    if item["play"] in {"胜平负", "胜平负单场", "平局单场", "观察单"}:
         won = selection == outcome(home, away)
     elif item["play"] == "半全场":
         if result.get("half_home_goals") == "" or result.get("half_away_goals") == "":
@@ -577,6 +598,21 @@ def write_plan(plan: list[dict], target_date: date) -> Path:
     return path
 
 
+def write_observation_plan(observations: list[dict], target_date: date) -> Path:
+    path = OUTPUT_DIR / f"observation_plan_{target_date.isoformat()}.csv"
+    fields = [
+        "date", "strategy_version", "stage", "match", "team_a", "team_b",
+        "play", "selection", "probability", "raw_model_probability", "odds",
+        "market_probability", "value_edge", "expected_value", "stake",
+        "expected_return", "expected_profit", "reason", "legs_json",
+    ]
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(observations)
+    return path
+
+
 def load_all_plans() -> list[dict]:
     rows: list[dict] = []
     for path in sorted(OUTPUT_DIR.glob("betting_plan_*.csv")):
@@ -585,8 +621,16 @@ def load_all_plans() -> list[dict]:
     return rows
 
 
-def write_ledger(plan: list[dict] | None = None) -> Path:
-    path = OUTPUT_DIR / "betting_ledger.csv"
+def load_all_observation_plans() -> list[dict]:
+    rows: list[dict] = []
+    for path in sorted(OUTPUT_DIR.glob("observation_plan_*.csv")):
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows.extend(csv.DictReader(handle))
+    return rows
+
+
+def write_ledger(plan: list[dict] | None = None, path: Path | None = None) -> Path:
+    path = path or (OUTPUT_DIR / "betting_ledger.csv")
     results = load_results()
     if plan is None:
         plan = load_all_plans()
@@ -641,6 +685,10 @@ def write_ledger(plan: list[dict] | None = None) -> Path:
     return path
 
 
+def write_observation_ledger() -> Path:
+    return write_ledger(load_all_observation_plans(), OUTPUT_DIR / "observation_ledger.csv")
+
+
 def main() -> int:
     import argparse
 
@@ -652,17 +700,23 @@ def main() -> int:
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
     if args.settle_only:
         ledger_path = write_ledger()
+        observation_ledger_path = write_observation_ledger()
         write_metrics()
         print(f"Updated ledger: {ledger_path}")
+        print(f"Updated observation ledger: {observation_ledger_path}")
         return 0
 
-    plan = build_value_plan(target_date)
+    plan, observations = build_value_plan(target_date)
     plan_path = write_plan(plan, target_date)
+    observation_path = write_observation_plan(observations, target_date)
     ledger_path = write_ledger()
+    observation_ledger_path = write_observation_ledger()
     write_metrics()
     total = sum(item["stake"] for item in plan)
     print(f"Generated betting plan: {plan_path}")
+    print(f"Generated observation plan: {observation_path}")
     print(f"Updated ledger: {ledger_path}")
+    print(f"Updated observation ledger: {observation_ledger_path}")
     print(f"Daily simulated stake: {total}")
     return 0
 

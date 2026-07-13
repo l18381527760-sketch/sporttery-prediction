@@ -138,10 +138,15 @@ def closing_line_value(rows: list[dict]) -> dict:
 
 def write_metrics() -> Path:
     ledger = OUTPUT_DIR / "betting_ledger.csv"
+    observation_ledger = OUTPUT_DIR / "observation_ledger.csv"
     rows = []
+    observation_rows = []
     if ledger.exists():
         with ledger.open("r", encoding="utf-8-sig", newline="") as handle:
             rows = list(csv.DictReader(handle))
+    if observation_ledger.exists():
+        with observation_ledger.open("r", encoding="utf-8-sig", newline="") as handle:
+            observation_rows = list(csv.DictReader(handle))
     config_path = ROOT / "betting_config.json"
     active_strategy = ""
     if config_path.exists():
@@ -150,8 +155,11 @@ def write_metrics() -> Path:
         except (OSError, json.JSONDecodeError):
             active_strategy = ""
     payload = summarize(rows, active_strategy)
-    active_rows = [row for row in rows if not active_strategy or row.get("strategy_version") == active_strategy]
-    payload["clv"] = closing_line_value(active_rows)
+    observation_payload = summarize(observation_rows, active_strategy)
+    payload["active_strategy"] = observation_payload["active_strategy"]
+    payload["calibration_by_league"] = observation_payload["by_league"]
+    active_observations = [row for row in observation_rows if not active_strategy or row.get("strategy_version") == active_strategy]
+    payload["clv"] = closing_line_value(active_observations)
     output = OUTPUT_DIR / "model_metrics.json"
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Updated model metrics: {output}")
