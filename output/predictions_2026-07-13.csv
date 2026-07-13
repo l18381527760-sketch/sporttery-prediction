@@ -1,2 +1,2 @@
-﻿date,kickoff,stage,match_num,match_id,team_a,team_b,xg_a,xg_b,p_a,p_draw,p_b,adv_a,adv_b,pick,confidence,analysis_source,score_1,score_1_prob,score_2,score_2_prob,score_3,score_3_prob
-2026-07-13,周一201,瑞典超,周一201,2040499,佐加顿斯,哈斯塔德,2.5163378047634013,0.7845888883043843,0.7463038935373576,0.1655070124136128,0.08818909404902964,,,佐加顿斯,高,中国足彩网专业欧赔市场,2-0,0.11667074614483623,3-0,0.09786100307806843,2-1,0.0915385710154201
+﻿date,kickoff,stage,match_num,match_id,team_a,team_b,xg_a,xg_b,p_a,p_draw,p_b,adv_a,adv_b,pick,confidence,analysis_source,is_single_had,score_1,score_1_prob,score_2,score_2_prob,score_3,score_3_prob
+2026-07-13,周一201,瑞典超,周一201,2040499,佐加顿斯,哈斯塔德,2.5163378047634013,0.7845888883043843,0.7476950885910614,0.16507103320387578,0.08723387820506284,,,佐加顿斯,高,中国足彩网专业欧赔市场,True,2-0,0.11667074614483623,3-0,0.09786100307806843,2-1,0.0915385710154201

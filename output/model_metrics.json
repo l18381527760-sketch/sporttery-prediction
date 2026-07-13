@@ -24,9 +24,10 @@
   },
   "by_play": {},
   "by_league": {},
+  "calibration_by_league": {},
   "clv": {
-    "count": 0,
-    "average_clv": null,
-    "positive_rate": null
+    "count": 1,
+    "average_clv": 0.0,
+    "positive_rate": 0.0
   }
 }
