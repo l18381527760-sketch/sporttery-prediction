@@ -1,2 +1,1 @@
 ﻿date,strategy_version,stage,match,team_a,team_b,play,selection,probability,raw_model_probability,odds,market_probability,value_edge,expected_value,stake,expected_return,expected_profit,reason,legs_json
-2026-07-13,value-v2,瑞典超,佐加顿斯 vs 哈斯塔德,佐加顿斯,哈斯塔德,观察单,胜,0.7496542632886593,0.7476950885910614,1.18,0.75,-0.00034573671134074946,0.8845920306806179,0,0.0,0.0,零金额观察单；保守概率75.0%，原模型74.8%，市场公平概率75.0%，仅用于概率校准和CLV，不计入盈亏,[]
