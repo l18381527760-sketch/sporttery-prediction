@@ -323,6 +323,31 @@
     .betting-section {
       margin-top: 22px;
     }
+    .account-control {
+      margin-top: 20px;
+      padding: 16px 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      display: grid;
+      grid-template-columns: minmax(220px, .8fr) minmax(0, 1.6fr);
+      gap: 14px 24px;
+      align-items: center;
+    }
+    .account-control > div { display: grid; gap: 5px; }
+    .account-control span { color: var(--green); font-size: 12px; font-weight: 700; }
+    .account-control strong { font-size: 21px; }
+    .account-control small { line-height: 1.5; }
+    .account-control dl {
+      margin: 0;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .account-control dl div { min-width: 0; }
+    .account-control dt { color: var(--muted); font-size: 11px; font-weight: 700; }
+    .account-control dd { margin: 5px 0 0; font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+    .account-control p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }
+    .play-performance { margin-top: 20px; }
     .draw-alert {
       margin-top: 22px;
       padding: 18px 0 2px;
@@ -515,6 +540,9 @@
       .ledger-strip {
         grid-template-columns: 1fr;
       }
+      .account-control, .account-control dl {
+        grid-template-columns: 1fr;
+      }
       .draw-subtype-progress, .draw-model-progress, .draw-alert-detail {
         grid-template-columns: 1fr;
       }
@@ -557,7 +585,7 @@
       <div>
         <div class="section-title">
           <h2>比赛预测</h2>
-          <span>最后更新：2026-07-14 22:43</span>
+          <span>最后更新：2026-07-14 08:46</span>
         </div>
         <div class="matches">
 
@@ -681,14 +709,87 @@
         <div><span>当前策略样本</span><strong>0</strong></div>
         <div><span>Brier概率误差</span><strong>-</strong></div>
         <div><span>Log Loss</span><strong>-</strong></div>
+        <div><span>概率校准误差</span><strong>-</strong></div>
+        <div><span>最大回撤</span><strong>100</strong></div>
+        <div><span>最长连续未中</span><strong>2</strong></div>
+        <div><span>当前连续未中</span><strong>2</strong></div>
         <div><span>平均赔率价值</span><strong>-</strong></div>
         <div><span>平均CLV</span><strong>-</strong></div>
+        <div><span>赔率快照覆盖</span><strong>开0 / 决0 / 临0</strong></div>
       </section>
+
+
+      <section class="account-control" aria-label="模拟账户控制">
+        <div>
+          <span>今日主方案观望</span>
+          <strong>模拟观察 0/30 天</strong>
+          <small>没有比赛同时通过官方赔率、概率优势、正期望值和风险门槛，今日主方案观望。</small>
+        </div>
+        <dl>
+          <div><dt>本月模拟投入</dt><dd>330/3000元</dd></div>
+          <div><dt>本月盈亏</dt><dd>+60元</dd></div>
+          <div><dt>月度止损</dt><dd>500元</dd></div>
+          <div><dt>账户状态</dt><dd>继续模拟观察</dd></div>
+        </dl>
+        <p>系统始终是模拟记录，不会自动转为真实投注。</p>
+      </section>
+
+
+      <section class="play-performance">
+        <div class="section-title"><h2>各玩法独立表现</h2><span>分别检查收益与最大回撤</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>玩法</th><th>已结算</th><th>命中率</th><th>投入</th><th>盈亏</th><th>回报率</th><th>最大回撤</th></tr></thead>
+            <tbody>
+          <tr>
+            <td><strong>其他串关</strong></td>
+            <td>1</td>
+            <td>0.0%</td>
+            <td>50元</td>
+            <td>-50元</td>
+            <td>-100.0%</td>
+            <td>50元</td>
+          </tr>
+
+          <tr>
+            <td><strong>半全场</strong></td>
+            <td>1</td>
+            <td>0.0%</td>
+            <td>50元</td>
+            <td>-50元</td>
+            <td>-100.0%</td>
+            <td>50元</td>
+          </tr>
+
+          <tr>
+            <td><strong>总进球</strong></td>
+            <td>1</td>
+            <td>100.0%</td>
+            <td>100元</td>
+            <td>+260元</td>
+            <td>260.0%</td>
+            <td>0元</td>
+          </tr>
+
+          <tr>
+            <td><strong>胜平负</strong></td>
+            <td>1</td>
+            <td>0.0%</td>
+            <td>100元</td>
+            <td>-100元</td>
+            <td>-100.0%</td>
+            <td>100元</td>
+          </tr>
+        </tbody>
+          </table>
+        </div>
+      </section>
+
 
 
         <section class="betting-section">
           <div class="section-title"><h2>模拟投注方案</h2><span>暂无方案</span></div>
-          <div class="empty">今天没有同时满足概率优势、赔率价值和风险条件的方案，因此不模拟投注。</div>
+          <div class="empty">没有比赛同时通过官方赔率、概率优势、正期望值和风险门槛，今日主方案观望。</div>
         </section>
 
 

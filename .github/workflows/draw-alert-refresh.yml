@@ -50,6 +50,12 @@ jobs:
           TARGET_DATE="$(date +%F)"
           python import_sporttery.py --date "$TARGET_DATE"
 
+      - name: Capture decision-time odds
+        continue-on-error: true
+        run: |
+          TARGET_DATE="$(date +%F)"
+          python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision
+
       - name: Refresh predictions
         continue-on-error: true
         run: |

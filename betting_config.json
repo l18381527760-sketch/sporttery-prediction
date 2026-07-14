@@ -1,5 +1,5 @@
 {
-  "strategy_version": "value-v2",
+  "strategy_version": "value-v3",
   "daily_budget": 230,
   "max_daily_budget": 500,
   "base_allocations": {
@@ -45,13 +45,31 @@
     "max_single_count": 2,
     "min_combo_leg_probability": 0.45,
     "min_combo_leg_edge": 0.02,
-    "min_combo_leg_expected_return": 1.0,
+    "min_combo_leg_expected_return": 1.01,
     "combo_min_legs": 2,
     "combo_max_legs": 3,
+    "three_leg_min_settled_days": 30,
     "three_leg_value_premium": 1.05,
     "combo_stake": 30,
     "min_combo_expected_return": 1.03,
     "min_history_samples": 30
+  },
+  "league_calibration": {
+    "min_samples": 30,
+    "prior_samples": 60,
+    "max_adjustment": 0.05,
+    "validation_fraction": 0.25
+  },
+  "simulation_account": {
+    "mode": "simulation",
+    "required_settled_days": 30,
+    "monthly_budget_cap": 3000,
+    "monthly_stop_loss": 500,
+    "real_money_automation": false
+  },
+  "learning_policy": {
+    "case_study_policy": "regression_only",
+    "minimum_rule_samples": 30
   },
   "default_odds": {},
   "confidence_multiplier": {

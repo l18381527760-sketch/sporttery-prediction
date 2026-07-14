@@ -1,1 +1,1 @@
-﻿date,strategy_version,stage,match,play,selection,probability,raw_model_probability,odds,market_probability,value_edge,expected_value,stake,status,profit,reason,legs_json
+﻿date,strategy_version,stage,match,play,selection,probability,raw_model_probability,league_calibrated_probability,league_calibration_samples,odds,market_probability,value_edge,expected_value,stake,status,profit,reason,legs_json

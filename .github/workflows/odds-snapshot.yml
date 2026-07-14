@@ -34,10 +34,10 @@ jobs:
       - name: Capture official odds snapshot
         run: |
           TARGET_DATE="$(date +%F)"
-          python capture_odds_snapshot.py
+          python capture_odds_snapshot.py --date "$TARGET_DATE" --phase monitoring
 
       - name: Commit snapshot
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Capture Sporttery odds snapshot"
-          file_pattern: "data/odds_snapshots/*.json"
+          file_pattern: "data/odds_snapshots"

@@ -2,7 +2,7 @@ import csv
 import json
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -374,7 +374,11 @@ class MarketHeatCollectorTest(unittest.TestCase):
             with patch.object(snapshot, "SNAPSHOT_DIR", Path(folder)), patch.object(
                 snapshot, "fetch_zgzcw_matches", return_value=[source_match]
             ):
-                output = snapshot.capture(date(2026, 7, 12))
+                output = snapshot.capture(
+                    date(2026, 7, 12),
+                    phase="decision",
+                    captured_at=datetime(2026, 7, 12, 13, 30, tzinfo=timezone(timedelta(hours=8))),
+                )
 
             payload = json.loads(output.read_text(encoding="utf-8"))
 
@@ -389,6 +393,29 @@ class MarketHeatCollectorTest(unittest.TestCase):
         self.assertEqual("win_draw_loss", match["market_type"])
         self.assertEqual(90, match["settlement_minutes"])
         self.assertIs(False, match["includes_extra_time"])
+        self.assertEqual("decision", payload["capture_phase"])
+        self.assertEqual("decision", match["capture_phase"])
+        self.assertEqual(390, match["minutes_to_kickoff"])
+
+    def test_snapshot_drops_matches_that_have_already_kicked_off(self):
+        source_match = {
+            "homeTeam": "A",
+            "awayTeam": "B",
+            "kickoff_at": "2026-07-12 13:00",
+            "h": "2.0",
+            "d": "3.2",
+            "a": "4.0",
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(snapshot, "SNAPSHOT_DIR", Path(folder)), patch.object(
+                snapshot, "fetch_zgzcw_matches", return_value=[source_match]
+            ):
+                output = snapshot.capture(
+                    date(2026, 7, 12),
+                    captured_at=datetime(2026, 7, 12, 13, 1, tzinfo=timezone(timedelta(hours=8))),
+                )
+
+        self.assertIsNone(output)
 
     def test_collector_payload_flows_to_verified_training_snapshot(self):
         with tempfile.TemporaryDirectory() as folder:

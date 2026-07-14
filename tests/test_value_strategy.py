@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,6 +37,18 @@ def config() -> dict:
             "calibration_prior": 100,
             "min_history_samples": 30,
         },
+        "league_calibration": {
+            "min_samples": 30,
+            "prior_samples": 30,
+            "max_adjustment": 0.05,
+            "validation_fraction": 0.25,
+        },
+        "simulation_account": {
+            "required_settled_days": 30,
+            "monthly_budget_cap": 3000,
+            "monthly_stop_loss": 500,
+            "real_money_automation": False,
+        },
     }
 
 
@@ -60,7 +72,7 @@ def odds(*match_ids: str) -> dict:
 
 
 class ValueStrategyTest(unittest.TestCase):
-    def run_strategy(self, predictions: list[dict], market: dict):
+    def run_strategy(self, predictions: list[dict], market: dict, training_samples=None):
         with tempfile.TemporaryDirectory() as temp_dir:
             empty = Path(temp_dir)
             with (
@@ -69,6 +81,7 @@ class ValueStrategyTest(unittest.TestCase):
                 patch.object(strategy, "read_json", return_value=config()),
                 patch.object(strategy, "load_predictions", return_value=predictions),
                 patch.object(strategy, "load_odds", return_value=market),
+                patch.object(strategy, "load_draw_training_samples", return_value=training_samples or []),
             ):
                 return strategy.build_value_plan(date(2026, 7, 12))
 
@@ -104,6 +117,54 @@ class ValueStrategyTest(unittest.TestCase):
 
         self.assertEqual(1, len(parser.matches))
         self.assertTrue(parser.matches[0]["isSingleHad"])
+
+    def test_draw_probability_is_league_calibrated_before_value_gating(self):
+        start = date(2026, 1, 1)
+        samples = [
+            {
+                "date": (start + timedelta(days=index)).isoformat(),
+                "match_id": str(index),
+                "stage": "测试联赛",
+                "base_draw_probability": "0.20",
+                "outcome": "1" if index % 5 in {0, 1} else "0",
+            }
+            for index in range(40)
+        ]
+        row = prediction("001", True, 0.30)
+        row.update(p_draw="0.40", p_b="0.30")
+        market = {"001": {"had": {"h": 4.0, "d": 3.0, "a": 3.5}}}
+
+        plan, _ = self.run_strategy([row], market, samples)
+
+        self.assertEqual(1, len(plan))
+        self.assertEqual("平", plan[0]["selection"])
+        self.assertAlmostEqual(0.45, plan[0]["league_calibrated_probability"])
+        self.assertEqual(40, plan[0]["league_calibration_samples"])
+        self.assertAlmostEqual(0.45, plan[0]["probability"])
+
+    def test_monthly_budget_limit_blocks_money_but_keeps_observations(self):
+        configured = config()
+        configured["simulation_account"]["monthly_budget_cap"] = 100
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir)
+            (output / "betting_ledger.csv").write_text(
+                "date,play,probability,odds,stake,status,profit\n"
+                "2026-07-01,平局单场,0.4,3.0,100,未中,-100\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.object(strategy, "OUTPUT_DIR", output),
+                patch.object(strategy, "DATA_DIR", output),
+                patch.object(strategy, "read_json", return_value=configured),
+                patch.object(strategy, "load_predictions", return_value=[prediction("001", True)]),
+                patch.object(strategy, "load_odds", return_value=odds("001")),
+                patch.object(strategy, "load_draw_training_samples", return_value=[]),
+            ):
+                plan, observations = strategy.build_value_plan(date(2026, 7, 12))
+
+        self.assertEqual([], plan)
+        self.assertEqual(1, len(observations))
+        self.assertEqual(0, observations[0]["stake"])
 
 
 if __name__ == "__main__":

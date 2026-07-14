@@ -111,6 +111,14 @@ def read_draw_model_registry() -> dict:
     return read_json_file(OUTPUT_DIR / "draw_model_registry.json")
 
 
+def read_daily_decision(display_date: date | None) -> dict:
+    if display_date is None:
+        return {}
+    return read_json_file(
+        OUTPUT_DIR / f"daily_decision_{display_date.isoformat()}.json"
+    )
+
+
 def draw_alert_key(row: dict) -> tuple[str, str, str]:
     return (
         external_text(row.get("date")).strip(),
@@ -354,7 +362,9 @@ def render_history(grouped: dict[str, list[dict]], display_date: date | None) ->
 
 
 def render_betting_plan(
-    plan: list[dict], draw_alerts: list[dict] | None = None
+    plan: list[dict],
+    draw_alerts: list[dict] | None = None,
+    decision: dict | None = None,
 ) -> str:
     main_stake, draw_alert_stake, total_stake = today_stake_totals(
         plan, draw_alerts
@@ -374,10 +384,13 @@ def render_betting_plan(
           <div class="empty">主方案为空，但有平局预警投入 {yuan(draw_alert_stake)}元。具体场次和依据见下方平局预警。</div>
         </section>
         """
-        return """
+        decision = decision if isinstance(decision, dict) else {}
+        no_bet_reason = external_text(decision.get("reason")).strip()
+        no_bet_reason = no_bet_reason or "今天没有同时满足概率优势、赔率价值和风险条件的方案，因此不模拟投注。"
+        return f"""
         <section class="betting-section">
           <div class="section-title"><h2>模拟投注方案</h2><span>暂无方案</span></div>
-          <div class="empty">今天没有同时满足概率优势、赔率价值和风险条件的方案，因此不模拟投注。</div>
+          <div class="empty">{escaped(no_bet_reason)}</div>
         </section>
         """
 
@@ -399,7 +412,7 @@ def render_betting_plan(
               <td>{html.escape(item.get("play", ""))}</td>
               <td>{html.escape(item.get("match", ""))}</td>
               <td><strong>{html.escape(item.get("selection", ""))}</strong></td>
-              <td>保守 {pct(as_float(item, "probability"))}<br><small>原模型 {pct(as_float(item, "raw_model_probability"))} / 市场 {pct(as_float(item, "market_probability"))}</small></td>
+              <td>保守 {pct(as_float(item, "probability"))}<br><small>原模型 {pct(as_float(item, "raw_model_probability"))} / 联赛校准 {pct(as_float(item, "league_calibrated_probability"))} / 市场 {pct(as_float(item, "market_probability"))}</small></td>
               <td>{html.escape(item.get("odds", ""))}<br><small>优势 {pct(as_float(item, "value_edge"))}</small></td>
               <td>{yuan(as_float(item, "stake"))}</td>
               <td>{yuan(as_float(item, "expected_profit"))}</td>
@@ -434,6 +447,117 @@ def render_betting_plan(
     """
 
 
+def render_account_control(decision: dict) -> str:
+    if not isinstance(decision, dict) or not decision:
+        return ""
+    account = decision.get("account") if isinstance(decision.get("account"), dict) else {}
+    completed = max(0, as_int(account.get("completed_days")))
+    required = max(30, as_int(account.get("required_settled_days"), 30))
+    monthly_stake = as_float(account, "monthly_stake") or 0.0
+    monthly_budget = as_float(account, "monthly_budget_cap") or 0.0
+    monthly_profit = as_float(account, "monthly_profit") or 0.0
+    stop_loss = as_float(account, "monthly_stop_loss") or 0.0
+    review = "达到人工复核门槛" if account.get("review_ready") is True else "继续模拟观察"
+    state = external_text(decision.get("status"))
+    label = {
+        "bet": "今日通过价值门槛",
+        "no_bet": "今日主方案观望",
+        "risk_paused": "今日风险暂停",
+    }.get(state, "今日决策")
+    return f"""
+      <section class="account-control" aria-label="模拟账户控制">
+        <div>
+          <span>{escaped(label)}</span>
+          <strong>模拟观察 {completed}/{required} 天</strong>
+          <small>{escaped(decision.get("reason") or "-")}</small>
+        </div>
+        <dl>
+          <div><dt>本月模拟投入</dt><dd>{yuan(monthly_stake)}/{yuan(monthly_budget)}元</dd></div>
+          <div><dt>本月盈亏</dt><dd>{monthly_profit:+.0f}元</dd></div>
+          <div><dt>月度止损</dt><dd>{yuan(stop_loss)}元</dd></div>
+          <div><dt>账户状态</dt><dd>{review}</dd></div>
+        </dl>
+        <p>系统始终是模拟记录，不会自动转为真实投注。</p>
+      </section>
+    """
+
+
+def render_play_metrics(model_metrics: dict) -> str:
+    by_play = model_metrics.get("by_play_all") if isinstance(model_metrics, dict) else {}
+    if not isinstance(by_play, dict) or not by_play:
+        by_play = model_metrics.get("by_play") if isinstance(model_metrics, dict) else {}
+    if not isinstance(by_play, dict) or not by_play:
+        return ""
+    rows = []
+    for play, item in sorted(by_play.items()):
+        if not isinstance(item, dict):
+            continue
+        profit = as_float(item, "profit")
+        rows.append(f"""
+          <tr>
+            <td><strong>{escaped(play)}</strong></td>
+            <td>{as_int(item.get("count"))}</td>
+            <td>{pct(as_float(item, "hit_rate"))}</td>
+            <td>{yuan(as_float(item, "stake"))}元</td>
+            <td>{'-' if profit is None else f'{profit:+.0f}元'}</td>
+            <td>{pct(as_float(item, "roi"))}</td>
+            <td>{yuan(as_float(item, "max_drawdown"))}元</td>
+          </tr>
+        """)
+    if not rows:
+        return ""
+    return f"""
+      <section class="play-performance">
+        <div class="section-title"><h2>各玩法独立表现</h2><span>分别检查收益与最大回撤</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>玩法</th><th>已结算</th><th>命中率</th><th>投入</th><th>盈亏</th><th>回报率</th><th>最大回撤</th></tr></thead>
+            <tbody>{''.join(rows)}</tbody>
+          </table>
+        </div>
+      </section>
+    """
+
+
+def render_league_calibrations(model_metrics: dict) -> str:
+    table = model_metrics.get("league_draw_calibration") if isinstance(model_metrics, dict) else {}
+    if not isinstance(table, dict) or not table:
+        return ""
+    rows = []
+    for league, item in sorted(table.items()):
+        if not isinstance(item, dict):
+            continue
+        count = max(0, as_int(item.get("sample_count")))
+        enabled = item.get("enabled") is True
+        status = "已启用" if enabled else f"观察期 {count}/30"
+        adjustment = as_float(item, "adjustment") or 0.0
+        before = as_float(item, "validation_brier_before")
+        after = as_float(item, "validation_brier_after")
+        validation = f"{decimal(before)} → {decimal(after)}" if before is not None else "-"
+        rows.append(f"""
+          <tr>
+            <td><strong>{escaped(league)}</strong></td>
+            <td>{count}</td>
+            <td>{status}</td>
+            <td>{adjustment * 100:+.1f}%</td>
+            <td>{validation}</td>
+          </tr>
+        """)
+    if not rows:
+        return ""
+    return f"""
+      <section class="play-performance">
+        <div class="section-title"><h2>联赛平局校准</h2><span>至少30场且后续验证改善才启用</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>联赛</th><th>样本</th><th>状态</th><th>概率修正</th><th>验证Brier</th></tr></thead>
+            <tbody>{''.join(rows)}</tbody>
+          </table>
+        </div>
+      </section>
+    """
+
+
 def render_observations(observations: list[dict]) -> str:
     if not observations:
         return ""
@@ -445,6 +569,7 @@ def render_observations(observations: list[dict]) -> str:
             <td><strong>{html.escape(item.get("selection", ""))}</strong></td>
             <td>{pct(as_float(item, "probability"))}</td>
             <td>{pct(as_float(item, "raw_model_probability"))}</td>
+            <td>{pct(as_float(item, "league_calibrated_probability"))}</td>
             <td>{pct(as_float(item, "market_probability"))}</td>
             <td>{html.escape(item.get("odds", ""))}</td>
           </tr>
@@ -453,7 +578,7 @@ def render_observations(observations: list[dict]) -> str:
       <section class="betting-section">
         <div class="section-title"><h2>零金额观察单</h2><span>只用于概率校准与CLV，不计入投入和盈亏</span></div>
         <div class="table-wrap"><table>
-          <thead><tr><th>比赛</th><th>观察结果</th><th>保守概率</th><th>原模型</th><th>市场概率</th><th>赔率</th></tr></thead>
+          <thead><tr><th>比赛</th><th>观察结果</th><th>保守概率</th><th>原模型</th><th>联赛校准</th><th>市场概率</th><th>赔率</th></tr></thead>
           <tbody>{"".join(rows)}</tbody>
         </table></div>
       </section>
@@ -705,8 +830,12 @@ def render_ledger(ledger: list[dict], model_metrics: dict) -> str:
     roi = overall.get("roi")
     brier = active.get("brier")
     log_loss = active.get("log_loss")
+    calibration_error = active.get("calibration_error")
     average_expected_return = active.get("average_expected_return")
     clv = model_metrics.get("clv", {})
+    snapshot_coverage = model_metrics.get("snapshot_coverage", {})
+    snapshot_phases = snapshot_coverage.get("phases", {}) if isinstance(snapshot_coverage, dict) else {}
+    snapshot_phases = snapshot_phases if isinstance(snapshot_phases, dict) else {}
     return f"""
       <section class="ledger-strip">
         <div><span>累计模拟投入</span><strong>{yuan(total_stake)}</strong></div>
@@ -717,8 +846,13 @@ def render_ledger(ledger: list[dict], model_metrics: dict) -> str:
         <div><span>当前策略样本</span><strong>{active.get("count", 0)}</strong></div>
         <div><span>Brier概率误差</span><strong>{decimal(brier)}</strong></div>
         <div><span>Log Loss</span><strong>{decimal(log_loss)}</strong></div>
+        <div><span>概率校准误差</span><strong>{decimal(calibration_error)}</strong></div>
+        <div><span>最大回撤</span><strong>{yuan(overall.get("max_drawdown"))}</strong></div>
+        <div><span>最长连续未中</span><strong>{as_int(overall.get("max_losing_streak"))}</strong></div>
+        <div><span>当前连续未中</span><strong>{as_int(overall.get("current_losing_streak"))}</strong></div>
         <div><span>平均赔率价值</span><strong>{pct((average_expected_return - 1) if average_expected_return is not None else None)}</strong></div>
         <div><span>平均CLV</span><strong>{pct(clv.get("average_clv"))}</strong></div>
+        <div><span>赔率快照覆盖</span><strong>开{as_int(snapshot_phases.get("opening"))} / 决{as_int(snapshot_phases.get("decision"))} / 临{as_int(snapshot_phases.get("pre_kickoff"))}</strong></div>
       </section>
     """
 
@@ -737,6 +871,7 @@ def render_site(rows: list[dict]) -> str:
     draw_alerts = read_draw_alert(display_date)
     draw_alert_metrics = read_draw_alert_metrics()
     draw_model_registry = read_draw_model_registry()
+    daily_decision = read_daily_decision(display_date)
     source_status = read_source_status()
     source_name = str(source_status.get("source") or "未知")
     analysis_source = str(source_status.get("analysis_source") or "专业欧赔市场")
@@ -1078,6 +1213,31 @@ def render_site(rows: list[dict]) -> str:
     .betting-section {{
       margin-top: 22px;
     }}
+    .account-control {{
+      margin-top: 20px;
+      padding: 16px 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      display: grid;
+      grid-template-columns: minmax(220px, .8fr) minmax(0, 1.6fr);
+      gap: 14px 24px;
+      align-items: center;
+    }}
+    .account-control > div {{ display: grid; gap: 5px; }}
+    .account-control span {{ color: var(--green); font-size: 12px; font-weight: 700; }}
+    .account-control strong {{ font-size: 21px; }}
+    .account-control small {{ line-height: 1.5; }}
+    .account-control dl {{
+      margin: 0;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    .account-control dl div {{ min-width: 0; }}
+    .account-control dt {{ color: var(--muted); font-size: 11px; font-weight: 700; }}
+    .account-control dd {{ margin: 5px 0 0; font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }}
+    .account-control p {{ grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }}
+    .play-performance {{ margin-top: 20px; }}
     .draw-alert {{
       margin-top: 22px;
       padding: 18px 0 2px;
@@ -1270,6 +1430,9 @@ def render_site(rows: list[dict]) -> str:
       .ledger-strip {{
         grid-template-columns: 1fr;
       }}
+      .account-control, .account-control dl {{
+        grid-template-columns: 1fr;
+      }}
       .draw-subtype-progress, .draw-model-progress, .draw-alert-detail {{
         grid-template-columns: 1fr;
       }}
@@ -1328,7 +1491,10 @@ def render_site(rows: list[dict]) -> str:
     </section>
 
     {render_ledger(betting_ledger, model_metrics)}
-    {render_betting_plan(betting_plan, draw_alerts)}
+    {render_account_control(daily_decision)}
+    {render_play_metrics(model_metrics)}
+    {render_league_calibrations(model_metrics)}
+    {render_betting_plan(betting_plan, draw_alerts, daily_decision)}
     {render_draw_alert(draw_alerts, draw_alert_metrics, draw_model_registry)}
     {render_observations(observation_plan)}
 

@@ -29,6 +29,91 @@ def multiline_evidence_source() -> tuple[str, str]:
 
 
 class DrawAlertReportingTest(unittest.TestCase):
+    def test_account_control_shows_simulation_gate_and_hard_limits(self):
+        html = build_site.render_account_control(
+            {
+                "status": "no_bet",
+                "reason": "今日主方案观望。",
+                "account": {
+                    "mode": "simulation",
+                    "completed_days": 12,
+                    "required_settled_days": 30,
+                    "monthly_stake": 860,
+                    "monthly_budget_cap": 3000,
+                    "monthly_profit": -120,
+                    "monthly_stop_loss": 500,
+                    "review_ready": False,
+                    "real_money_automation": False,
+                },
+            }
+        )
+
+        self.assertIn("模拟观察 12/30 天", html)
+        self.assertIn("860/3000元", html)
+        self.assertIn("今日主方案观望", html)
+        self.assertIn("不会自动转为真实投注", html)
+
+    def test_play_metrics_show_profit_roi_and_risk_separately(self):
+        html = build_site.render_play_metrics(
+            {
+                "by_play": {
+                    "平局单场": {
+                        "count": 10,
+                        "hit_rate": 0.4,
+                        "stake": 500,
+                        "profit": 80,
+                        "roi": 0.16,
+                        "max_drawdown": 70,
+                    },
+                    "胜平负串关": {
+                        "count": 4,
+                        "hit_rate": 0.25,
+                        "stake": 120,
+                        "profit": -30,
+                        "roi": -0.25,
+                        "max_drawdown": 60,
+                    },
+                }
+            }
+        )
+
+        self.assertIn("平局单场", html)
+        self.assertIn("胜平负串关", html)
+        self.assertIn("+80元", html)
+        self.assertIn("-25.0%", html)
+        self.assertIn("最大回撤", html)
+
+    def test_league_calibration_status_is_visible_and_sample_gated(self):
+        html = build_site.render_league_calibrations(
+            {
+                "league_draw_calibration": {
+                    "联赛A": {"enabled": False, "sample_count": 12, "adjustment": 0},
+                    "联赛B": {
+                        "enabled": True,
+                        "sample_count": 42,
+                        "adjustment": 0.03,
+                        "validation_brier_before": 0.220,
+                        "validation_brier_after": 0.205,
+                    },
+                }
+            }
+        )
+
+        self.assertIn("联赛A", html)
+        self.assertIn("观察期 12/30", html)
+        self.assertIn("联赛B", html)
+        self.assertIn("已启用", html)
+        self.assertIn("+3.0%", html)
+
+    def test_no_bet_panel_uses_auditable_daily_reason(self):
+        html = build_site.render_betting_plan(
+            [],
+            [],
+            {"status": "no_bet", "reason": "所有候选均未通过正期望值门槛。"},
+        )
+
+        self.assertIn("所有候选均未通过正期望值门槛", html)
+
     def test_site_totals_include_only_valid_paid_stakes(self):
         alerts = [
             {"settlement_mode": "standalone", "additional_stake": "30"},
