@@ -115,6 +115,10 @@ class WorkflowScheduleTest(unittest.TestCase):
     def test_base_forecast_optional_steps_fail_independently_and_report_still_builds(self):
         text = self.read_workflow("daily-forecast.yml")
         optional_steps = {
+            "Capture opening odds": (
+                'python capture_odds_snapshot.py --date "$TARGET_DATE" --phase opening',
+                True,
+            ),
             "Collect optional market evidence": (
                 'python collect_market_heat.py --date "$TARGET_DATE"',
                 True,
@@ -171,6 +175,7 @@ class WorkflowScheduleTest(unittest.TestCase):
         text = self.read_workflow("draw-alert-refresh.yml")
         refresh_steps = {
             "Refresh Sporttery import": 'python import_sporttery.py --date "$TARGET_DATE"',
+            "Capture decision-time odds": 'python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision',
             "Refresh predictions": 'python predict_today.py --date "$TARGET_DATE"',
             "Refresh optional market evidence": 'python collect_market_heat.py --date "$TARGET_DATE"',
             "Refresh draw alerts": 'python generate_draw_alert.py --date "$TARGET_DATE"',
@@ -193,6 +198,18 @@ class WorkflowScheduleTest(unittest.TestCase):
             text.index("      - name: Refresh draw alert ledger"),
             text.index("      - name: Rebuild report from the latest committed data"),
         )
+
+    def test_recurring_snapshot_marks_monitoring_phase(self):
+        text = self.read_workflow("odds-snapshot.yml")
+        step = self.step_block(text, "snapshot", "Capture official odds snapshot")
+        self.assertIn('TARGET_DATE="$(date +%F)"', step)
+        self.assertIn(
+            'python capture_odds_snapshot.py --date "$TARGET_DATE" --phase monitoring',
+            step,
+        )
+        commit = self.step_block(text, "snapshot", "Commit snapshot")
+        self.assertIn('file_pattern: "data/odds_snapshots"', commit)
+        self.assertNotIn("*.json", commit)
 
     def test_settlement_uses_yesterday_for_results_and_today_for_training(self):
         text = self.read_workflow("noon-settlement.yml")

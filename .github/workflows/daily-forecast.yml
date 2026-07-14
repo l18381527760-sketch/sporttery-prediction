@@ -53,6 +53,12 @@ jobs:
           python predict_today.py --date "$TARGET_DATE"
           python generate_betting_plan.py --date "$TARGET_DATE"
 
+      - name: Capture opening odds
+        continue-on-error: true
+        run: |
+          TARGET_DATE="$(date +%F)"
+          python capture_odds_snapshot.py --date "$TARGET_DATE" --phase opening
+
       - name: Collect optional market evidence
         continue-on-error: true
         run: |

@@ -239,9 +239,14 @@ def observation_plan(report_date: str) -> list[dict]:
     return read_csv(OUTPUT_DIR / f"observation_plan_{report_date}.csv")
 
 
+def daily_decision(report_date: str) -> dict:
+    return read_draw_json(f"daily_decision_{report_date}.json")
+
+
 def draw_report() -> Path:
     report_date, plan = latest_plan()
     observations = observation_plan(report_date)
+    decision = daily_decision(report_date)
     ledger = read_csv(OUTPUT_DIR / "betting_ledger.csv")
     all_metrics = read_metrics()
     all_draw_alerts = [
@@ -256,6 +261,15 @@ def draw_report() -> Path:
     metrics = all_metrics.get("overall", {})
     active_metrics = all_metrics.get("active_strategy", {})
     clv_metrics = all_metrics.get("clv", {})
+    play_metrics = all_metrics.get("by_play_all") or all_metrics.get("by_play", {})
+    play_metrics = play_metrics if isinstance(play_metrics, dict) else {}
+    league_calibrations = all_metrics.get("league_draw_calibration", {})
+    league_calibrations = league_calibrations if isinstance(league_calibrations, dict) else {}
+    enabled_league_calibrations = sum(
+        1 for item in league_calibrations.values()
+        if isinstance(item, dict) and item.get("enabled") is True
+    )
+    control_visible = bool(decision) or bool(active_metrics) or bool(metrics)
     _, standalone_alert_stake, today_stake = today_stake_totals(
         plan, all_draw_alerts
     )
@@ -263,7 +277,9 @@ def draw_report() -> Path:
     plan_height = max(1, 0 if stake_data_invalid else len(plan)) * 124
     ledger_height = max(1, len(ledger)) * 76
     observation_height = (58 + len(observations) * 70) if observations else 0
-    height = 590 + plan_height + observation_height + ledger_height + 100 + 170 * len(draw_alerts)
+    play_metrics_height = (115 + 54 * len(play_metrics)) if play_metrics else 0
+    control_height = 60 if control_visible else 0
+    height = 590 + control_height + plan_height + observation_height + play_metrics_height + ledger_height + 100 + 170 * len(draw_alerts)
     image = Image.new("RGB", (WIDTH, height), "#f3f6f4")
     draw = ImageDraw.Draw(image)
 
@@ -285,6 +301,12 @@ def draw_report() -> Path:
     brier = active_metrics.get("brier")
     roi = metrics.get("roi")
     average_clv = clv_metrics.get("average_clv")
+    calibration_error = active_metrics.get("calibration_error")
+    max_drawdown = metrics.get("max_drawdown")
+    max_losing_streak = metrics.get("max_losing_streak")
+    account = decision.get("account", {}) if isinstance(decision.get("account"), dict) else {}
+    completed_days = int(account.get("completed_days") or 0)
+    required_days = max(30, int(account.get("required_settled_days") or 30))
     stats = [
         ("今日预算", "停止投入" if stake_data_invalid else f"{today_stake:.0f} 元"),
         ("Brier误差", f"{brier:.3f}" if brier is not None else "-"),
@@ -300,7 +322,28 @@ def draw_report() -> Path:
         value_color = red if (stake_data_invalid and index == 0) or (label == "累计盈亏" and profit < 0) else green
         draw.text((x + 18, 280), value, font=font(30), fill=value_color)
 
-    y = 385
+    decision_reason = heading_text(decision.get("reason"))
+    if control_visible:
+        risk_line = (
+            f"最大回撤 {max_drawdown:.0f}元" if isinstance(max_drawdown, (int, float)) else "最大回撤 -"
+        )
+        risk_line += (
+            f"　最长连续未中 {int(max_losing_streak)}"
+            if isinstance(max_losing_streak, (int, float))
+            else "　最长连续未中 -"
+        )
+        risk_line += (
+            f"　概率校准误差 {calibration_error:.3f}"
+            if isinstance(calibration_error, (int, float))
+            else "　概率校准误差 -"
+        )
+        risk_line += f"　联赛校准 {enabled_league_calibrations} 个　模拟观察 {completed_days}/{required_days}天　不会自动转为真实投注"
+        draw_fitted_text(draw, (70, 350), risk_line, font(18), muted, WIDTH - 140)
+        if decision_reason:
+            draw_fitted_text(draw, (70, 380), f"今日决策：{decision_reason}", font(18), ink, WIDTH - 140)
+        y = 420
+    else:
+        y = 385
     draw.text((70, y), "今日投注方案", font=font(34), fill=ink)
     y += 58
     if stake_data_invalid:
@@ -310,9 +353,9 @@ def draw_report() -> Path:
         empty_copy = (
             f"主方案为空，但有平局预警投入 {standalone_alert_stake:.0f} 元"
             if standalone_alert_stake > 0
-            else "今日暂无符合条件的方案"
+            else decision_reason or "今日暂无符合条件的方案"
         )
-        draw.text((75, y), empty_copy, font=font(24), fill=muted)
+        draw_fitted_text(draw, (75, y), empty_copy, font(24), muted, WIDTH - 145)
         y += 124
     else:
         for index, row in enumerate(plan, start=1):
@@ -392,6 +435,30 @@ def draw_report() -> Path:
             draw.text((520, y + 15), f"观察 {row.get('selection', '-')}  赔率 {row.get('odds', '-')}", font=font(19), fill=ink)
             draw.text((930, y + 15), f"保守 {number(row, 'probability') * 100:.1f}%  原模型 {number(row, 'raw_model_probability') * 100:.1f}%  市场 {number(row, 'market_probability') * 100:.1f}%", font=font(18), fill=muted)
             y += 70
+
+    if play_metrics:
+        draw.line((70, y, WIDTH - 70, y), fill=line, width=2)
+        y += 30
+        draw.text((70, y), "各玩法独立表现", font=font(30), fill=ink)
+        y += 45
+        headers = [(75, "玩法"), (430, "已结算"), (570, "投入"), (740, "盈亏"), (900, "回报率"), (1080, "最大回撤")]
+        for x, header in headers:
+            draw.text((x, y), header, font=font(17), fill=muted)
+        y += 30
+        for play, item in sorted(play_metrics.items()):
+            if not isinstance(item, dict):
+                continue
+            row_profit = item.get("profit")
+            row_roi = item.get("roi")
+            row_drawdown = item.get("max_drawdown")
+            draw.rectangle((70, y, WIDTH - 70, y + 44), fill="white", outline=line)
+            draw_fitted_text(draw, (75, y + 11), play, font(17), ink, 330)
+            draw.text((430, y + 11), str(item.get("count", 0)), font=font(17), fill=ink)
+            draw.text((570, y + 11), f"{float(item.get('stake') or 0):.0f}", font=font(17), fill=ink)
+            draw.text((740, y + 11), "-" if row_profit is None else f"{float(row_profit):+.0f}", font=font(17), fill=green if (row_profit or 0) >= 0 else red)
+            draw.text((900, y + 11), "-" if row_roi is None else f"{float(row_roi) * 100:+.1f}%", font=font(17), fill=ink)
+            draw.text((1080, y + 11), "-" if row_drawdown is None else f"{float(row_drawdown):.0f}", font=font(17), fill=ink)
+            y += 54
 
     draw.line((70, y, WIDTH - 70, y), fill=line, width=2)
     y += 35

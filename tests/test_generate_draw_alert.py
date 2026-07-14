@@ -182,6 +182,40 @@ class GenerateDrawAlertTest(unittest.TestCase):
         self.assertEqual("高级", high["alert_level"])
         self.assertEqual("中级", medium["alert_level"])
 
+    def test_candidate_applies_validated_league_calibration_after_global_model(self):
+        evidence = {
+            "market_scope": "90m",
+            "quality": "high",
+            "favorite_movement": -0.05,
+            "regional_gap": 0.06,
+            "sources": {"domestic": source_record(), "professional": source_record()},
+        }
+        candidate = _candidate_from_rows(
+            {
+                "date": "2026-07-12", "match_id": "001", "team_a": "A", "team_b": "B",
+                "stage": "quarterfinal", "xg_a": "1.0", "xg_b": "1.0",
+                "p_a": "0.56", "p_draw": "0.28", "p_b": "0.16",
+            },
+            evidence,
+            {"001": {"had": {"h": "1.60", "d": "4.00", "a": "6.00"}}},
+            datetime(2026, 7, 12, tzinfo=timezone.utc),
+            {
+                "min_draw_probability": 0.27, "min_draw_edge": 0.04,
+                "min_expected_value": 1.05, "max_xg_total": 2.5,
+                "cold_favorite_probability": 0.55, "balanced_max_win_gap": 0.1,
+                "balanced_max_xg_total": 2.35,
+            },
+            {"knockout_stages": ["quarterfinal"]},
+            league_calibrations={
+                "quarterfinal": {"enabled": True, "sample_count": 40, "adjustment": 0.05}
+            },
+        )
+
+        self.assertAlmostEqual(0.28, candidate["global_calibrated_draw_probability"])
+        self.assertAlmostEqual(0.33, candidate["model_draw_probability"])
+        self.assertEqual(40, candidate["league_calibration_samples"])
+        self.assertTrue(candidate["league_calibration_enabled"])
+
     def test_candidate_rejects_an_unreasonable_individual_xg_value(self):
         evidence = {
             "market_scope": "90m", "quality": "high", "favorite_movement": -0.05, "regional_gap": 0.06,

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from draw_alert_core import COLD_RESISTANCE_SIGNALS, DrawInputs, MarketEvidence, classify_candidate, fair_probabilities, is_finite_between, valid_odds
+from strategy_controls import apply_league_draw_calibration, fit_league_draw_calibrations
 
 
 ROOT = Path(__file__).resolve().parent
@@ -20,6 +21,7 @@ BEIJING = timezone(timedelta(hours=8))
 FIELDS = [
     "date", "rank", "match_id", "match", "team_a", "team_b", "stage", "subtype", "selection", "domestic_draw_odds",
     "market_draw_probability", "model_draw_probability", "draw_edge", "expected_value", "xg_total",
+    "global_calibrated_draw_probability", "league_calibration_samples", "league_calibration_enabled",
     "evidence_json", "data_quality", "captured_at", "alert_level", "additional_stake",
     "linked_main_stake", "hypothetical_stake", "settlement_mode", "strategy_version", "feature_version",
 ]
@@ -234,6 +236,18 @@ def generate_alerts(
     main_plan = _load_csv(output_dir / f"betting_plan_{target_date}.csv")
     metrics = _load_json(output_dir / "draw_alert_metrics.json", {})
     model_registry = _load_json(output_dir / "draw_model_registry.json", {})
+    calibration_config = app_config.get("league_calibration", {})
+    league_calibrations = fit_league_draw_calibrations(
+        _load_csv(root / "data" / "draw_training_samples.csv"),
+        min_samples=int(calibration_config.get("min_samples", 30)),
+        prior_samples=int(calibration_config.get("prior_samples", 60)),
+        max_adjustment=float(calibration_config.get("max_adjustment", 0.05)),
+        validation_fraction=float(calibration_config.get("validation_fraction", 0.25)),
+    )
+    daily_decision = _load_json(
+        output_dir / f"daily_decision_{target_date}.json", {}
+    )
+    account = daily_decision.get("account", {}) if isinstance(daily_decision, dict) else {}
     write_time = _snapshot_write_time(snapshot_time)
     evidence_by_match = {
         str(row.get("match_id") or ""): row
@@ -250,6 +264,7 @@ def generate_alerts(
             draw_config,
             app_config,
             root,
+            league_calibrations,
         )
         if candidate:
             candidates.append(candidate)
@@ -275,13 +290,24 @@ def generate_alerts(
         subtype_metrics = _subtype_metrics(metrics, alert["subtype"])
         if _league_is_paused(model_registry, alert["stage"]):
             subtype_metrics = {**subtype_metrics, "promoted": False}
+        main_stake = _total_valid_stakes(
+            main_plan, "stake", int(app_config.get("max_daily_budget", 500))
+        )
+        remaining_monthly = _number(account.get("remaining_monthly_budget"))
+        alert_budget = int(draw_config.get("daily_additional_budget", 80))
+        if account.get("paused") is True or main_stake is None:
+            subtype_metrics = {**subtype_metrics, "promoted": False}
+        elif remaining_monthly is not None:
+            alert_budget = max(0, min(alert_budget, int(remaining_monthly - main_stake)))
+            if alert_budget < int(draw_config.get("min_promoted_stake", 10)):
+                subtype_metrics = {**subtype_metrics, "promoted": False}
         result = attach_stake(
             alert,
             main_plan,
             rows,
             subtype_metrics,
             int(app_config.get("max_daily_budget", 500)),
-            int(draw_config.get("daily_additional_budget", 80)),
+            alert_budget,
             requested_stake,
             int(draw_config.get("min_promoted_stake", 10)),
         )
@@ -299,6 +325,7 @@ def _candidate_from_rows(
     draw_config: dict,
     app_config: dict,
     root: Path = ROOT,
+    league_calibrations: dict | None = None,
 ) -> dict | None:
     if not evidence:
         return None
@@ -363,8 +390,13 @@ def _candidate_from_rows(
         odds[1],
         features,
     )
-    calibrated_draw_probability = _calibrated_probability(
+    global_calibrated_probability = _calibrated_probability(
         features, model_probabilities[1], root=root
+    )
+    calibrated_draw_probability, league_state = apply_league_draw_calibration(
+        global_calibrated_probability,
+        stage,
+        league_calibrations or {},
     )
     signals = derive_structural_signals(
         prediction.get("stage", ""), xg_a, xg_b, odds, model_probabilities,
@@ -416,6 +448,9 @@ def _candidate_from_rows(
         "domestic_draw_odds": odds[1],
         "market_draw_probability": classified.domestic_draw_probability,
         "model_draw_probability": calibrated_draw_probability,
+        "global_calibrated_draw_probability": global_calibrated_probability,
+        "league_calibration_samples": int(league_state.get("sample_count") or 0),
+        "league_calibration_enabled": league_state.get("enabled") is True,
         "draw_edge": classified.draw_edge,
         "expected_value": classified.expected_value,
         "xg_total": inputs.xg_total,
@@ -432,7 +467,11 @@ def _candidate_from_rows(
 def _load_configs(root: Path) -> tuple[dict, dict]:
     betting = _load_json(root / "betting_config.json", {})
     app_config = _load_json(root / "config.json", {})
-    return betting.get("draw_alert", {}), app_config | {"max_daily_budget": betting.get("max_daily_budget", 500), "strategy_version": betting.get("strategy_version", "")}
+    return betting.get("draw_alert", {}), app_config | {
+        "max_daily_budget": betting.get("max_daily_budget", 500),
+        "strategy_version": betting.get("strategy_version", ""),
+        "league_calibration": betting.get("league_calibration", {}),
+    }
 
 
 def _qualifying_market_sources(evidence: dict) -> list[MarketEvidence]:

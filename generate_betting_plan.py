@@ -6,6 +6,13 @@ from datetime import date, datetime
 from pathlib import Path
 
 from model_metrics import play_family, summarize, write_metrics
+from strategy_controls import (
+    apply_league_draw_calibration,
+    build_daily_decision,
+    combo_leg_limit,
+    fit_league_draw_calibrations,
+    simulation_account_state,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -44,6 +51,17 @@ def load_odds(target_date: date) -> dict:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_csv(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def load_draw_training_samples() -> list[dict]:
+    return load_csv(DATA_DIR / "draw_training_samples.csv")
 
 
 def poisson_pmf(lam: float, max_goals: int = 7) -> list[float]:
@@ -124,7 +142,22 @@ def hafu_key(selection: str) -> str:
     return mapping[selection[0]] + mapping[selection[1]]
 
 
-def make_item(row: dict, play: str, selection: str, probability: float, odds: float, stake: int, reason: str, legs=None, market_probability: float | None = None, value_edge: float | None = None, raw_model_probability: float | None = None, strategy_version: str = "") -> dict:
+def make_item(
+    row: dict,
+    play: str,
+    selection: str,
+    probability: float,
+    odds: float,
+    stake: int,
+    reason: str,
+    legs=None,
+    market_probability: float | None = None,
+    value_edge: float | None = None,
+    raw_model_probability: float | None = None,
+    league_calibrated_probability: float | None = None,
+    league_calibration_samples: int = 0,
+    strategy_version: str = "",
+) -> dict:
     return {
         "date": row["date"],
         "strategy_version": strategy_version,
@@ -136,6 +169,8 @@ def make_item(row: dict, play: str, selection: str, probability: float, odds: fl
         "selection": selection,
         "probability": probability,
         "raw_model_probability": raw_model_probability if raw_model_probability is not None else probability,
+        "league_calibrated_probability": league_calibrated_probability if league_calibrated_probability is not None else (raw_model_probability if raw_model_probability is not None else probability),
+        "league_calibration_samples": league_calibration_samples,
         "odds": odds,
         "market_probability": market_probability if market_probability is not None else "",
         "value_edge": value_edge if value_edge is not None else "",
@@ -346,6 +381,28 @@ def build_value_plan(target_date: date) -> tuple[list[dict], list[dict]]:
     if observation_ledger_path.exists():
         with observation_ledger_path.open("r", encoding="utf-8-sig", newline="") as handle:
             observation_history = list(csv.DictReader(handle))
+    metrics_payload = {}
+    metrics_path = OUTPUT_DIR / "model_metrics.json"
+    if metrics_path.exists():
+        try:
+            metrics_payload = read_json(metrics_path)
+        except (OSError, json.JSONDecodeError):
+            metrics_payload = {}
+    account_state = simulation_account_state(
+        history,
+        observation_history,
+        target_date,
+        config.get("simulation_account", {}),
+        metrics_payload,
+    )
+    calibration_config = config.get("league_calibration", {})
+    league_calibrations = fit_league_draw_calibrations(
+        load_draw_training_samples(),
+        min_samples=int(calibration_config.get("min_samples", 30)),
+        prior_samples=int(calibration_config.get("prior_samples", 60)),
+        max_adjustment=float(calibration_config.get("max_adjustment", 0.05)),
+        validation_fraction=float(calibration_config.get("validation_fraction", 0.25)),
+    )
     bet_metrics = summarize(history, strategy_version)
     observation_metrics = summarize(observation_history, strategy_version)
     by_play = bet_metrics.get("by_play", {})
@@ -410,12 +467,21 @@ def build_value_plan(target_date: date) -> tuple[list[dict], list[dict]]:
             market_probability = fair.get(selection)
             if price is None or market_probability is None:
                 continue
-            probability = conservative(raw_probability, market_probability)
+            league_probability = raw_probability
+            league_state = {"enabled": False, "sample_count": 0}
+            if selection == "平":
+                league_probability, league_state = apply_league_draw_calibration(
+                    raw_probability, league, league_calibrations
+                )
+            probability = conservative(league_probability, market_probability)
             edge = probability - market_probability
             expected_value = probability * price
             family = "平局单场" if selection == "平" else "胜平负单场"
             candidate = {
                 "row": row, "selection": selection, "raw_probability": raw_probability,
+                "league_calibrated_probability": league_probability,
+                "league_calibration_samples": int(league_state.get("sample_count") or 0),
+                "league_calibration_enabled": league_state.get("enabled") is True,
                 "probability": probability, "market_probability": market_probability,
                 "value_edge": edge, "odds": price, "expected_value": expected_value,
                 "family": family,
@@ -443,7 +509,14 @@ def build_value_plan(target_date: date) -> tuple[list[dict], list[dict]]:
 
     plan = []
     used_matches: set[tuple[str, str]] = set()
-    single_budget = int(value.get("strict_single_budget_cap", 100) if strict_mode else value.get("single_budget_cap", 200))
+    account_budget = int(account_state.get("remaining_monthly_budget") or 0) // 10 * 10
+    if account_state.get("paused"):
+        account_budget = 0
+    daily_budget = min(int(config["max_daily_budget"]), account_budget)
+    single_budget = min(
+        daily_budget,
+        int(value.get("strict_single_budget_cap", 100) if strict_mode else value.get("single_budget_cap", 200)),
+    )
     max_singles = int(value.get("max_single_count", 2))
     for item in sorted(singles, key=lambda candidate: candidate["quality"], reverse=True):
         match_key = (item["row"]["team_a"], item["row"]["team_b"])
@@ -452,14 +525,22 @@ def build_value_plan(target_date: date) -> tuple[list[dict], list[dict]]:
         stake = min(item["stake"], single_budget)
         play = "平局单场" if item["selection"] == "平" else "胜平负单场"
         source = item["row"].get("analysis_source") or "专业欧赔市场"
-        reason = f"保守概率{pct(item['probability'])}（原模型{pct(item['raw_probability'])}），市场公平概率{pct(item['market_probability'])}，概率优势{pct(item['value_edge'])}，期望值{item['expected_value']:.3f}；参考{source}，采用{odds_source}赔率"
-        plan.append(make_item(item["row"], play, item["selection"], item["probability"], item["odds"], stake, reason, market_probability=item["market_probability"], value_edge=item["value_edge"], raw_model_probability=item["raw_probability"], strategy_version=strategy_version))
+        league_note = (
+            f"，联赛校准{pct(item['league_calibrated_probability'])}（样本{item['league_calibration_samples']}）"
+            if item["selection"] == "平" and item["league_calibration_enabled"]
+            else ""
+        )
+        reason = f"保守概率{pct(item['probability'])}（原模型{pct(item['raw_probability'])}{league_note}），市场公平概率{pct(item['market_probability'])}，概率优势{pct(item['value_edge'])}，期望值{item['expected_value']:.3f}；参考{source}，采用{odds_source}赔率"
+        plan.append(make_item(item["row"], play, item["selection"], item["probability"], item["odds"], stake, reason, market_probability=item["market_probability"], value_edge=item["value_edge"], raw_model_probability=item["raw_probability"], league_calibrated_probability=item["league_calibrated_probability"], league_calibration_samples=item["league_calibration_samples"], strategy_version=strategy_version))
         used_matches.add(match_key)
         single_budget -= stake
 
     available = [item for item in combo_legs if (item["row"]["team_a"], item["row"]["team_b"]) not in used_matches]
     best_by_size = {}
-    for size in range(int(value.get("combo_min_legs", 3)), int(value.get("combo_max_legs", 4)) + 1):
+    maximum_combo_legs = combo_leg_limit(
+        value, int(account_state.get("completed_days") or 0)
+    )
+    for size in range(int(value.get("combo_min_legs", 2)), maximum_combo_legs + 1):
         for selected in itertools.combinations(available, size):
             probability = math.prod(item["probability"] for item in selected)
             raw_probability = math.prod(item["raw_probability"] for item in selected)
@@ -476,23 +557,23 @@ def build_value_plan(target_date: date) -> tuple[list[dict], list[dict]]:
     if trial_combo and (best_combo is None or trial_combo["expected_value"] >= best_combo["expected_value"] * float(value.get("three_leg_value_premium", 1.05))):
         best_combo = trial_combo
 
-    remaining_budget = int(config["max_daily_budget"]) - sum(item["stake"] for item in plan)
+    remaining_budget = daily_budget - sum(item["stake"] for item in plan)
     combo_stake = int(value.get("strict_combo_stake", 20) if strict_mode else value.get("combo_stake", 30))
     if best_combo and remaining_budget >= combo_stake:
         selected = best_combo["selected"]
         labels = [f"{item['row']['team_a']}vs{item['row']['team_b']} {item['selection']}" for item in selected]
-        legs = [{"date": item["row"]["date"], "team_a": item["row"]["team_a"], "team_b": item["row"]["team_b"], "kind": "胜平负", "selection": item["selection"], "probability": item["probability"], "raw_model_probability": item["raw_probability"], "market_probability": item["market_probability"], "value_edge": item["value_edge"], "odds": item["odds"]} for item in selected]
+        legs = [{"date": item["row"]["date"], "team_a": item["row"]["team_a"], "team_b": item["row"]["team_b"], "kind": "胜平负", "selection": item["selection"], "probability": item["probability"], "raw_model_probability": item["raw_probability"], "league_calibrated_probability": item["league_calibrated_probability"], "market_probability": item["market_probability"], "value_edge": item["value_edge"], "odds": item["odds"]} for item in selected]
         source = selected[0]["row"].get("analysis_source") or "专业欧赔市场"
         reason = f"保守组合概率{pct(best_combo['probability'])}（原模型{pct(best_combo['raw_probability'])}），市场公平概率{pct(best_combo['market_probability'])}，概率优势{pct(best_combo['value_edge'])}，期望值{best_combo['expected_value']:.3f}；参考{source}，采用{odds_source}赔率"
-        plan.append(make_item(selected[0]["row"], f"胜平负{len(selected)}串1", " × ".join(labels), best_combo["probability"], best_combo["odds"], combo_stake, reason, legs, market_probability=best_combo["market_probability"], value_edge=best_combo["value_edge"], raw_model_probability=best_combo["raw_probability"], strategy_version=strategy_version))
+        plan.append(make_item(selected[0]["row"], f"胜平负{len(selected)}串1", " × ".join(labels), best_combo["probability"], best_combo["odds"], combo_stake, reason, legs, market_probability=best_combo["market_probability"], value_edge=best_combo["value_edge"], raw_model_probability=best_combo["raw_probability"], league_calibrated_probability=math.prod(item["league_calibrated_probability"] for item in selected), league_calibration_samples=min(item["league_calibration_samples"] for item in selected), strategy_version=strategy_version))
 
     total = sum(item["stake"] for item in plan)
     if total > int(config["max_daily_budget"]):
         raise RuntimeError("今日模拟预算超过上限，请检查配置。")
     observations = []
     for item in sorted(observation_pool, key=lambda candidate: candidate["raw_probability"], reverse=True)[: int(value.get("observation_count", 5))]:
-        reason = f"零金额观察单；保守概率{pct(item['probability'])}，原模型{pct(item['raw_probability'])}，市场公平概率{pct(item['market_probability'])}，仅用于概率校准和CLV，不计入盈亏"
-        observations.append(make_item(item["row"], "观察单", item["selection"], item["probability"], item["odds"], 0, reason, market_probability=item["market_probability"], value_edge=item["value_edge"], raw_model_probability=item["raw_probability"], strategy_version=strategy_version))
+        reason = f"零金额观察单；保守概率{pct(item['probability'])}，联赛校准概率{pct(item['league_calibrated_probability'])}，原模型{pct(item['raw_probability'])}，市场公平概率{pct(item['market_probability'])}，仅用于概率校准和CLV，不计入盈亏"
+        observations.append(make_item(item["row"], "观察单", item["selection"], item["probability"], item["odds"], 0, reason, market_probability=item["market_probability"], value_edge=item["value_edge"], raw_model_probability=item["raw_probability"], league_calibrated_probability=item["league_calibrated_probability"], league_calibration_samples=item["league_calibration_samples"], strategy_version=strategy_version))
     return plan, observations
 
 
@@ -581,6 +662,8 @@ def write_plan(plan: list[dict], target_date: date) -> Path:
         "selection",
         "probability",
         "raw_model_probability",
+        "league_calibrated_probability",
+        "league_calibration_samples",
         "odds",
         "market_probability",
         "value_edge",
@@ -592,7 +675,7 @@ def write_plan(plan: list[dict], target_date: date) -> Path:
         "legs_json",
     ]
     with path.open("w", encoding="utf-8-sig", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer = csv.DictWriter(fh, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(plan)
     return path
@@ -603,11 +686,12 @@ def write_observation_plan(observations: list[dict], target_date: date) -> Path:
     fields = [
         "date", "strategy_version", "stage", "match", "team_a", "team_b",
         "play", "selection", "probability", "raw_model_probability", "odds",
+        "league_calibrated_probability", "league_calibration_samples",
         "market_probability", "value_edge", "expected_value", "stake",
         "expected_return", "expected_profit", "reason", "legs_json",
     ]
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(observations)
     return path
@@ -643,6 +727,8 @@ def write_ledger(plan: list[dict] | None = None, path: Path | None = None) -> Pa
         "selection",
         "probability",
         "raw_model_probability",
+        "league_calibrated_probability",
+        "league_calibration_samples",
         "odds",
         "market_probability",
         "value_edge",
@@ -667,6 +753,8 @@ def write_ledger(plan: list[dict] | None = None, path: Path | None = None) -> Pa
                 "selection": item["selection"],
                 "probability": item["probability"],
                 "raw_model_probability": item.get("raw_model_probability", item["probability"]),
+                "league_calibrated_probability": item.get("league_calibrated_probability", item.get("raw_model_probability", item["probability"])),
+                "league_calibration_samples": item.get("league_calibration_samples", 0),
                 "odds": item["odds"],
                 "market_probability": item.get("market_probability", ""),
                 "value_edge": item.get("value_edge", ""),
@@ -679,7 +767,7 @@ def write_ledger(plan: list[dict] | None = None, path: Path | None = None) -> Pa
             }
         )
     with path.open("w", encoding="utf-8-sig", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer = csv.DictWriter(fh, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
     return path
@@ -687,6 +775,44 @@ def write_ledger(plan: list[dict] | None = None, path: Path | None = None) -> Pa
 
 def write_observation_ledger() -> Path:
     return write_ledger(load_all_observation_plans(), OUTPUT_DIR / "observation_ledger.csv")
+
+
+def write_daily_decision(
+    target_date: date,
+    plan: list[dict] | None = None,
+    observations: list[dict] | None = None,
+) -> Path:
+    config = read_json(ROOT / "betting_config.json")
+    plan = plan if plan is not None else load_csv(OUTPUT_DIR / f"betting_plan_{target_date.isoformat()}.csv")
+    observations = observations if observations is not None else load_csv(OUTPUT_DIR / f"observation_plan_{target_date.isoformat()}.csv")
+    betting_rows = load_csv(OUTPUT_DIR / "betting_ledger.csv")
+    observation_rows = load_csv(OUTPUT_DIR / "observation_ledger.csv")
+    metrics = {}
+    metrics_path = OUTPUT_DIR / "model_metrics.json"
+    if metrics_path.exists():
+        try:
+            metrics = read_json(metrics_path)
+        except (OSError, json.JSONDecodeError):
+            metrics = {}
+    account = simulation_account_state(
+        betting_rows,
+        observation_rows,
+        target_date,
+        config.get("simulation_account", {}),
+        metrics,
+    )
+    decision = build_daily_decision(
+        plan,
+        observations,
+        target_date,
+        len(load_predictions(target_date)),
+        account,
+        config.get("learning_policy", {}),
+    )
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    path = OUTPUT_DIR / f"daily_decision_{target_date.isoformat()}.json"
+    path.write_text(json.dumps(decision, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def main() -> int:
@@ -702,8 +828,10 @@ def main() -> int:
         ledger_path = write_ledger()
         observation_ledger_path = write_observation_ledger()
         write_metrics()
+        decision_path = write_daily_decision(target_date)
         print(f"Updated ledger: {ledger_path}")
         print(f"Updated observation ledger: {observation_ledger_path}")
+        print(f"Updated daily decision: {decision_path}")
         return 0
 
     plan, observations = build_value_plan(target_date)
@@ -712,11 +840,13 @@ def main() -> int:
     ledger_path = write_ledger()
     observation_ledger_path = write_observation_ledger()
     write_metrics()
+    decision_path = write_daily_decision(target_date, plan, observations)
     total = sum(item["stake"] for item in plan)
     print(f"Generated betting plan: {plan_path}")
     print(f"Generated observation plan: {observation_path}")
     print(f"Updated ledger: {ledger_path}")
     print(f"Updated observation ledger: {observation_ledger_path}")
+    print(f"Updated daily decision: {decision_path}")
     print(f"Daily simulated stake: {total}")
     return 0
 
