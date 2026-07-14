@@ -1,0 +1,52 @@
+{
+  "target_date": "2026-07-14",
+  "captured_at": "2026-07-14T19:51:20.259297+08:00",
+  "source": "zgzcw",
+  "matches": [
+    {
+      "team_a": "法国",
+      "team_b": "西班牙",
+      "match_num": "周二101",
+      "kickoff_at": "2026-07-15 03:00",
+      "h": "2.08",
+      "d": "3.08",
+      "a": "3.09",
+      "market_h": "2.37",
+      "market_d": "3.17",
+      "market_a": "3.16",
+      "market_type": "win_draw_loss",
+      "settlement_minutes": 90,
+      "includes_extra_time": false
+    },
+    {
+      "team_a": "吉奧利",
+      "team_b": "维京古尔",
+      "match_num": "周二201",
+      "kickoff_at": "2026-07-15 01:00",
+      "h": "1.50",
+      "d": "4.10",
+      "a": "4.60",
+      "market_h": "1.61",
+      "market_d": "4.31",
+      "market_a": "4.37",
+      "market_type": "win_draw_loss",
+      "settlement_minutes": 90,
+      "includes_extra_time": false
+    },
+    {
+      "team_a": "新圣徒",
+      "team_b": "沙巴巴库",
+      "match_num": "周二202",
+      "kickoff_at": "2026-07-15 01:30",
+      "h": "5.40",
+      "d": "4.25",
+      "a": "1.41",
+      "market_h": "4.94",
+      "market_d": "4.07",
+      "market_a": "1.57",
+      "market_type": "win_draw_loss",
+      "settlement_minutes": 90,
+      "includes_extra_time": false
+    }
+  ]
+}
