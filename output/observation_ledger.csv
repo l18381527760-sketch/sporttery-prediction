@@ -1,1 +1,2 @@
 ﻿date,strategy_version,stage,match,play,selection,probability,raw_model_probability,league_calibrated_probability,league_calibration_samples,odds,market_probability,value_edge,expected_value,stake,status,profit,reason,legs_json
+2026-07-15,value-v3,世界杯,英格兰 vs 阿根廷,观察单,负,0.3167251077576424,0.40475295741052963,0.40475295741052963,0,2.94,0.30119078134830934,0.015534326409333055,0.9311718168074686,0,未结算,0.0,零金额观察单；保守概率31.7%，联赛校准概率40.5%，原模型40.5%，市场公平概率30.1%，仅用于概率校准和CLV，不计入盈亏,[]

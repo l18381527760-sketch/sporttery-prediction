@@ -1,0 +1,25 @@
+{
+  "date": "2026-07-15",
+  "status": "no_bet",
+  "reason": "没有比赛同时通过官方赔率、概率优势、正期望值和风险门槛，今日主方案观望。",
+  "matches_reviewed": 1,
+  "qualified_bets": 0,
+  "observation_count": 1,
+  "simulated_stake": 0,
+  "case_study_policy": "regression_only",
+  "minimum_rule_samples": 30,
+  "account": {
+    "mode": "simulation",
+    "required_settled_days": 30,
+    "completed_days": 0,
+    "review_ready": false,
+    "real_money_automation": false,
+    "monthly_budget_cap": 3000.0,
+    "monthly_stop_loss": 500.0,
+    "monthly_stake": 330.0,
+    "monthly_profit": 60.0,
+    "remaining_monthly_budget": 2670.0,
+    "paused": false,
+    "pause_reasons": []
+  }
+}

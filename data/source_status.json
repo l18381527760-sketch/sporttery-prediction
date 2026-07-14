@@ -1,8 +1,8 @@
 {
-  "source": "ESPN",
-  "analysis_source": "竞彩足球市场（专业欧赔暂缺）",
-  "target_date": "2026-07-14",
-  "updated_at": "2026-07-14T16:02:22.985729+00:00",
+  "source": "中国足彩网",
+  "analysis_source": "中国足彩网专业欧赔市场",
+  "target_date": "2026-07-15",
+  "updated_at": "2026-07-14T16:23:50.853219+00:00",
   "fallback": true,
-  "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。 中国足彩网也不可用（RuntimeError），已切换 ESPN。"
+  "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。"
 }
