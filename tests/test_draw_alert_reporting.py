@@ -105,6 +105,12 @@ class DrawAlertReportingTest(unittest.TestCase):
         self.assertIn("已启用", html)
         self.assertIn("+3.0%", html)
 
+    def test_empty_league_calibration_explains_the_thirty_match_gate(self):
+        html = build_site.render_league_calibrations({})
+
+        self.assertIn("联赛平局校准", html)
+        self.assertIn("尚无联赛达到30场", html)
+
     def test_no_bet_panel_uses_auditable_daily_reason(self):
         html = build_site.render_betting_plan(
             [],

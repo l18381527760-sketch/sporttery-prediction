@@ -522,7 +522,12 @@ def render_play_metrics(model_metrics: dict) -> str:
 def render_league_calibrations(model_metrics: dict) -> str:
     table = model_metrics.get("league_draw_calibration") if isinstance(model_metrics, dict) else {}
     if not isinstance(table, dict) or not table:
-        return ""
+        return """
+      <section class="play-performance">
+        <div class="section-title"><h2>联赛平局校准</h2><span>至少30场且后续验证改善才启用</span></div>
+        <div class="empty">尚无联赛达到30场有效样本，当前继续使用全局模型，不进行联赛概率修正。</div>
+      </section>
+        """
     rows = []
     for league, item in sorted(table.items()):
         if not isinstance(item, dict):
