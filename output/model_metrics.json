@@ -119,20 +119,20 @@
   },
   "calibration_by_league": {},
   "clv": {
-    "count": 1,
-    "average_clv": 0.0,
+    "count": 3,
+    "average_clv": -0.010482180293501045,
     "positive_rate": 0.0
   },
   "snapshot_coverage": {
-    "files": 7,
-    "matches": 11,
+    "files": 12,
+    "matches": 18,
     "phases": {
-      "opening": 1,
+      "opening": 2,
       "decision": 0,
-      "monitoring": 10,
+      "monitoring": 16,
       "pre_kickoff": 0
     },
-    "latest": "2026-07-15T00:02:23.235254+08:00"
+    "latest": "2026-07-15T15:30:38.946777+08:00"
   },
   "league_draw_calibration": {}
 }

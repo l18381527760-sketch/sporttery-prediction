@@ -1,0 +1,59 @@
+{
+  "target_date": "2026-07-15",
+  "captured_at": "2026-07-15T18:31:18.447860+08:00",
+  "capture_phase": "opening",
+  "source": "zgzcw",
+  "matches": [
+    {
+      "team_a": "英格兰",
+      "team_b": "阿根廷",
+      "match_num": "周三102",
+      "kickoff_at": "2026-07-16 03:00",
+      "capture_phase": "opening",
+      "minutes_to_kickoff": 508,
+      "h": "2.36",
+      "d": "2.80",
+      "a": "2.87",
+      "market_h": "2.69",
+      "market_d": "2.88",
+      "market_a": "2.99",
+      "market_type": "win_draw_loss",
+      "settlement_minutes": 90,
+      "includes_extra_time": false
+    },
+    {
+      "team_a": "阿特比森",
+      "team_b": "克拉克斯",
+      "match_num": "周三201",
+      "kickoff_at": "2026-07-16 02:15",
+      "capture_phase": "opening",
+      "minutes_to_kickoff": 463,
+      "h": "2.60",
+      "d": "3.20",
+      "a": "2.32",
+      "market_h": "2.46",
+      "market_d": "3.61",
+      "market_a": "2.52",
+      "market_type": "win_draw_loss",
+      "settlement_minutes": 90,
+      "includes_extra_time": false
+    },
+    {
+      "team_a": "尼卡斯克",
+      "team_b": "图凯拉特",
+      "match_num": "周三202",
+      "kickoff_at": "2026-07-16 03:00",
+      "capture_phase": "opening",
+      "minutes_to_kickoff": 508,
+      "h": "4.60",
+      "d": "3.80",
+      "a": "1.54",
+      "market_h": "4.46",
+      "market_d": "3.95",
+      "market_a": "1.66",
+      "market_type": "win_draw_loss",
+      "settlement_minutes": 90,
+      "includes_extra_time": false
+    }
+  ]
+}
