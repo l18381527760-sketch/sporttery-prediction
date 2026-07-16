@@ -13,6 +13,30 @@ from plan_lock import read_valid_lock
 BEIJING = timezone(timedelta(hours=8))
 SCHEMA_VERSION = 1
 PHASES = ("forecast", "decision", "settlement")
+FIXTURE_REQUIRED_FIELDS = frozenset(
+    {
+        "date", "kickoff_local", "stage", "team_a", "team_b", "neutral", "venue",
+        "match_id",
+    }
+)
+PREDICTION_REQUIRED_FIELDS = frozenset(
+    {
+        "date", "kickoff", "stage", "match_num", "match_id", "team_a", "team_b",
+        "p_a", "p_draw", "p_b", "pick", "confidence",
+    }
+)
+PLAN_REQUIRED_FIELDS = frozenset(
+    {
+        "date", "strategy_version", "stage", "match", "team_a", "team_b", "play",
+        "selection", "probability", "odds", "stake",
+    }
+)
+LEDGER_REQUIRED_FIELDS = frozenset(
+    {
+        "date", "strategy_version", "stage", "match", "play", "selection",
+        "probability", "odds", "stake", "status", "profit",
+    }
+)
 
 
 def base_status(report_date: date) -> dict:
@@ -41,27 +65,49 @@ def _nonempty_market(markets: object) -> bool:
         return False
     for name in ("had", "hhad", "ttg"):
         market = markets.get(name)
-        if isinstance(market, dict) and any(str(value).strip() for value in market.values()):
+        if isinstance(market, dict) and any(
+            value is not None and (not isinstance(value, str) or value.strip())
+            for value in market.values()
+        ):
             return True
     return False
 
 
-def _fixture_rows(path: Path, report_date: date) -> tuple[bool, list[dict]]:
+def _fixture_rows(
+    path: Path, report_date: date, source_status: object
+) -> tuple[bool, list[dict]]:
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
-            if not reader.fieldnames or "date" not in reader.fieldnames:
+            if not reader.fieldnames or not FIXTURE_REQUIRED_FIELDS.issubset(reader.fieldnames):
                 return False, []
-            return True, [row for row in reader if row.get("date") == report_date.isoformat()]
+            rows = [row for row in reader if row.get("date") == report_date.isoformat()]
     except OSError:
         return False, []
+    if not rows and not _source_verifies_zero_fixtures(source_status, report_date):
+        return False, []
+    return True, rows
 
 
-def _csv_with_header(path: Path) -> tuple[bool, int]:
+def _source_verifies_zero_fixtures(source_status: object, report_date: date) -> bool:
+    if not isinstance(source_status, dict):
+        return False
+    if source_status.get("target_date") != report_date.isoformat():
+        return False
+    return (
+        source_status.get("no_fixtures") is True
+        or any(
+            type(source_status.get(field)) is int and source_status[field] == 0
+            for field in ("fixture_count", "fixtures_count", "match_count")
+        )
+    )
+
+
+def _csv_with_header(path: Path, required_fields: frozenset[str]) -> tuple[bool, int]:
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
-            if not reader.fieldnames:
+            if not reader.fieldnames or not required_fields.issubset(reader.fieldnames):
                 return False, 0
             return True, sum(1 for _ in reader)
     except OSError:
@@ -86,7 +132,7 @@ def _matching_decision_snapshot(root: Path, report_date: date) -> tuple[bool, st
         payload = _read_json(path)
         if isinstance(payload, dict) and (
             (payload.get("target_date") or payload.get("date")) == report_date.isoformat()
-            and payload.get("phase") == "decision"
+            and (payload.get("capture_phase") or payload.get("phase")) == "decision"
         ):
             return True, captured_at.isoformat()
     return False, ""
@@ -111,8 +157,11 @@ def artifact_state(root: Path, report_date: date) -> dict:
 
     source_status = _read_json(data / "source_status.json")
     source_ready = isinstance(source_status, dict) and source_status.get("target_date") == date_text
-    fixtures_ready, fixtures = _fixture_rows(data / "fixtures.csv", report_date)
+    fixtures_ready, fixtures = _fixture_rows(
+        data / "fixtures.csv", report_date, source_status
+    )
     fixture_count = len(fixtures) if fixtures_ready else None
+    zero_fixture_verified = fixtures_ready and fixture_count == 0
     fixture_ids = [row.get("match_id", "") for row in fixtures]
 
     odds_payload = _read_json(data / f"sporttery_odds_{date_text}.json")
@@ -130,16 +179,23 @@ def artifact_state(root: Path, report_date: date) -> dict:
         odds_coverage = covered / fixture_count
 
     predictions_ready, prediction_count = _csv_with_header(
-        output / f"predictions_{date_text}.csv"
+        output / f"predictions_{date_text}.csv", PREDICTION_REQUIRED_FIELDS
     )
     plan_csv_ready, plan_count = _csv_with_header(
-        output / f"betting_plan_{date_text}.csv"
+        output / f"betting_plan_{date_text}.csv", PLAN_REQUIRED_FIELDS
     )
     decision_payload = _read_json(output / f"daily_decision_{date_text}.json")
-    decision_ready = isinstance(decision_payload, dict) and decision_payload.get("date") == date_text
+    decision_ready = (
+        isinstance(decision_payload, dict)
+        and decision_payload.get("date") == date_text
+        and isinstance(decision_payload.get("status"), str)
+        and bool(decision_payload["status"].strip())
+    )
     lock_payload = read_valid_lock(root, report_date)
     snapshot_ready, decision_odds_at_bjt = _matching_decision_snapshot(root, report_date)
-    ledger_ready, ledger_count = _csv_with_header(output / "betting_ledger.csv")
+    ledger_ready, ledger_count = _csv_with_header(
+        output / "betting_ledger.csv", LEDGER_REQUIRED_FIELDS
+    )
     site_ready = (web / "index.html").is_file()
     image_path = web / "daily-report.png"
     image_ready = image_path.is_file() and image_path.stat().st_size > 0
@@ -147,6 +203,7 @@ def artifact_state(root: Path, report_date: date) -> dict:
     return {
         "source_ready": source_ready,
         "fixtures_ready": fixtures_ready,
+        "zero_fixture_verified": zero_fixture_verified,
         "fixture_count": fixture_count,
         "odds_ready": odds_ready,
         "odds_covered_fixture_count": covered,
@@ -185,6 +242,7 @@ def _data_quality(state: dict) -> dict:
         for key in (
             "source_ready",
             "fixtures_ready",
+            "zero_fixture_verified",
             "odds_ready",
             "predictions_ready",
             "plan_csv_ready",
@@ -196,6 +254,13 @@ def _data_quality(state: dict) -> dict:
             "image_ready",
         )
     }
+
+
+def _prior_settlement_date(status: dict) -> date | None:
+    try:
+        return date.fromisoformat(status.get("settled_through", ""))
+    except (TypeError, ValueError):
+        return None
 
 
 def publish_status(
@@ -221,30 +286,35 @@ def publish_status(
     state = artifact_state(root, report_date)
     status = _previous_status(root, report_date)
     if phase == "forecast":
-        status["forecast_ready"] = all(
+        status["forecast_ready"] = bool(status["forecast_ready"]) or all(
             state[key]
             for key in (
-                "source_ready",
-                "fixtures_ready",
-                "predictions_ready",
-                "plan_csv_ready",
-                "decision_ready",
-                "site_ready",
-                "image_ready",
+                "source_ready", "fixtures_ready", "predictions_ready", "plan_csv_ready",
+                "decision_ready", "site_ready", "image_ready",
             )
         )
     elif phase == "decision":
-        status["decision_snapshot_ready"] = (
+        snapshot_ready = (
             state["decision_snapshot_ready"]
             or (state["fixtures_ready"] and state["fixture_count"] == 0)
         )
-        status["plan_ready"] = state["plan_lock_ready"]
-        status["decision_odds_at_bjt"] = state["decision_odds_at_bjt"]
-        status["plan_locked_at_bjt"] = state["plan_locked_at_bjt"]
+        status["decision_snapshot_ready"] = bool(status["decision_snapshot_ready"]) or snapshot_ready
+        status["plan_ready"] = bool(status["plan_ready"]) or (
+            state["plan_lock_ready"] and state["plan_csv_ready"]
+        )
+        if state["decision_odds_at_bjt"]:
+            status["decision_odds_at_bjt"] = state["decision_odds_at_bjt"]
+        if state["plan_locked_at_bjt"]:
+            status["plan_locked_at_bjt"] = state["plan_locked_at_bjt"]
     else:
-        status["settled_through"] = settled_through.isoformat()
-        status["settlement_ready"] = (
-            settled_through >= report_date - timedelta(days=1)
+        prior_settled_through = _prior_settlement_date(status)
+        effective_settled_through = max(
+            settled_through,
+            prior_settled_through or settled_through,
+        )
+        status["settled_through"] = effective_settled_through.isoformat()
+        status["settlement_ready"] = bool(status["settlement_ready"]) or (
+            effective_settled_through >= report_date - timedelta(days=1)
             and state["ledger_ready"]
             and state["site_ready"]
             and state["image_ready"]
