@@ -564,6 +564,10 @@ def main() -> int:
             source_message += f" 中国足彩网也不可用（{type(fallback_exc).__name__}），已切换 ESPN。"
             print(f"WARNING: {source_message}")
             selected = fetch_espn_matches(target_date)
+            if not selected:
+                raise RuntimeError(
+                    "fallback sources could not verify an empty schedule"
+                )
     matches = selected
     if args.include_finished:
         matches = fetch_matches(target_date)

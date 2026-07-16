@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import import_sporttery
+from report_status import artifact_state
 
 
 TARGET_DATE = date(2026, 7, 16)
@@ -124,6 +125,28 @@ class ImportSportterySourceStatusTest(unittest.TestCase):
                     import_sporttery.main()
 
             self.assertFalse((data_dir / "source_status.json").exists())
+
+    def test_main_fails_closed_when_all_fallback_sources_return_ambiguous_empty_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            data_dir.mkdir()
+            with patch.object(import_sporttery, "DATA_DIR", data_dir), patch.object(
+                sys, "argv", ["import_sporttery.py", "--date", "2026-07-16"]
+            ), patch.object(
+                import_sporttery,
+                "fetch_selling_matches",
+                side_effect=RuntimeError("official unavailable"),
+            ), patch.object(
+                import_sporttery, "fetch_zgzcw_matches", return_value=[]
+            ), patch.object(import_sporttery, "fetch_espn_matches", return_value=[]):
+                with self.assertRaisesRegex(RuntimeError, "could not verify an empty schedule"):
+                    import_sporttery.main()
+
+            self.assertFalse((data_dir / "source_status.json").exists())
+            state = artifact_state(root, TARGET_DATE)
+            self.assertFalse(state["source_ready"])
+            self.assertFalse(state["fixtures_ready"])
 
 
 if __name__ == "__main__":
