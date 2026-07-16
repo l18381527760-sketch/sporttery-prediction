@@ -3,12 +3,19 @@ import hashlib
 import json
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 
 BEIJING = timezone(timedelta(hours=8))
 SCHEMA_VERSION = 1
+CLAIM_WAIT_SECONDS = 5.0
+CLAIM_POLL_SECONDS = 0.01
+
+
+class PlanLockError(RuntimeError):
+    pass
 
 
 def sha256_file(path: Path) -> str:
@@ -29,6 +36,17 @@ def _artifact_paths(root: Path, target_date: date) -> tuple[Path, Path]:
 
 def _lock_path(root: Path, target_date: date) -> Path:
     return root / "output" / f"plan_lock_{target_date.isoformat()}.json"
+
+
+def _existing_lock(root: Path, target_date: date, lock_path: Path) -> dict | None:
+    if not lock_path.exists():
+        return None
+    payload = read_valid_lock(root, target_date)
+    if payload is None:
+        raise PlanLockError(
+            f"existing plan lock is invalid; refusing to overwrite: {lock_path}"
+        )
+    return payload
 
 
 def read_valid_lock(root: Path, target_date: date) -> dict | None:
@@ -75,7 +93,8 @@ def lock_plan(
     if locked_at.tzinfo is None or locked_at.utcoffset() is None:
         raise ValueError("locked_at must include a timezone")
 
-    existing = read_valid_lock(root, target_date)
+    lock_path = _lock_path(root, target_date)
+    existing = _existing_lock(root, target_date, lock_path)
     if existing is not None:
         return existing
 
@@ -91,16 +110,46 @@ def lock_plan(
         "odds_source": source,
     }
 
-    lock_path = _lock_path(root, target_date)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = lock_path.with_name(lock_path.name + ".tmp")
-    with temp_path.open("w", encoding="utf-8") as handle:
+    deadline = time.monotonic() + CLAIM_WAIT_SECONDS
+    while True:
+        try:
+            handle = temp_path.open("x", encoding="utf-8")
+            break
+        except FileExistsError as exc:
+            existing = _existing_lock(root, target_date, lock_path)
+            if existing is not None:
+                return existing
+            if time.monotonic() >= deadline:
+                raise PlanLockError(
+                    f"timed out waiting for plan lock claim: {temp_path}"
+                ) from exc
+            time.sleep(CLAIM_POLL_SECONDS)
+
+    published = False
+    try:
+        existing = _existing_lock(root, target_date, lock_path)
+        if existing is not None:
+            return existing
+
         json.dump(payload, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
-    temp_path.replace(lock_path)
-    return payload
+        handle.close()
+
+        existing = _existing_lock(root, target_date, lock_path)
+        if existing is not None:
+            return existing
+        temp_path.replace(lock_path)
+        published = True
+        return payload
+    finally:
+        if not handle.closed:
+            handle.close()
+        if not published:
+            temp_path.unlink(missing_ok=True)
 
 
 def _parse_date(value: str) -> date:
@@ -139,7 +188,7 @@ def main() -> int:
 
     try:
         lock_plan(root, args.date, args.locked_at, args.source)
-    except (OSError, ValueError):
+    except (OSError, ValueError, PlanLockError):
         return 1
     return 0
 
