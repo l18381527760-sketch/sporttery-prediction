@@ -446,5 +446,135 @@ class WorkflowScheduleTest(unittest.TestCase):
         self.assertNotIn("pillow", job.lower())
 
 
+class DeploymentDocumentationTest(unittest.TestCase):
+    APPS_SCRIPT_README = ROOT / "apps-script" / "README.md"
+    REQUIRED_CONFIG_PROPERTIES = (
+        "GITHUB_OWNER",
+        "GITHUB_REPO",
+        "GITHUB_TOKEN",
+        "REPORT_STATUS_URL",
+        "REPORT_IMAGE_URL",
+        "REPORT_SITE_URL",
+        "RECIPIENT_EMAIL",
+    )
+
+    def read_doc(self, path):
+        self.assertTrue(path.exists(), f"missing deployment document: {path}")
+        return path.read_text(encoding="utf-8")
+
+    def assert_text_in_order(self, text, required_text):
+        cursor = 0
+        for item in required_text:
+            position = text.find(item, cursor)
+            self.assertNotEqual(-1, position, f"missing ordered documentation text: {item}")
+            cursor = position + len(item)
+
+    def test_apps_script_readme_defines_the_sender_schedule_and_safety_contract(self):
+        text = self.read_doc(self.APPS_SCRIPT_README)
+        for literal in (
+            "Apps Script 是唯一的邮件发送方",
+            "`runAutomation` 每 10 分钟运行一次",
+            "`Asia/Shanghai`",
+            "14:00-18:00",
+            "18:00",
+            "不附带附件",
+            "电脑可以关机",
+            "仅用于概率分析和模拟记账",
+            "不保证盈利",
+        ):
+            self.assertIn(literal, text)
+
+    def test_apps_script_readme_lists_exactly_seven_manual_config_properties(self):
+        text = self.read_doc(self.APPS_SCRIPT_README)
+        section = re.search(
+            r"^### 必须手工配置的 7 项 Script Properties\n(?P<body>.*?)(?=^### )",
+            text,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(section)
+        property_names = re.findall(
+            r"^- `([A-Z][A-Z0-9_]+)`：", section.group("body"), re.MULTILINE
+        )
+        self.assertEqual(list(self.REQUIRED_CONFIG_PROPERTIES), property_names)
+        self.assertIn("运行状态属性由 `Code.gs` 自动写入", text)
+        self.assertIn("`TEST_MODE` 是临时部署开关，不计入上述 7 项必填配置", text)
+
+    def test_apps_script_readme_documents_least_privilege_token_and_deployment_order(self):
+        text = self.read_doc(self.APPS_SCRIPT_README)
+        for literal in (
+            "`l18381527760-sketch/sporttery-prediction`",
+            "Metadata: Read-only",
+            "Actions: Read and write",
+            "不得填写真实令牌或密钥",
+        ):
+            self.assertIn(literal, text)
+        self.assert_text_in_order(
+            text,
+            (
+                "打开现有 Apps Script 项目",
+                "`apps-script/Code.gs`",
+                "`apps-script/appsscript.json`",
+                "配置上述 7 项 Script Properties",
+                "`TEST_MODE=true`",
+                "手动运行 `runAutomation`",
+                "批准权限",
+                "运行 `installAutomationTrigger`",
+                "恰好一个每 10 分钟运行的 `runAutomation` 触发器",
+                "`workflow_dispatch`",
+                "当天北京时间日期",
+                "`web/report-status.json`",
+                "PNG 的 SHA-256",
+                "`TEST_MODE=false`",
+                "`.github/workflows/email-report.yml`",
+                "GitHub Actions",
+                "disabled",
+            ),
+        )
+
+    def test_apps_script_readme_covers_recovery_and_safe_rollback(self):
+        text = self.read_doc(self.APPS_SCRIPT_README)
+        for literal in (
+            "令牌被撤销",
+            "重复触发器",
+            "状态或哈希不匹配",
+            "Gmail 发送失败",
+        ):
+            self.assertIn(literal, text)
+        self.assert_text_in_order(
+            text,
+            (
+                "回滚到旧的每日触发器",
+                "先禁用并删除 `runAutomation` 触发器",
+                "再恢复之前唯一的每日 `sendDailyReport` 触发器",
+            ),
+        )
+
+    def test_top_level_docs_replace_the_old_github_email_sender_description(self):
+        readme = self.read_doc(ROOT / "README.md")
+        cloud_setup = self.read_doc(ROOT / "CLOUD_SETUP.md")
+        combined = readme + "\n" + cloud_setup
+        for literal in (
+            "Apps Script 是唯一的邮件发送方",
+            "`runAutomation`",
+            "每 10 分钟",
+            "14:00-18:00",
+            "电脑可以关机",
+            "`.github/workflows/email-report.yml`",
+            "保持 disabled",
+        ):
+            self.assertIn(literal, combined)
+        self.assertNotIn("| 14:00 | Gmail 发送", combined)
+        self.assertNotIn('`0 6 * * *`：14:00 邮件日报', combined)
+
+    def test_operator_docs_include_the_required_verification_commands(self):
+        text = self.read_doc(self.APPS_SCRIPT_README)
+        for command in (
+            "python -m unittest tests.test_workflow_schedule -v",
+            "python -m unittest discover -s tests -v",
+            "node --test tests/apps_script_orchestrator.test.mjs",
+        ):
+            self.assertIn(command, text)
+
+
 if __name__ == "__main__":
     unittest.main()

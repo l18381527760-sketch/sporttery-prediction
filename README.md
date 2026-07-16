@@ -89,11 +89,11 @@ python build_daily_image.py
 | 12:15 | 导入基础竞彩数据，生成预测、主方案和第一版平局预警，并重建网页与日报图片。 |
 | 13:30 | 刷新市场与平局预警。若导入、预测、市场采集或预警生成的某个独立步骤以非零状态失败，流程仍会继续；该步骤未成功替换的 12:15 已提交产物会保留，网站和图片再用仓库中最新可用文件重建。 |
 | 13:45 | 结算前一天的 90 分钟结果，更新指标、训练模型并重建报告。 |
-| 14:00 | Gmail 发送最新已提交的 `web/daily-report.png`；如结算仍在进行，会在队列中短暂等待。 |
 | 14:05 | 再次尝试结算，处理结果延迟或首次任务未完成的情况。 |
+| 14:00-18:00 | Apps Script 的 `runAutomation` 每 10 分钟读取当天 `web/report-status.json`，校验日报 PNG 的 SHA-256 后发送；18:00 仍未就绪时只发一封不带附件的失败通知。 |
 | 每 30 分钟 | 保存仍未开赛比赛的官方赔率快照；开赛前一小时内自动标记为临场快照，供 CLV 与复盘使用。 |
 
-云端部署、手动运行和 Gmail 密钥设置请阅读 [CLOUD_SETUP.md](CLOUD_SETUP.md)。不需要 Google 日历。
+部署后，Apps Script 是唯一的邮件发送方，`.github/workflows/email-report.yml` 在 GitHub Actions 中保持 disabled。GitHub Actions 负责生成和发布报告，Apps Script 负责调度、轮询、校验和发信；两边都在云端运行，所以电脑可以关机。云端设置请阅读 [CLOUD_SETUP.md](CLOUD_SETUP.md)，Apps Script 的逐步部署与恢复请阅读 [apps-script/README.md](apps-script/README.md)。不需要 Google 日历。
 
 ## 常用文件
 
