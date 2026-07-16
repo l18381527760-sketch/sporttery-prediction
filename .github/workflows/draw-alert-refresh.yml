@@ -60,11 +60,17 @@ jobs:
             echo "target_date must be exact YYYY-MM-DD" >&2
             exit 1
           fi
-          python import_sporttery.py --date "$TARGET_DATE"
-          python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision
-          if python plan_lock.py is-locked --date "$TARGET_DATE"; then
-            echo "Decision plan is already locked for $TARGET_DATE"
+          LOCK_PATH="output/plan_lock_${TARGET_DATE}.json"
+          if [ -e "$LOCK_PATH" ]; then
+            if python plan_lock.py is-locked --date "$TARGET_DATE"; then
+              echo "Valid plan lock exists for $TARGET_DATE; preserving locked plan and odds"
+            else
+              echo "Existing plan lock is invalid for $TARGET_DATE; refusing to rewrite locked artifacts" >&2
+              exit 1
+            fi
           else
+            python import_sporttery.py --date "$TARGET_DATE"
+            python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision
             python predict_today.py --date "$TARGET_DATE"
             python generate_betting_plan.py --date "$TARGET_DATE"
             python plan_lock.py lock \

@@ -1,5 +1,11 @@
+import hashlib
 import json
+import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -67,6 +73,13 @@ class WorkflowScheduleTest(unittest.TestCase):
     MAIN_OR_SCHEDULE_GUARD = (
         "if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'"
     )
+    LOCK_PATH_COMMAND = 'LOCK_PATH="output/plan_lock_${TARGET_DATE}.json"'
+    VALID_LOCK_MESSAGE = (
+        'echo "Valid plan lock exists for $TARGET_DATE; preserving locked plan and odds"'
+    )
+    INVALID_LOCK_MESSAGE = (
+        'echo "Existing plan lock is invalid for $TARGET_DATE; refusing to rewrite locked artifacts" >&2'
+    )
 
     def read_workflow(self, name):
         return (self.WORKFLOWS / name).read_text(encoding="utf-8")
@@ -103,6 +116,84 @@ class WorkflowScheduleTest(unittest.TestCase):
             text,
             re.MULTILINE | re.DOTALL,
         )
+
+    def multiline_step_body(self, text, job_name, step_name):
+        step = self.step_block(text, job_name, step_name)
+        marker = "        run: |\n"
+        self.assertIn(marker, step)
+        indented = step.split(marker, 1)[1]
+        return "\n".join(
+            line[10:] if line.startswith("          ") else line
+            for line in indented.splitlines()
+        )
+
+    def bash_executable(self):
+        candidates = (
+            shutil.which("bash"),
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+        )
+        for candidate in candidates:
+            if candidate and Path(candidate).is_file():
+                return candidate
+        self.fail("bash is required to validate and execute workflow shell bodies")
+
+    def run_workflow_body(self, body, root):
+        env = os.environ.copy()
+        env["REQUESTED_TARGET_DATE"] = "2026-07-16"
+        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+        return subprocess.run(
+            [self.bash_executable(), "-c", body],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def write_workflow_writer_stubs(self, root):
+        shutil.copy2(ROOT / "plan_lock.py", root / "plan_lock.py")
+        stub = '''import json
+import sys
+from pathlib import Path
+
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+target_date = args[args.index("--date") + 1]
+phase = args[args.index("--phase") + 1] if "--phase" in args else ""
+with Path("writer-calls.log").open("a", encoding="utf-8") as handle:
+    handle.write(name + (":" + phase if phase else "") + "\\n")
+
+Path("data").mkdir(exist_ok=True)
+Path("output").mkdir(exist_ok=True)
+if name == "import_sporttery.py":
+    Path(f"data/sporttery_odds_{target_date}.json").write_text(
+        json.dumps({"writer": name}), encoding="utf-8"
+    )
+elif name == "capture_odds_snapshot.py":
+    Path(f"data/sporttery_odds_{target_date}.json").write_text(
+        json.dumps({"writer": name, "phase": phase}), encoding="utf-8"
+    )
+elif name == "generate_betting_plan.py":
+    Path(f"output/betting_plan_{target_date}.csv").write_text(
+        "date,plan\\n" + target_date + ",locked-candidate\\n", encoding="utf-8"
+    )
+'''
+        for name in (
+            "import_sporttery.py",
+            "build_historical_features.py",
+            "predict_today.py",
+            "generate_betting_plan.py",
+            "capture_odds_snapshot.py",
+        ):
+            (root / name).write_text(stub, encoding="utf-8")
+
+    def writer_calls(self, root):
+        path = root / "writer-calls.log"
+        return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+    def sha256_bytes(self, value):
+        return hashlib.sha256(value).hexdigest()
 
     def test_step_block_scopes_duplicate_step_names_to_the_requested_job(self):
         workflow = """jobs:
@@ -179,6 +270,23 @@ class WorkflowScheduleTest(unittest.TestCase):
                 self.assertIn('TARGET_DATE="$REQUESTED_TARGET_DATE"', step)
                 self.assertIn('TARGET_DATE="${TARGET_DATE:-$(date +%F)}"', step)
 
+    def test_all_multiline_workflow_shell_bodies_pass_bash_n(self):
+        for workflow_path in sorted(self.WORKFLOWS.glob("*.yml")):
+            text = workflow_path.read_text(encoding="utf-8")
+            for index, body in enumerate(self.multiline_run_bodies(text), start=1):
+                result = subprocess.run(
+                    [self.bash_executable(), "-n"],
+                    input=body,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    0,
+                    result.returncode,
+                    f"invalid shell in {workflow_path.name} body {index}: {result.stderr}",
+                )
+
     def test_required_report_steps_validate_the_target_date_exactly(self):
         required_steps = {
             "daily-forecast.yml": (
@@ -216,6 +324,14 @@ class WorkflowScheduleTest(unittest.TestCase):
         expected = [
             'TARGET_DATE="$REQUESTED_TARGET_DATE"',
             'TARGET_DATE="${TARGET_DATE:-$(date +%F)}"',
+            self.LOCK_PATH_COMMAND,
+            'if [ -e "$LOCK_PATH" ]; then',
+            'if python plan_lock.py is-locked --date "$TARGET_DATE"; then',
+            self.VALID_LOCK_MESSAGE,
+            "else",
+            self.INVALID_LOCK_MESSAGE,
+            "exit 1",
+            "else",
             'python import_sporttery.py --date "$TARGET_DATE"',
             "python build_historical_features.py",
             'python predict_today.py --date "$TARGET_DATE"',
@@ -231,11 +347,29 @@ class WorkflowScheduleTest(unittest.TestCase):
 
     def test_base_forecast_optional_steps_fail_independently_and_report_still_builds(self):
         text = self.read_workflow("daily-forecast.yml")
-        optional_steps = {
-            "Capture opening odds": (
+        opening = self.step_block(text, "forecast", "Capture opening odds")
+        self.assertNotIn("continue-on-error: true", opening)
+        self.assert_commands_in_order(
+            opening,
+            [
+                'TARGET_DATE="$REQUESTED_TARGET_DATE"',
+                'TARGET_DATE="${TARGET_DATE:-$(date +%F)}"',
+                self.LOCK_PATH_COMMAND,
+                'if [ -e "$LOCK_PATH" ]; then',
+                'if python plan_lock.py is-locked --date "$TARGET_DATE"; then',
+                self.VALID_LOCK_MESSAGE,
+                "else",
+                self.INVALID_LOCK_MESSAGE,
+                "exit 1",
+                "else",
                 'python capture_odds_snapshot.py --date "$TARGET_DATE" --phase opening',
-                True,
-            ),
+            ],
+        )
+        self.assertIn(
+            'if ! python capture_odds_snapshot.py --date "$TARGET_DATE" --phase opening; then',
+            opening,
+        )
+        optional_steps = {
             "Collect optional market evidence": (
                 'python collect_market_heat.py --date "$TARGET_DATE"',
                 True,
@@ -265,6 +399,7 @@ class WorkflowScheduleTest(unittest.TestCase):
         )
         self.assertIn("python build_site.py", build)
         self.assertIn("python build_daily_image.py", build)
+        positions.insert(0, text.index("      - name: Capture opening odds"))
         positions.append(text.index("      - name: Build final website and image"))
         self.assertEqual(positions, sorted(positions))
 
@@ -293,11 +428,16 @@ class WorkflowScheduleTest(unittest.TestCase):
         text = self.read_workflow("draw-alert-refresh.yml")
         step = self.step_block(text, "refresh", "Refresh required decision plan")
         expected = [
+            self.LOCK_PATH_COMMAND,
+            'if [ -e "$LOCK_PATH" ]; then',
+            'if python plan_lock.py is-locked --date "$TARGET_DATE"; then',
+            self.VALID_LOCK_MESSAGE,
+            "else",
+            self.INVALID_LOCK_MESSAGE,
+            "exit 1",
+            "else",
             'python import_sporttery.py --date "$TARGET_DATE"',
             'python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision',
-            'if python plan_lock.py is-locked --date "$TARGET_DATE"; then',
-            'echo "Decision plan is already locked for $TARGET_DATE"',
-            "else",
             'python predict_today.py --date "$TARGET_DATE"',
             'python generate_betting_plan.py --date "$TARGET_DATE"',
             "python plan_lock.py lock \\",
@@ -308,6 +448,89 @@ class WorkflowScheduleTest(unittest.TestCase):
         ]
         self.assert_commands_in_order(step, expected)
         self.assertNotIn("continue-on-error: true", step)
+
+    def test_valid_decision_lock_survives_delayed_forecast_rerun_without_writers(self):
+        refresh_body = self.multiline_step_body(
+            self.read_workflow("draw-alert-refresh.yml"),
+            "refresh",
+            "Refresh required decision plan",
+        )
+        forecast_body = self.multiline_step_body(
+            self.read_workflow("daily-forecast.yml"),
+            "forecast",
+            "Generate required base forecast and plan",
+        )
+        opening_body = self.multiline_step_body(
+            self.read_workflow("daily-forecast.yml"),
+            "forecast",
+            "Capture opening odds",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_workflow_writer_stubs(root)
+
+            refresh = self.run_workflow_body(refresh_body, root)
+            self.assertEqual(0, refresh.returncode, refresh.stderr)
+            expected_initial_calls = [
+                "import_sporttery.py",
+                "capture_odds_snapshot.py:decision",
+                "predict_today.py",
+                "generate_betting_plan.py",
+            ]
+            self.assertEqual(expected_initial_calls, self.writer_calls(root))
+
+            plan_path = root / "output" / "betting_plan_2026-07-16.csv"
+            odds_path = root / "data" / "sporttery_odds_2026-07-16.json"
+            lock_path = root / "output" / "plan_lock_2026-07-16.json"
+            plan_before = plan_path.read_bytes()
+            odds_before = odds_path.read_bytes()
+            lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            self.assertEqual(self.sha256_bytes(plan_before), lock_payload["plan_sha256"])
+            self.assertEqual(self.sha256_bytes(odds_before), lock_payload["odds_sha256"])
+
+            forecast = self.run_workflow_body(forecast_body, root)
+            opening = self.run_workflow_body(opening_body, root)
+            self.assertEqual(0, forecast.returncode, forecast.stderr)
+            self.assertEqual(0, opening.returncode, opening.stderr)
+            self.assertEqual(expected_initial_calls, self.writer_calls(root))
+            self.assertEqual(plan_before, plan_path.read_bytes())
+            self.assertEqual(odds_before, odds_path.read_bytes())
+
+    def test_invalid_existing_lock_fails_both_plan_workflows_before_writers(self):
+        guarded_steps = (
+            (
+                "daily-forecast.yml",
+                "forecast",
+                "Generate required base forecast and plan",
+            ),
+            (
+                "draw-alert-refresh.yml",
+                "refresh",
+                "Refresh required decision plan",
+            ),
+        )
+        for workflow_name, job_name, step_name in guarded_steps:
+            with self.subTest(workflow=workflow_name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.write_workflow_writer_stubs(root)
+                (root / "output").mkdir(exist_ok=True)
+                (root / "data").mkdir(exist_ok=True)
+                plan_path = root / "output" / "betting_plan_2026-07-16.csv"
+                odds_path = root / "data" / "sporttery_odds_2026-07-16.json"
+                lock_path = root / "output" / "plan_lock_2026-07-16.json"
+                plan_path.write_bytes(b"locked plan")
+                odds_path.write_bytes(b"locked odds")
+                lock_path.write_text("{}", encoding="utf-8")
+
+                body = self.multiline_step_body(
+                    self.read_workflow(workflow_name), job_name, step_name
+                )
+                result = self.run_workflow_body(body, root)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("Existing plan lock is invalid", result.stderr)
+                self.assertEqual([], self.writer_calls(root))
+                self.assertEqual(b"locked plan", plan_path.read_bytes())
+                self.assertEqual(b"locked odds", odds_path.read_bytes())
 
     def test_decision_optional_refreshes_remain_isolated(self):
         text = self.read_workflow("draw-alert-refresh.yml")
@@ -580,6 +803,25 @@ class DeploymentDocumentationTest(unittest.TestCase):
             self.assertIn(literal, combined)
         for misleading in ("cron 后备", "后备触发", "cron fallback", "补调度"):
             self.assertNotIn(misleading, combined)
+
+    def test_docs_define_the_fail_closed_prewrite_plan_lock_guard(self):
+        apps_readme = self.read_doc(self.APPS_SCRIPT_README)
+        cloud_setup = self.read_doc(ROOT / "CLOUD_SETUP.md")
+        for text in (apps_readme, cloud_setup):
+            for literal in (
+                "`output/plan_lock_${TARGET_DATE}.json`",
+                "在任何 plan/odds writer 之前",
+                "`import_sporttery.py`",
+                "`predict_today.py`",
+                "`generate_betting_plan.py`",
+                "有效锁",
+                "跳过全部 plan/odds writer",
+                "原有方案与赔率字节保持不变",
+                "锁文件存在但 `plan_lock.py is-locked` 校验失败",
+                "立即失败",
+                "不能把无效锁当成没有锁",
+            ):
+                self.assertIn(literal, text)
 
     def test_test_mode_and_gmail_recovery_docs_match_mail_state_code(self):
         text = self.read_doc(self.APPS_SCRIPT_README)

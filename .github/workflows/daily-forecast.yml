@@ -61,19 +61,40 @@ jobs:
             echo "target_date must be exact YYYY-MM-DD" >&2
             exit 1
           fi
-          python import_sporttery.py --date "$TARGET_DATE"
-          python build_historical_features.py
-          python predict_today.py --date "$TARGET_DATE"
-          python generate_betting_plan.py --date "$TARGET_DATE"
+          LOCK_PATH="output/plan_lock_${TARGET_DATE}.json"
+          if [ -e "$LOCK_PATH" ]; then
+            if python plan_lock.py is-locked --date "$TARGET_DATE"; then
+              echo "Valid plan lock exists for $TARGET_DATE; preserving locked plan and odds"
+            else
+              echo "Existing plan lock is invalid for $TARGET_DATE; refusing to rewrite locked artifacts" >&2
+              exit 1
+            fi
+          else
+            python import_sporttery.py --date "$TARGET_DATE"
+            python build_historical_features.py
+            python predict_today.py --date "$TARGET_DATE"
+            python generate_betting_plan.py --date "$TARGET_DATE"
+          fi
 
       - name: Capture opening odds
-        continue-on-error: true
         env:
           REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
         run: |
           TARGET_DATE="$REQUESTED_TARGET_DATE"
           TARGET_DATE="${TARGET_DATE:-$(date +%F)}"
-          python capture_odds_snapshot.py --date "$TARGET_DATE" --phase opening
+          LOCK_PATH="output/plan_lock_${TARGET_DATE}.json"
+          if [ -e "$LOCK_PATH" ]; then
+            if python plan_lock.py is-locked --date "$TARGET_DATE"; then
+              echo "Valid plan lock exists for $TARGET_DATE; preserving locked plan and odds"
+            else
+              echo "Existing plan lock is invalid for $TARGET_DATE; refusing to rewrite locked artifacts" >&2
+              exit 1
+            fi
+          else
+            if ! python capture_odds_snapshot.py --date "$TARGET_DATE" --phase opening; then
+              echo "Opening odds capture failed; continuing without an opening snapshot" >&2
+            fi
+          fi
 
       - name: Collect optional market evidence
         continue-on-error: true

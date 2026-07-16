@@ -14,6 +14,14 @@
 
 现有 cron 定时运行与 Apps Script dispatch 彼此独立。Apps Script 在 Pages 更新前可能仍看到阶段缺失，此时 cron 和 dispatch 可以为同一阶段各入队一次，造成额外的排队运行。它们共享并发队列；有效的方案锁防止决策计划被重写，同日状态更新具备幂等性，因此额外运行是安全的，但可能增加等待时间。部署时不要删除现有 cron。
 
+### Plan/odds 写入前锁检查
+
+`daily-forecast.yml` 和 `draw-alert-refresh.yml` 都先计算 `TARGET_DATE`，再得到锁路径 `output/plan_lock_${TARGET_DATE}.json`。在任何 plan/odds writer 之前，包括 `import_sporttery.py`、`predict_today.py`、`generate_betting_plan.py` 以及依赖赔率文件的 opening/decision capture，都必须先检查这个路径。
+
+- 锁文件存在且 `plan_lock.py is-locked --date "$TARGET_DATE"` 返回成功：这是有效锁。工作流跳过全部 plan/odds writer，原有方案与赔率字节保持不变，然后继续不会改写锁定产物的可选证据、报告构建和状态发布步骤。
+- 锁文件存在但 `plan_lock.py is-locked` 校验失败：工作流立即失败，且必须发生在任何 writer 运行之前。不能把无效锁当成没有锁，也不能重新生成或覆盖现有方案与赔率。
+- 锁文件不存在：按原顺序导入赔率、生成预测与方案；decision 流程完成后创建锁。opening capture 仍是可选步骤，但也只能在没有锁时运行。
+
 ## 部署前准备
 
 ### GitHub 仓库设置

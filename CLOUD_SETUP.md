@@ -38,6 +38,14 @@ Apps Script 需要一个 fine-grained token 来调用工作流。它只能授权
 
 现有 cron 定时运行与 Apps Script dispatch 彼此独立。Apps Script 在 Pages 更新前可能仍读到旧状态，于是两者可能为同一阶段各入队一次，出现额外的排队运行。它们共享并发队列；有效的方案锁保护决策计划，同日状态更新具备幂等性，所以重复阶段运行是安全的，但会增加排队时间。不要删除现有 cron。
 
+### Plan/odds 写入前锁检查
+
+两个会写方案的工作流先派生 `TARGET_DATE` 和锁路径 `output/plan_lock_${TARGET_DATE}.json`。在任何 plan/odds writer 之前，必须先执行锁检查；受保护的命令包括 `import_sporttery.py`、`predict_today.py`、`generate_betting_plan.py` 以及依赖锁定赔率的 opening/decision capture。
+
+- 锁文件存在并通过 `plan_lock.py is-locked`：有效锁要求工作流跳过全部 plan/odds writer，原有方案与赔率字节保持不变；随后只运行不会改写这些锁定产物的可选证据、构建与状态步骤。
+- 锁文件存在但 `plan_lock.py is-locked` 校验失败：必须立即失败，并保证 writer 尚未运行。不能把无效锁当成没有锁，维护者也不应删除锁来强行重跑。
+- 锁文件不存在：forecast 保留正常导入、预测和方案生成；decision 流程还会捕获决策赔率并创建新锁。
+
 预测、刷新、结算和赔率快照仍共享 `sporttery-repository` 并发队列，避免多个写入任务互相覆盖。可选市场来源失败时，采集器记录错误并保留仍通过验证的来源；独立可选步骤失败不会补造数据。状态文件和图片哈希在发送前提供最终的一致性检查。
 
 ## 手动运行和验收
