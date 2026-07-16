@@ -1,10 +1,11 @@
 import csv
 import json
+import os
 import textwrap
 from datetime import date, datetime
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
 
 from build_site import (
     SUBTYPE_LABELS,
@@ -26,6 +27,7 @@ ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "output"
 WEB_DIR = ROOT / "web"
 WIDTH = 1600
+BUILD_ID = os.environ.get("REPORT_BUILD_ID", "local")
 
 
 def read_csv(path: Path) -> list[dict]:
@@ -493,7 +495,9 @@ def draw_report() -> Path:
 
     WEB_DIR.mkdir(exist_ok=True)
     output = WEB_DIR / "daily-report.png"
-    image.save(output, optimize=True)
+    pnginfo = PngImagePlugin.PngInfo()
+    pnginfo.add_text("build_id", BUILD_ID)
+    image.save(output, optimize=True, pnginfo=pnginfo)
     print(f"Generated daily image: {output}")
     return output
 
