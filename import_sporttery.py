@@ -418,6 +418,17 @@ def write_fixtures(matches: list[dict], target_date: date) -> Path:
     return path
 
 
+def count_written_fixtures(path: Path, target_date: date) -> int:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if not reader.fieldnames or "date" not in reader.fieldnames:
+                raise ValueError("fixtures CSV is missing the date header")
+            return sum(1 for row in reader if row.get("date") == target_date.isoformat())
+    except (OSError, csv.Error) as exc:
+        raise ValueError("could not verify written fixture count") from exc
+
+
 def load_ratings() -> dict[str, dict]:
     path = DATA_DIR / "team_ratings.csv"
     if not path.exists():
@@ -499,7 +510,16 @@ def write_odds_data(odds: dict[str, dict], target_date: date) -> Path:
     return path
 
 
-def write_source_status(source: str, target_date: date, message: str = "", analysis_source: str = "专业欧赔市场") -> Path:
+def write_source_status(
+    source: str,
+    target_date: date,
+    message: str = "",
+    analysis_source: str = "专业欧赔市场",
+    *,
+    fixture_count: int,
+) -> Path:
+    if type(fixture_count) is not int or fixture_count < 0:
+        raise ValueError("fixture_count must be a non-negative integer")
     path = DATA_DIR / "source_status.json"
     payload = {
         "source": source,
@@ -508,6 +528,8 @@ def write_source_status(source: str, target_date: date, message: str = "", analy
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "fallback": source != "竞彩网",
         "message": message,
+        "fixture_count": fixture_count,
+        "no_fixtures": fixture_count == 0,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
@@ -555,9 +577,16 @@ def main() -> int:
         selected = attach_professional_market(selected, [])
     analysis_source = "中国足彩网专业欧赔市场" if any(item.get("analysis_source") == "中国足彩网专业欧赔市场" for item in selected) else "竞彩足球市场（专业欧赔暂缺）"
     fixtures_path = write_fixtures(selected, target_date)
+    fixture_count = count_written_fixtures(fixtures_path, target_date)
     ratings_path = write_ratings(selected)
     odds_path = write_odds_data(odds_data, target_date)
-    status_path = write_source_status(source, target_date, source_message, analysis_source)
+    status_path = write_source_status(
+        source,
+        target_date,
+        source_message,
+        analysis_source,
+        fixture_count=fixture_count,
+    )
     print(f"竞彩网返回比赛: {len(matches)}")
     print(f"导入未开奖比赛: {len(selected)}")
     for item in selected:

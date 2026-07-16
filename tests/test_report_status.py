@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import import_sporttery
 from plan_lock import lock_plan
 from report_status import artifact_state, base_status, main, publish_status
 
@@ -106,11 +107,15 @@ class ReportStatusTest(unittest.TestCase):
         (web / "index.html").write_text("<html></html>", encoding="utf-8")
         (web / "daily-report.png").write_bytes(b"exact png bytes")
 
-    def make_lock(self, root: Path) -> None:
+    def make_lock(
+        self,
+        root: Path,
+        locked_at: datetime = datetime(2026, 7, 16, 13, 31, tzinfo=BJT),
+    ) -> None:
         lock_plan(
             root,
             REPORT_DATE,
-            datetime(2026, 7, 16, 13, 31, tzinfo=BJT),
+            locked_at,
             "test",
         )
 
@@ -135,6 +140,16 @@ class ReportStatusTest(unittest.TestCase):
             }),
             encoding="utf-8",
         )
+
+    def write_decision_snapshot(self, root: Path, timestamp: str) -> Path:
+        snapshots = root / "data" / "odds_snapshots"
+        snapshots.mkdir(exist_ok=True)
+        path = snapshots / f"2026-07-16-{timestamp}-decision.json"
+        path.write_text(
+            json.dumps({"target_date": REPORT_DATE.isoformat(), "phase": "decision"}),
+            encoding="utf-8",
+        )
+        return path
 
     def publish(self, root: Path, phase: str, **kwargs) -> dict:
         return publish_status(
@@ -173,6 +188,8 @@ class ReportStatusTest(unittest.TestCase):
                     "forecast_ready": True,
                     "plan_ready": True,
                     "settlement_ready": True,
+                    "decision_odds_at_bjt": "2026-07-15T14:00:00+08:00",
+                    "plan_locked_at_bjt": "2026-07-15T14:01:00+08:00",
                 }),
                 encoding="utf-8",
             )
@@ -182,6 +199,8 @@ class ReportStatusTest(unittest.TestCase):
             self.assertTrue(status["forecast_ready"])
             self.assertFalse(status["plan_ready"])
             self.assertFalse(status["settlement_ready"])
+            self.assertEqual("", status["decision_odds_at_bjt"])
+            self.assertEqual("", status["plan_locked_at_bjt"])
 
     def test_three_same_day_phases_merge_without_losing_prior_flags(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,6 +276,21 @@ class ReportStatusTest(unittest.TestCase):
             self.assertEqual(1.0, state["odds_coverage"])
             self.assertTrue(status["decision_snapshot_ready"])
             self.assertFalse(status["plan_ready"])
+
+    def test_import_producer_zero_metadata_verifies_a_zero_fixture_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root, fixture_ids=())
+            with patch.object(import_sporttery, "DATA_DIR", root / "data"):
+                import_sporttery.write_source_status(
+                    "test", REPORT_DATE, fixture_count=0
+                )
+
+            state = artifact_state(root, REPORT_DATE)
+
+            self.assertTrue(state["fixtures_ready"])
+            self.assertTrue(state["zero_fixture_verified"])
+            self.assertEqual(0, state["fixture_count"])
 
     def test_header_only_fixtures_require_explicit_zero_fixture_source_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -410,6 +444,29 @@ class ReportStatusTest(unittest.TestCase):
             self.assertTrue(status["plan_ready"])
             self.assertEqual(initial["decision_odds_at_bjt"], status["decision_odds_at_bjt"])
             self.assertEqual(initial["plan_locked_at_bjt"], status["plan_locked_at_bjt"])
+
+    def test_decision_rerun_keeps_latest_timestamps_when_only_older_artifacts_survive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            self.make_lock(root, datetime(2026, 7, 16, 14, 1, tzinfo=BJT))
+            older_snapshot = self.write_decision_snapshot(root, "133000")
+            newer_snapshot = self.write_decision_snapshot(root, "140000")
+            initial = self.publish(root, "decision")
+            self.assertEqual("2026-07-16T14:00:00+08:00", initial["decision_odds_at_bjt"])
+            self.assertEqual("2026-07-16T14:01:00+08:00", initial["plan_locked_at_bjt"])
+
+            newer_snapshot.unlink()
+            lock_path = root / "output" / "plan_lock_2026-07-16.json"
+            lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            lock_payload["locked_at_bjt"] = "2026-07-16T13:31:00+08:00"
+            lock_path.write_text(json.dumps(lock_payload), encoding="utf-8")
+            self.assertTrue(older_snapshot.exists())
+
+            status = self.publish(root, "decision")
+
+            self.assertEqual("2026-07-16T14:00:00+08:00", status["decision_odds_at_bjt"])
+            self.assertEqual("2026-07-16T14:01:00+08:00", status["plan_locked_at_bjt"])
 
     def test_same_phase_settlement_rerun_preserves_prior_readiness(self):
         with tempfile.TemporaryDirectory() as tmp:

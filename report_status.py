@@ -263,6 +263,20 @@ def _prior_settlement_date(status: dict) -> date | None:
         return None
 
 
+def _latest_bjt_timestamp(*values: object) -> str:
+    candidates = []
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            continue
+        if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+            candidates.append(parsed.astimezone(BEIJING))
+    return max(candidates).isoformat() if candidates else ""
+
+
 def publish_status(
     root: Path,
     report_date: date,
@@ -302,10 +316,12 @@ def publish_status(
         status["plan_ready"] = bool(status["plan_ready"]) or (
             state["plan_lock_ready"] and state["plan_csv_ready"]
         )
-        if state["decision_odds_at_bjt"]:
-            status["decision_odds_at_bjt"] = state["decision_odds_at_bjt"]
-        if state["plan_locked_at_bjt"]:
-            status["plan_locked_at_bjt"] = state["plan_locked_at_bjt"]
+        status["decision_odds_at_bjt"] = _latest_bjt_timestamp(
+            status.get("decision_odds_at_bjt"), state["decision_odds_at_bjt"]
+        )
+        status["plan_locked_at_bjt"] = _latest_bjt_timestamp(
+            status.get("plan_locked_at_bjt"), state["plan_locked_at_bjt"]
+        )
     else:
         prior_settled_through = _prior_settlement_date(status)
         effective_settled_through = max(
