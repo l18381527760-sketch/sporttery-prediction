@@ -63,6 +63,23 @@ def plan_row(**overrides):
     return row
 
 
+def legacy_parlay_row(**overrides):
+    row = {
+        "date": "2026-07-16",
+        "strategy_version": "legacy-v1",
+        "match": "甲队 vs 乙队",
+        "play": "2-leg parlay",
+        "market_type": "parlay",
+        "selection": "旧串关展示",
+        "market_line": "",
+        "odds": "4.20",
+        "stake": "10",
+        "legacy_note": "preserve",
+    }
+    row.update(overrides)
+    return row
+
+
 def lock(**overrides):
     payload = {
         "report_date": "2026-07-16",
@@ -233,6 +250,80 @@ class IdentityAndIngestionTest(unittest.TestCase):
                 variant = {**legacy, field: value}
                 variant_id = ingest_locked_plan([variant], [], lock())[0]["bet_id"]
                 self.assertNotEqual(migrated[0]["bet_id"], variant_id)
+
+    def test_legacy_fallback_distinguishes_structured_leg_identities_and_keeps_rows(self):
+        legs = [
+            {"match_id": "1001", "market_type": "had", "selection": "胜", "line": "", "odds": "2.00"},
+            {"match_id": "1002", "market_type": "ttg", "selection": "2球", "line": "", "odds": "3.00"},
+            {"match_id": "1003", "market_type": "hhad", "selection": "平", "line": "+1", "odds": "4.00"},
+        ]
+        first = legacy_parlay_row(legs=copy.deepcopy(legs))
+        changed_legs = copy.deepcopy(legs)
+        changed_legs[2]["match_id"] = "2003"
+        second = legacy_parlay_row(legs=changed_legs)
+
+        migrated = ingest_locked_plan([first, second], [], lock())
+
+        self.assertEqual(2, len(migrated))
+        self.assertNotEqual(migrated[0]["bet_id"], migrated[1]["bet_id"])
+        for source, row in zip((first, second), migrated):
+            self.assertNotIn("match_id", row)
+            for field, value in source.items():
+                self.assertEqual(value, row[field], field)
+
+    def test_legacy_fallback_structured_legs_ignore_order_key_order_and_mutable_values(self):
+        legs = [
+            {"match_id": "1001", "market_type": "had", "selection": "胜", "line": "", "odds": "2.00"},
+            {"match_id": "1002", "market_type": "ttg", "selection": "2球", "line": "", "stake": "3"},
+            {"match_id": "1003", "market_type": "hhad", "selection": "平", "line": "+1", "probability": "0.55"},
+        ]
+        reordered = [
+            {
+                "probability": "0.99",
+                "market_line": leg["line"],
+                "selection": leg["selection"],
+                "market_type": leg["market_type"],
+                "match_id": leg["match_id"],
+                "odds": "99.00",
+            }
+            for leg in reversed(legs)
+        ]
+        first = legacy_parlay_row(legs_json=json.dumps(legs, ensure_ascii=False))
+        equivalent = legacy_parlay_row(
+            legs_json=json.dumps(reordered, ensure_ascii=False, sort_keys=True)
+        )
+        without_legs = legacy_parlay_row()
+
+        first_id = ingest_locked_plan([first], [], lock())[0]["bet_id"]
+        equivalent_id = ingest_locked_plan([equivalent], [], lock())[0]["bet_id"]
+        without_legs_id = ingest_locked_plan([without_legs], [], lock())[0]["bet_id"]
+
+        self.assertEqual(first_id, equivalent_id)
+        self.assertNotEqual(first_id, without_legs_id)
+
+    def test_legacy_fallback_unparseable_leg_text_is_distinct_and_idempotent(self):
+        first = legacy_parlay_row(legs_json="not-json-a")
+        second = legacy_parlay_row(legs_json="not-json-b")
+
+        migrated = ingest_locked_plan([first, second], [], lock())
+        rerun = ingest_locked_plan(migrated, [], lock())
+
+        self.assertEqual(2, len(migrated))
+        self.assertNotEqual(migrated[0]["bet_id"], migrated[1]["bet_id"])
+        self.assertEqual(migrated, rerun)
+        self.assertEqual(("not-json-a", "not-json-b"), tuple(
+            row["legs_json"] for row in migrated
+        ))
+        self.assertTrue(all("match_id" not in row for row in migrated))
+
+        missing_id = ingest_locked_plan([legacy_parlay_row()], [], lock())[0]["bet_id"]
+        empty_id = ingest_locked_plan([
+            legacy_parlay_row(legs_json="")
+        ], [], lock())[0]["bet_id"]
+        null_id = ingest_locked_plan([
+            legacy_parlay_row(legs_json="null")
+        ], [], lock())[0]["bet_id"]
+        self.assertEqual(3, len({missing_id, empty_id, null_id}))
 
     def test_ingestion_requires_a_valid_matching_domestic_lock(self):
         invalid_locks = (

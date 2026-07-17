@@ -492,7 +492,7 @@ def _stable_legacy_bet_id(identity_row: dict) -> str:
 
 def _legacy_fallback_identity_payload(row: dict) -> dict:
     return {
-        "identity_namespace": "legacy_fallback_v1",
+        "identity_namespace": "legacy_fallback_v2",
         "report_date": _legacy_text(row.get("report_date") or row.get("date")),
         "strategy_version": _legacy_text(row.get("strategy_version")),
         "play": _legacy_text(row.get("play")),
@@ -500,7 +500,66 @@ def _legacy_fallback_identity_payload(row: dict) -> dict:
         "selection": _legacy_text(row.get("selection")),
         "line": _legacy_text(row.get("market_line", row.get("line"))),
         "display": _legacy_display_payload(row),
+        "legs": _legacy_leg_payload(row),
     }
+
+
+def _legacy_leg_payload(row: dict) -> dict:
+    raw_legs = row.get("legs")
+    if raw_legs is None:
+        if "legs_json" in row:
+            raw_legs = row.get("legs_json")
+        elif "legs" not in row:
+            return {"format": "missing"}
+    parsed_legs = raw_legs
+    parsed = not isinstance(raw_legs, str)
+    if isinstance(raw_legs, str):
+        try:
+            parsed_legs = json.loads(raw_legs)
+            parsed = True
+        except json.JSONDecodeError:
+            parsed = False
+    if (
+        isinstance(parsed_legs, list)
+        and all(isinstance(leg, dict) for leg in parsed_legs)
+    ):
+        legs = [
+            {
+                "match_id": _legacy_text(leg.get("match_id")),
+                "market_type": _legacy_text(leg.get("market_type")).lower(),
+                "selection": _legacy_text(leg.get("selection")),
+                "line": _legacy_text(leg.get("line", leg.get("market_line"))),
+            }
+            for leg in parsed_legs
+        ]
+        return {
+            "format": "structured",
+            "items": sorted(
+                legs,
+                key=lambda leg: json.dumps(
+                    leg,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
+        }
+    if not parsed:
+        return {"format": "raw_text", "value": _legacy_text(raw_legs)}
+    try:
+        normalized_raw = json.loads(json.dumps(
+            parsed_legs,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ))
+    except (TypeError, ValueError):
+        return {
+            "format": "raw_value",
+            "type": type(parsed_legs).__name__,
+            "value": _legacy_text(parsed_legs),
+        }
+    return {"format": "raw_json", "value": normalized_raw}
 
 
 def _legacy_display_payload(row: dict) -> dict:
