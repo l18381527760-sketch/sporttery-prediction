@@ -97,3 +97,66 @@ Exit code: 0
 Fix commit: `ed5950f0932f47fbf689ef15faa31f0dd25a5942` (`fix: harden betting ledger review invariants`).
 
 Immediately after the fix commit, `git status --short` produced no output (clean worktree).
+
+## Review fixes 2
+
+### Files changed
+
+- `update_sporttery_results.py` - canonical direct/fallback resolution, protected-score migration, and observation idempotency.
+- `tests/test_update_sporttery_results.py` - focused canonical-resolution, duplicate-ID, protected-history, and byte-idempotency coverage.
+- `betting_ledger.py` - Task 5 owned implementation file; unchanged in this review pass.
+- `tests/test_betting_ledger.py` - Task 5 owned ledger test file; unchanged in this review pass.
+- `.superpowers/sdd/task-5-report.md` - RED/GREEN chronology, commits, compatibility notes, and file inventory.
+
+### RED
+
+After adding the final focused test contract and before changing production code, ran:
+
+```text
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
+
+test_ambiguous_fallback_ids_append_unavailable_without_touching_identified_rows ... FAIL
+test_changed_score_same_record_conflicts_once_and_repeat_is_byte_idempotent ... FAIL
+test_direct_mismatched_match_id_appends_without_touching_identified_row ... FAIL
+test_duplicate_legacy_rows_and_unknown_columns_survive_migration_in_order ... FAIL
+test_multiple_blank_fallback_candidates_are_ambiguous_and_remain_untouched ... FAIL
+test_preexisting_score_without_status_is_protected_from_changed_capture ... FAIL
+test_same_finished_observation_with_new_capture_time_is_byte_idempotent ... FAIL
+
+----------------------------------------------------------------------
+Ran 28 tests in 0.152s
+
+FAILED (failures=7)
+```
+
+The failures showed the prior implementation selecting the first date/team row despite a mismatched canonical ID, collapsing fixture identities to one value, overwriting status-less historical scores, and extending timestamps for an already observed source record.
+
+### GREEN
+
+```text
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
+Ran 28 tests in 0.195s
+OK
+
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_value_portfolio tests.test_report_status -v
+Ran 69 tests in 1.388s
+OK
+
+.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile betting_ledger.py update_sporttery_results.py tests\test_betting_ledger.py tests\test_update_sporttery_results.py
+Exit code: 0
+
+git diff --check
+Exit code: 0
+```
+
+### Compatibility and fail-closed review
+
+- Existing CSV rows retain input order and unknown columns; no legacy row is collapsed or deleted.
+- Direct results update only an exact canonical ID or a sole blank date/team row. Other cases append a canonical row.
+- Fallback resolution uses the set union of every exact date/team existing and fixture ID. Zero/ambiguous unions write only a blank-ID `unavailable` row and never alter identified history.
+- Every parseable pre-existing score is protected even without `result_status`.
+- Re-observing the same source/record does not extend timestamps; a new source record extends sorted provenance once.
+
+Fix commit: `d9b95a5bfb92d78e764e5831ec4810ba8ee0a3f3` (`fix: make result migration canonical and idempotent`).
+
+Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
