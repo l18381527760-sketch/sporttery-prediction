@@ -160,3 +160,72 @@ Exit code: 0
 Fix commit: `d9b95a5bfb92d78e764e5831ec4810ba8ee0a3f3` (`fix: make result migration canonical and idempotent`).
 
 Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
+
+## Review fixes 3
+
+### Scope
+
+- Reused an existing blank-ID `unavailable` row when it already contains the same fallback `result_source` and `source_record_id` observation.
+- Kept ambiguous canonical resolution unavailable and left every identified historical row unchanged.
+- Made a blank or malformed fallback `source_record_id` fail closed as `unavailable`, even when fixture history proves one canonical match ID.
+
+### Files changed
+
+- `update_sporttery_results.py` - unavailable-observation reuse and missing-source fail-closed resolution.
+- `tests/test_update_sporttery_results.py` - repeated ambiguous fallback byte-idempotency and missing-source coverage.
+- `.superpowers/sdd/task-5-report.md` - this chronology and verification record.
+
+### RED
+
+After adding the two focused tests and before changing production code, ran:
+
+```text
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
+
+test_fallback_without_source_record_id_is_unavailable_despite_unique_match_id ... FAIL
+test_repeated_ambiguous_fallback_reuses_the_same_unavailable_observation ... FAIL
+
+======================================================================
+FAIL: test_fallback_without_source_record_id_is_unavailable_despite_unique_match_id
+----------------------------------------------------------------------
+AssertionError: 'unavailable' != 'finished'
+- unavailable
++ finished
+
+======================================================================
+FAIL: test_repeated_ambiguous_fallback_reuses_the_same_unavailable_observation
+----------------------------------------------------------------------
+AssertionError: 4 != 5
+
+----------------------------------------------------------------------
+Ran 30 tests in 0.210s
+
+FAILED (failures=2)
+```
+
+The first failure exposed a settleable status without a source record ID. The second showed that the repeated observation appended a fifth row instead of reusing the fourth row byte-for-byte.
+
+### GREEN
+
+```text
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
+Ran 30 tests in 0.189s
+OK
+
+.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile update_sporttery_results.py tests\test_update_sporttery_results.py
+Exit code: 0
+
+git diff --check
+Exit code: 0
+```
+
+### Review
+
+- Observation reuse searches only blank `match_id` candidates and therefore cannot rewrite identified historical rows.
+- Reused ambiguous rows remain `unavailable`, retain their first capture timestamp, and produce identical bytes on a later same-source/same-record observation.
+- Missing fallback source identity may preserve a uniquely proven canonical match ID for legacy lookup, but its `unavailable` status keeps it outside ledger settlement.
+- Ordered legacy rows, duplicate candidates, and unknown CSV columns remain preserved by the existing collection and writer paths.
+
+Code/test fix commit: `6ecaf08e24f1642e28e2b9ad7d0b13b9f5928166` (`fix: deduplicate unavailable fallback results`).
+
+Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
