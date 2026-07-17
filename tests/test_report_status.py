@@ -14,6 +14,7 @@ import import_sporttery
 from plan_lock import lock_plan
 from report_status import (
     OFFICIAL_FIXTURE_SOURCES,
+    _matching_decision_snapshot,
     artifact_state,
     base_status,
     main,
@@ -130,7 +131,11 @@ class ReportStatusTest(unittest.TestCase):
         snapshots = root / "data" / "odds_snapshots"
         snapshots.mkdir()
         (snapshots / "2026-07-16-133000-decision.json").write_text(
-            json.dumps({"target_date": REPORT_DATE.isoformat(), "phase": "decision"}),
+            json.dumps({
+                "target_date": REPORT_DATE.isoformat(),
+                "phase": "decision",
+                "matches": [{"match_id": "001"}],
+            }),
             encoding="utf-8",
         )
 
@@ -153,7 +158,11 @@ class ReportStatusTest(unittest.TestCase):
         snapshots.mkdir(exist_ok=True)
         path = snapshots / f"2026-07-16-{timestamp}-decision.json"
         path.write_text(
-            json.dumps({"target_date": REPORT_DATE.isoformat(), "phase": "decision"}),
+            json.dumps({
+                "target_date": REPORT_DATE.isoformat(),
+                "phase": "decision",
+                "matches": [{"match_id": "001"}],
+            }),
             encoding="utf-8",
         )
         return path
@@ -252,13 +261,42 @@ class ReportStatusTest(unittest.TestCase):
             snapshots = root / "data" / "odds_snapshots"
             snapshots.mkdir()
             (snapshots / "2026-07-16-133000-decision.json").write_text(
-                json.dumps({"date": REPORT_DATE.isoformat(), "phase": "decision"}),
+                json.dumps({
+                    "date": REPORT_DATE.isoformat(),
+                    "phase": "decision",
+                    "matches": [{"match_id": "001"}],
+                }),
                 encoding="utf-8",
             )
 
             status = self.publish(root, "decision")
 
             self.assertTrue(status["decision_snapshot_ready"])
+
+    def test_matching_decision_snapshot_requires_a_nonempty_matches_list(self):
+        payloads = (
+            {"matches": None},
+            {"matches": {"001": {}}},
+            {"matches": []},
+        )
+        for matches_payload in payloads:
+            with self.subTest(matches=matches_payload["matches"]), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                snapshots = root / "data" / "odds_snapshots"
+                snapshots.mkdir(parents=True)
+                (snapshots / "2026-07-16-133000-decision.json").write_text(
+                    json.dumps({
+                        "target_date": REPORT_DATE.isoformat(),
+                        "phase": "decision",
+                        **matches_payload,
+                    }),
+                    encoding="utf-8",
+                )
+
+                self.assertEqual(
+                    (False, ""),
+                    _matching_decision_snapshot(root, REPORT_DATE),
+                )
 
     def test_decision_accepts_capture_odds_snapshot_producer_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -275,6 +313,16 @@ class ReportStatusTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_artifacts(root, fixture_ids=())
+            snapshots = root / "data" / "odds_snapshots"
+            snapshots.mkdir()
+            (snapshots / "2026-07-16-133000-decision.json").write_text(
+                json.dumps({
+                    "target_date": REPORT_DATE.isoformat(),
+                    "phase": "decision",
+                    "matches": [],
+                }),
+                encoding="utf-8",
+            )
 
             state = artifact_state(root, REPORT_DATE)
             status = self.publish(root, "decision")

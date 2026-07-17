@@ -209,6 +209,8 @@ def _matching_decision_snapshot(root: Path, report_date: date) -> tuple[bool, st
         if isinstance(payload, dict) and (
             (payload.get("target_date") or payload.get("date")) == report_date.isoformat()
             and (payload.get("capture_phase") or payload.get("phase")) == "decision"
+            and isinstance(payload.get("matches"), list)
+            and payload["matches"]
         ):
             return True, captured_at.isoformat()
     return False, ""
