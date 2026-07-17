@@ -2,6 +2,11 @@ name: Afternoon Sporttery Settlement
 
 on:
   workflow_dispatch:
+    inputs:
+      target_date:
+        description: Beijing business date (YYYY-MM-DD)
+        required: false
+        type: string
   schedule:
     # 13:45 Beijing time, before the 14:00 email window.
     - cron: "45 5 * * *"
@@ -47,16 +52,33 @@ jobs:
           python -m pip install --quiet pillow
 
       - name: Update results, settle ledgers, and train the draw model
+        env:
+          REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
         run: |
-          TODAY="$(date +%F)"
-          SETTLEMENT_DATE="$(date -d 'yesterday' +%F)"
+          TARGET_DATE="$REQUESTED_TARGET_DATE"
+          TARGET_DATE="${TARGET_DATE:-$(date +%F)}"
+          NORMALIZED_TARGET_DATE="$(date -d "$TARGET_DATE" +%F)"
+          if [ "$NORMALIZED_TARGET_DATE" != "$TARGET_DATE" ]; then
+            echo "target_date must be exact YYYY-MM-DD" >&2
+            exit 1
+          fi
+          TODAY="$TARGET_DATE"
+          SETTLEMENT_DATE="$(date -d "$TODAY - 1 day" +%F)"
           python update_sporttery_results.py --date "$SETTLEMENT_DATE"
           python build_historical_features.py
           python generate_betting_plan.py --settle-only
           python draw_alert_ledger.py --settle
           python draw_model_learning.py --train --date "$TODAY"
+          REPORT_BUILD_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-settlement"
+          export REPORT_BUILD_ID
           python build_site.py
           python build_daily_image.py
+          SOURCE_COMMIT_SHA="$(git rev-parse HEAD)"
+          GENERATED_AT_SHANGHAI="$(date --iso-8601=seconds)"
+          python report_status.py --date "$TODAY" --phase settlement --settled-through "$SETTLEMENT_DATE" \
+            --build-id "$REPORT_BUILD_ID" \
+            --source-commit "$SOURCE_COMMIT_SHA" \
+            --generated-at "$GENERATED_AT_SHANGHAI"
 
       - name: Commit settlement files
         uses: stefanzweifel/git-auto-commit-action@v5

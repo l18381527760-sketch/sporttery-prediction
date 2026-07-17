@@ -221,16 +221,76 @@ def fetch_selling_matches(target_date: date) -> list[dict]:
     params = {"clientCode": "3001"}
     url = MATCH_LIST_URL + "?" + urllib.parse.urlencode(params)
     payload = fetch_json(url)
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid Sporttery match-list response: root must be an object")
     if str(payload.get("errorCode")) != "0":
         raise RuntimeError(payload.get("errorMessage", "竞彩网在售接口返回异常"))
 
+    value = payload.get("value")
+    if not isinstance(value, dict):
+        raise RuntimeError("invalid Sporttery match-list response: value must be an object")
+    match_days = value.get("matchInfoList")
+    if not isinstance(match_days, list):
+        raise RuntimeError(
+            "invalid Sporttery match-list response: value.matchInfoList must be a list"
+        )
+
     selected = []
-    for day in payload.get("value", {}).get("matchInfoList", []):
-        if day.get("businessDate") != target_date.isoformat():
-            continue
-        for item in day.get("subMatchList", []):
-            if item.get("matchStatus") in {"Selling", "Define"}:
-                selected.append(item)
+    target_day_seen = False
+    for day in match_days:
+        if not isinstance(day, dict):
+            raise RuntimeError(
+                "invalid Sporttery match-list response: match day must be an object"
+            )
+        business_date = day.get("businessDate")
+        try:
+            parsed_business_date = date.fromisoformat(business_date)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "invalid Sporttery match-list response: businessDate must be YYYY-MM-DD"
+            ) from exc
+        if business_date != parsed_business_date.isoformat():
+            raise RuntimeError(
+                "invalid Sporttery match-list response: businessDate must be YYYY-MM-DD"
+            )
+
+        sub_matches = day.get("subMatchList")
+        if not isinstance(sub_matches, list):
+            raise RuntimeError(
+                "invalid Sporttery match-list response: subMatchList must be a list"
+            )
+        if business_date == target_date.isoformat():
+            target_day_seen = True
+        for item in sub_matches:
+            if not isinstance(item, dict):
+                raise RuntimeError(
+                    "invalid Sporttery match-list response: match must be an object"
+                )
+            if business_date != target_date.isoformat():
+                continue
+            match_id = item.get("matchId")
+            if not (
+                (isinstance(match_id, str) and bool(match_id.strip()))
+                or type(match_id) is int
+            ):
+                raise RuntimeError(
+                    "invalid Sporttery match-list response: target-day match matchId is required"
+                )
+            for field in ("homeTeam", "awayTeam", "matchStatus"):
+                value = item.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise RuntimeError(
+                        f"invalid Sporttery match-list response: target-day match {field} is required"
+                    )
+            if item["matchStatus"] not in {"Selling", "Define"}:
+                raise RuntimeError(
+                    "invalid Sporttery match-list response: target-day match matchStatus must be Selling or Define"
+                )
+            selected.append(item)
+    if match_days and not target_day_seen:
+        raise RuntimeError(
+            "invalid Sporttery match-list response: target date is missing"
+        )
     return selected
 
 
@@ -418,6 +478,17 @@ def write_fixtures(matches: list[dict], target_date: date) -> Path:
     return path
 
 
+def count_written_fixtures(path: Path, target_date: date) -> int:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if not reader.fieldnames or "date" not in reader.fieldnames:
+                raise ValueError("fixtures CSV is missing the date header")
+            return sum(1 for row in reader if row.get("date") == target_date.isoformat())
+    except (OSError, csv.Error) as exc:
+        raise ValueError("could not verify written fixture count") from exc
+
+
 def load_ratings() -> dict[str, dict]:
     path = DATA_DIR / "team_ratings.csv"
     if not path.exists():
@@ -499,7 +570,16 @@ def write_odds_data(odds: dict[str, dict], target_date: date) -> Path:
     return path
 
 
-def write_source_status(source: str, target_date: date, message: str = "", analysis_source: str = "专业欧赔市场") -> Path:
+def write_source_status(
+    source: str,
+    target_date: date,
+    message: str = "",
+    analysis_source: str = "专业欧赔市场",
+    *,
+    fixture_count: int,
+) -> Path:
+    if type(fixture_count) is not int or fixture_count < 0:
+        raise ValueError("fixture_count must be a non-negative integer")
     path = DATA_DIR / "source_status.json"
     payload = {
         "source": source,
@@ -508,6 +588,8 @@ def write_source_status(source: str, target_date: date, message: str = "", analy
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "fallback": source != "竞彩网",
         "message": message,
+        "fixture_count": fixture_count,
+        "no_fixtures": fixture_count == 0,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
@@ -542,6 +624,10 @@ def main() -> int:
             source_message += f" 中国足彩网也不可用（{type(fallback_exc).__name__}），已切换 ESPN。"
             print(f"WARNING: {source_message}")
             selected = fetch_espn_matches(target_date)
+            if not selected:
+                raise RuntimeError(
+                    "fallback sources could not verify an empty schedule"
+                )
     matches = selected
     if args.include_finished:
         matches = fetch_matches(target_date)
@@ -555,9 +641,16 @@ def main() -> int:
         selected = attach_professional_market(selected, [])
     analysis_source = "中国足彩网专业欧赔市场" if any(item.get("analysis_source") == "中国足彩网专业欧赔市场" for item in selected) else "竞彩足球市场（专业欧赔暂缺）"
     fixtures_path = write_fixtures(selected, target_date)
+    fixture_count = count_written_fixtures(fixtures_path, target_date)
     ratings_path = write_ratings(selected)
     odds_path = write_odds_data(odds_data, target_date)
-    status_path = write_source_status(source, target_date, source_message, analysis_source)
+    status_path = write_source_status(
+        source,
+        target_date,
+        source_message,
+        analysis_source,
+        fixture_count=fixture_count,
+    )
     print(f"竞彩网返回比赛: {len(matches)}")
     print(f"导入未开奖比赛: {len(selected)}")
     for item in selected:

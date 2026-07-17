@@ -1,9 +1,11 @@
 import argparse
 import json
+import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from import_sporttery import fetch_zgzcw_matches
+from report_status import verified_zero_fixture_day
 
 
 ROOT = Path(__file__).resolve().parent
@@ -100,7 +102,19 @@ def main() -> int:
     parser.add_argument("--phase", choices=sorted(CAPTURE_PHASES), default="monitoring")
     args = parser.parse_args()
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
-    capture(target_date, phase=args.phase)
+    output = capture(target_date, phase=args.phase)
+    if args.phase == "decision":
+        snapshot_written = (
+            isinstance(output, Path)
+            and output.is_file()
+            and output.stat().st_size > 0
+        )
+        if not snapshot_written and not verified_zero_fixture_day(ROOT, target_date):
+            print(
+                "Decision snapshot capture failed: no non-empty snapshot and no verified zero-fixture proof.",
+                file=sys.stderr,
+            )
+            return 1
     return 0
 
 

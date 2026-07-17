@@ -2,6 +2,7 @@ import csv
 import html
 import json
 import math
+import os
 from datetime import date, datetime
 from pathlib import Path
 
@@ -10,6 +11,7 @@ ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "output"
 WEB_DIR = ROOT / "web"
 ASSET_PATH = "assets/stadium-dashboard.png"
+BUILD_ID = os.environ.get("REPORT_BUILD_ID", "local")
 
 SUBTYPE_LABELS = {"cold_draw": "冷门平局", "balanced_draw": "均势平局"}
 SETTLEMENT_LABELS = {
@@ -898,6 +900,7 @@ def render_site(rows: list[dict]) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="report-build-id" content="{html.escape(BUILD_ID, quote=True)}">
   <title>世界杯每日预测看板</title>
   <style>
     :root {{
