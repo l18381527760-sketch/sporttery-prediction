@@ -20,7 +20,7 @@ MONEY_QUANTUM = Decimal("0.01")
 
 REQUIRED_FIELD_ORDER = (
     "bet_id", "date", "report_date", "strategy_version", "model_version",
-    "locked_at_bjt", "match_id", "team_a", "team_b", "kickoff_local",
+    "locked_at_bjt", "plan_sha256", "match_id", "team_a", "team_b", "kickoff_local",
     "play", "market_type", "market_line", "selection", "legs_json",
     "canonical_legs_json", "odds_source", "odds_source_record_id",
     "odds_captured_at_bjt", "locked_odds", "odds", "raw_probability",
@@ -38,14 +38,12 @@ def stable_bet_id(plan_row: dict) -> str:
     """Return the deterministic identity for one valid plan row."""
     if not isinstance(plan_row, dict):
         raise ValueError("plan row must be a mapping")
-    payload = _identity_payload(plan_row)
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return _hash_identity(_identity_payload(plan_row))
 
 
 def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: dict) -> list[dict]:
     """Migrate legacy rows and append only previously unseen locked plan identities."""
-    _validate_lock(lock)
+    lock_source = _validate_lock(lock)
     if not isinstance(existing_rows, list) or not isinstance(plan_rows, list):
         raise ValueError("ledger and plan rows must be lists")
 
@@ -68,7 +66,7 @@ def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: d
         if bet_id in known_ids:
             continue
         known_ids.add(bet_id)
-        ingested.append(_new_locked_row(source_row, lock, bet_id))
+        ingested.append(_new_locked_row(source_row, lock, lock_source, bet_id))
     return ingested
 
 
@@ -87,15 +85,20 @@ def settle_pending(
     for source_row in rows:
         row = dict(source_row)
         status = row.get("status", PENDING)
+        if allow_correction:
+            if status == ABNORMAL:
+                correction_match_id = _abnormal_match_id(row)
+                correction = _result_for(correction_match_id, results)
+                if _is_proven_result(correction):
+                    new_record_id = correction["source_record_id"]
+                    if new_record_id != row.get("source_record_id"):
+                        row["status"] = PENDING
+            updated.append(row)
+            continue
         if status in TERMINAL_STATUSES:
             updated.append(row)
             continue
         if status == ABNORMAL:
-            correction = _result_for(row.get("match_id"), results)
-            if allow_correction and _is_proven_result(correction):
-                new_record_id = correction["source_record_id"]
-                if new_record_id != row.get("source_record_id"):
-                    row["status"] = PENDING
             updated.append(row)
             continue
         if status != PENDING:
@@ -135,7 +138,7 @@ def write_ledger_atomic(path: Path, rows: list[dict]) -> Path:
     return path
 
 
-def _validate_lock(lock: dict) -> None:
+def _validate_lock(lock: dict) -> str:
     if not isinstance(lock, dict):
         raise ValueError("lock must be a mapping")
     report_date = lock.get("report_date")
@@ -150,15 +153,16 @@ def _validate_lock(lock: dict) -> None:
     source = lock.get("odds_source")
     if not isinstance(source, str) or source.lower() not in DOMESTIC_ODDS_SOURCES:
         raise ValueError("lock odds_source must be a domestic source")
+    return source.lower()
 
 
-def _identity_payload(row: dict) -> dict:
+def _identity_payload(row: dict, *, allow_legacy_match: bool = False) -> dict:
     report_date = _required_date(row.get("date", row.get("report_date")))
     strategy_version = _required_text(row.get("strategy_version"), "strategy_version")
     play = _required_text(row.get("play"), "play")
     market_type = _required_text(row.get("market_type"), "market_type").lower()
     if market_type == "parlay" or "parlay" in play.lower():
-        legs = _canonical_legs(row)
+        legs = _canonical_legs(row, allow_legacy_match=allow_legacy_match)
         return {
             "report_date": report_date,
             "strategy_version": strategy_version,
@@ -171,13 +175,13 @@ def _identity_payload(row: dict) -> dict:
         "strategy_version": strategy_version,
         "play": play,
         "market_type": market_type,
-        "match_id": _canonical_match_id(row.get("match_id")),
+        "match_id": _canonical_match_id(row.get("match_id"), allow_legacy_match=allow_legacy_match),
         "selection": _required_text(row.get("selection"), "selection"),
         "line": _line_value(row.get("market_line", row.get("line", ""))),
     }
 
 
-def _canonical_legs(row: dict) -> list[dict]:
+def _canonical_legs(row: dict, *, allow_legacy_match: bool = False) -> list[dict]:
     raw_legs = row.get("legs")
     if raw_legs is None:
         raw_legs = row.get("legs_json")
@@ -193,7 +197,7 @@ def _canonical_legs(row: dict) -> list[dict]:
         if not isinstance(leg, dict):
             raise ValueError("parlay leg must be a mapping")
         legs.append({
-            "match_id": _canonical_match_id(leg.get("match_id")),
+            "match_id": _canonical_match_id(leg.get("match_id"), allow_legacy_match=allow_legacy_match),
             "market_type": _required_text(leg.get("market_type"), "leg market_type").lower(),
             "selection": _required_text(leg.get("selection"), "leg selection"),
             "line": _line_value(leg.get("line", leg.get("market_line", ""))),
@@ -214,18 +218,24 @@ def _migrate_existing_row(source_row: dict) -> dict:
         identity_row.setdefault("selection", row.get("selection", "legacy"))
         if not identity_row.get("match_id"):
             identity_row["match_id"] = _legacy_match_id(row)
-        row["bet_id"] = stable_bet_id(identity_row)
+        row["bet_id"] = _stable_legacy_bet_id(identity_row)
     row.setdefault("status", PENDING)
     _set_settlement_defaults(row)
     return row
 
 
-def _new_locked_row(source_row: dict, lock: dict, bet_id: str) -> dict:
+def _new_locked_row(source_row: dict, lock: dict, lock_source: str, bet_id: str) -> dict:
     row = dict(source_row)
+    row_source = row.get("odds_source")
+    if row_source not in (None, "") and (
+        not isinstance(row_source, str) or row_source.lower() != lock_source
+    ):
+        raise ValueError("plan odds_source must match lock odds_source")
     row["bet_id"] = bet_id
     row["report_date"] = lock["report_date"]
     row["locked_at_bjt"] = lock["locked_at_bjt"]
-    row.setdefault("odds_source", lock["odds_source"])
+    row["plan_sha256"] = lock["plan_sha256"].lower()
+    row["odds_source"] = lock_source
     if not row.get("locked_odds"):
         row["locked_odds"] = row.get("odds", "")
     if "odds" not in row:
@@ -234,7 +244,13 @@ def _new_locked_row(source_row: dict, lock: dict, bet_id: str) -> dict:
         canonical_legs = _canonical_legs(row)
         row["canonical_legs_json"] = json.dumps(canonical_legs, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     row["status"] = PENDING
-    _set_settlement_defaults(row)
+    for field in (
+        "result_status", "result_source", "source_record_id", "captured_at_bjt",
+        "home_goals", "away_goals", "settled_at_bjt", "result_legs_json", "clv",
+    ):
+        row[field] = ""
+    row["return"] = "0.00"
+    row["profit"] = "0.00"
     return row
 
 
@@ -275,7 +291,8 @@ def _settle_parlay(row: dict, results: dict, settled_time: str) -> dict:
         result = _result_for(canonical["match_id"], results)
         if not _is_proven_result(result):
             if _is_invalid_with_provenance(result):
-                return _apply_abnormal(row, result, settled_time)
+                detail = {**canonical, **_result_fields(result)}
+                return _apply_abnormal(row, result, settled_time, [detail])
             return row
         detail = {**canonical, **_result_fields(result)}
         result_details.append(detail)
@@ -296,11 +313,20 @@ def _settle_parlay(row: dict, results: dict, settled_time: str) -> dict:
     return _apply_settlement(row, WON, result_details[0], _money(row.get("stake")) * effective_odds, settled_time, provenance)
 
 
-def _apply_abnormal(row: dict, result: dict, settled_time: str) -> dict:
+def _apply_abnormal(
+    row: dict,
+    result: dict,
+    settled_time: str,
+    result_legs: list[dict] | None = None,
+) -> dict:
     updated = dict(row)
     updated.update(_result_fields(result))
     updated["status"] = ABNORMAL
     updated["settled_at_bjt"] = settled_time
+    if result_legs is not None:
+        updated["result_legs_json"] = json.dumps(
+            result_legs, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
     return updated
 
 
@@ -376,7 +402,16 @@ def _is_invalid_with_provenance(result: dict | None) -> bool:
 
 
 def _has_provenance(result: dict) -> bool:
-    return all(isinstance(result.get(field), str) and result[field].strip() for field in ("result_source", "source_record_id", "captured_at_bjt"))
+    if not all(
+        isinstance(result.get(field), str) and result[field].strip()
+        for field in ("result_source", "source_record_id", "captured_at_bjt")
+    ):
+        return False
+    try:
+        _aware_iso(result["captured_at_bjt"], "captured_at_bjt")
+    except ValueError:
+        return False
+    return True
 
 
 def _result_fields(result: dict) -> dict:
@@ -431,11 +466,22 @@ def _required_text(value: object, name: str) -> str:
     return value.strip()
 
 
-def _canonical_match_id(value: object) -> str:
+def _canonical_match_id(value: object, *, allow_legacy_match: bool = False) -> str:
     text = _required_text(value, "match_id")
     if any(character.isspace() or not character.isprintable() for character in text):
         raise ValueError("match_id must be canonical")
+    if text.startswith("legacy_match:") and not allow_legacy_match:
+        raise ValueError("legacy_match namespace is reserved for migration")
     return text
+
+
+def _hash_identity(payload: dict) -> str:
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _stable_legacy_bet_id(identity_row: dict) -> str:
+    return _hash_identity(_identity_payload(identity_row, allow_legacy_match=True))
 
 
 def _legacy_match_id(row: dict) -> str:
@@ -477,10 +523,37 @@ def _goal(value: object) -> int | None:
 
 
 def _odds(value: object) -> Decimal:
-    odds = _money(value)
+    try:
+        odds = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("odds must be decimal") from exc
+    if not odds.is_finite():
+        raise ValueError("odds must be finite")
     if odds <= 0:
         raise ValueError("odds must be positive")
     return odds
+
+
+def _abnormal_match_id(row: dict) -> object:
+    if not _is_parlay(row):
+        return row.get("match_id")
+    raw_details = row.get("result_legs_json")
+    if not isinstance(raw_details, str) or not raw_details:
+        return None
+    try:
+        details = json.loads(raw_details)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(details, list):
+        return None
+    for detail in details:
+        if isinstance(detail, dict) and detail.get("result_status") == "invalid":
+            match_id = detail.get("match_id")
+            try:
+                return _canonical_match_id(match_id)
+            except ValueError:
+                return None
+    return None
 
 
 def _money(value: object) -> Decimal:

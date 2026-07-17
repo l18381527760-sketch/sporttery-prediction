@@ -35,14 +35,11 @@ def parse_score(value: str) -> tuple[str, str] | None:
     return left.strip(), right.strip()
 
 
-def read_existing(path: Path) -> dict[tuple[str, str, str], dict]:
+def read_existing(path: Path) -> list[dict]:
     if not path.exists():
-        return {}
+        return []
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        return {
-            (row.get("date", ""), row.get("team_a", ""), row.get("team_b", "")): row
-            for row in csv.DictReader(handle)
-        }
+        return list(csv.DictReader(handle))
 
 
 class ZgzcwResultParser(HTMLParser):
@@ -157,12 +154,14 @@ def update_results(target_date: date) -> Path:
         raise RuntimeError(f"{target_date.isoformat()} 暂未抓到任何已完场赛果，稍后自动重试")
 
     fixture_ids = _fixture_match_ids(target_date)
+    row_indexes = _index_rows(rows)
     updated = 0
     for item in result_rows:
         home_team = TEAM_ALIASES.get(item.get("homeTeam", ""), item.get("homeTeam", ""))
         away_team = TEAM_ALIASES.get(item.get("awayTeam", ""), item.get("awayTeam", ""))
         key = (target_date.isoformat(), home_team, away_team)
-        existing = rows.get(key, {})
+        row_index = _select_row_index(rows, row_indexes.get(key, []), item.get("match_id"))
+        existing = rows[row_index] if row_index is not None else {}
         full = item.get("full")
         if not full:
             continue
@@ -183,10 +182,13 @@ def update_results(target_date: date) -> Path:
             incoming["match_id"] = ""
             incoming.update(_result_provenance(item, "unavailable"))
 
-        prior_finished = existing.get("result_status") == "finished" and parse_score(
+        prior_protected = existing.get("result_status") in {"finished", "conflict"} and parse_score(
             f"{existing.get('home_goals', '')}:{existing.get('away_goals', '')}"
         )
-        if prior_finished and tuple(full) != (existing.get("home_goals"), existing.get("away_goals")):
+        conflict = existing.get("result_status") == "conflict" or (
+            prior_protected and tuple(full) != (existing.get("home_goals"), existing.get("away_goals"))
+        )
+        if conflict:
             incoming["home_goals"] = existing["home_goals"]
             incoming["away_goals"] = existing["away_goals"]
             incoming["result_status"] = "conflict"
@@ -196,7 +198,12 @@ def update_results(target_date: date) -> Path:
         else:
             incoming["home_goals"] = full[0]
             incoming["away_goals"] = full[1]
-        rows[key] = incoming
+        if row_index is None:
+            rows.append(incoming)
+            row_index = len(rows) - 1
+            row_indexes.setdefault(key, []).append(row_index)
+        else:
+            rows[row_index] = incoming
         updated += 1
 
     _write_rows(path, rows)
@@ -242,17 +249,41 @@ def _result_provenance(item: dict, status: str) -> dict:
 
 
 def _joined_provenance(first: str, second: str) -> str:
-    return "|".join(sorted({value for value in (first, second) if value}))
+    tokens = {
+        token.strip()
+        for value in (first, second)
+        if isinstance(value, str)
+        for token in value.split("|")
+        if token.strip()
+    }
+    return "|".join(sorted(tokens))
 
 
-def _write_rows(path: Path, rows: dict[tuple[str, str, str], dict]) -> None:
-    unknown = sorted({field for row in rows.values() for field in row} - set(BASE_FIELDS))
+def _index_rows(rows: list[dict]) -> dict[tuple[str, str, str], list[int]]:
+    indexes: dict[tuple[str, str, str], list[int]] = {}
+    for index, row in enumerate(rows):
+        key = (row.get("date", ""), row.get("team_a", ""), row.get("team_b", ""))
+        indexes.setdefault(key, []).append(index)
+    return indexes
+
+
+def _select_row_index(rows: list[dict], candidates: list[int], match_id: object) -> int | None:
+    canonical_match_id = str(match_id).strip() if match_id not in (None, "") else ""
+    if canonical_match_id:
+        for index in candidates:
+            if rows[index].get("match_id", "").strip() == canonical_match_id:
+                return index
+    return candidates[0] if candidates else None
+
+
+def _write_rows(path: Path, rows: list[dict]) -> None:
+    unknown = sorted({field for row in rows for field in row} - set(BASE_FIELDS))
     fields = [*BASE_FIELDS, *unknown]
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
-        for key in sorted(rows):
-            writer.writerow({field: rows[key].get(field, "") for field in fields})
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in fields})
 
 
 def main() -> int:

@@ -128,9 +128,18 @@ class IdentityAndIngestionTest(unittest.TestCase):
     def test_malformed_identity_fails_closed(self):
         for row in (
             plan_row(match_id=""),
+            plan_row(match_id="legacy_match:forbidden"),
             plan_row(date="not-a-date"),
             plan_row(play="2-leg parlay", market_type="parlay", legs_json="not-json"),
             plan_row(play="2-leg parlay", market_type="parlay", legs_json="[]"),
+            plan_row(
+                play="2-leg parlay",
+                market_type="parlay",
+                legs_json=json.dumps([
+                    {"match_id": "legacy_match:forbidden", "market_type": "had", "selection": "胜", "line": ""},
+                    {"match_id": "1002", "market_type": "had", "selection": "胜", "line": ""},
+                ], ensure_ascii=False),
+            ),
         ):
             with self.subTest(row=row):
                 with self.assertRaises(ValueError):
@@ -169,6 +178,38 @@ class IdentityAndIngestionTest(unittest.TestCase):
             with self.subTest(payload=payload):
                 with self.assertRaises(ValueError):
                     ingest_locked_plan([], [plan_row()], payload)
+
+    def test_new_locked_row_clears_plan_settlement_fields_and_uses_authoritative_lock_metadata(self):
+        polluted = plan_row(**{
+            "odds_source": "SPORTTERY",
+            "status": WON,
+            "result_status": "finished",
+            "result_source": "untrusted",
+            "source_record_id": "old-result",
+            "captured_at_bjt": "2020-01-01T00:00:00+08:00",
+            "home_goals": "9",
+            "away_goals": "0",
+            "settled_at_bjt": "2020-01-01T01:00:00+08:00",
+            "return": "999.99",
+            "profit": "979.99",
+            "result_legs_json": "polluted",
+            "clv": "0.99",
+        })
+        row = ingest_locked_plan([], [polluted], lock(odds_source="SportTery"))[0]
+
+        self.assertEqual(PENDING, row["status"])
+        for field in (
+            "result_status", "result_source", "source_record_id", "captured_at_bjt",
+            "home_goals", "away_goals", "settled_at_bjt", "result_legs_json", "clv",
+        ):
+            self.assertEqual("", row[field], field)
+        self.assertEqual("0.00", row["return"])
+        self.assertEqual("0.00", row["profit"])
+        self.assertEqual("sporttery", row["odds_source"])
+        self.assertEqual("a" * 64, row["plan_sha256"])
+
+        with self.assertRaises(ValueError):
+            ingest_locked_plan([], [plan_row(odds_source="zgzcw")], lock(odds_source="sporttery"))
 
 
 class SettlementTest(unittest.TestCase):
@@ -215,6 +256,8 @@ class SettlementTest(unittest.TestCase):
             {"1001": {**finished("1001", 1, 0), "result_status": "conflict"}},
             {"1001": {**finished("1001", 1, 0), "result_status": "unavailable"}},
             {"1001": {**finished("1001", "x", 0)}},
+            {"1001": {**finished("1001", 1, 0), "captured_at_bjt": "not-a-timestamp"}},
+            {"1001": {**finished("1001", 1, 0), "captured_at_bjt": "2026-07-17T11:00:00"}},
             {"wrong": finished("wrong", 1, 0)},
         )
         for results in cases:
@@ -227,6 +270,58 @@ class SettlementTest(unittest.TestCase):
         self.assertEqual(ABNORMAL, unchanged[0]["status"])
         reopened = settle_pending(invalid, {"1001": finished("1001", 1, 0, "changed")}, SETTLED_AT, allow_correction=True)
         self.assertEqual(PENDING, reopened[0]["status"])
+        correction_repeat = settle_pending(reopened, {"1001": finished("1001", 1, 0, "changed")}, SETTLED_AT, allow_correction=True)
+        self.assertEqual(reopened, correction_repeat)
+        settled = settle_pending(reopened, {"1001": finished("1001", 1, 0, "changed")}, SETTLED_AT)
+        self.assertEqual(WON, settled[0]["status"])
+
+    def test_correction_mode_never_settles_pending_rows(self):
+        pending = ingest_locked_plan([], [plan_row()], lock())
+
+        self.assertEqual(
+            pending,
+            settle_pending(pending, {"1001": finished("1001", 1, 0)}, SETTLED_AT, allow_correction=True),
+        )
+
+    def test_abnormal_parlay_reopens_by_offending_leg_then_requires_ordinary_settlement(self):
+        legs = [
+            {"match_id": "1001", "market_type": "had", "selection": "胜", "line": "", "odds": "2.00"},
+            {"match_id": "1002", "market_type": "ttg", "selection": "2球", "line": "", "odds": "3.00"},
+        ]
+        pending = ingest_locked_plan([], [plan_row(
+            play="2-leg parlay",
+            market_type="parlay",
+            legs_json=json.dumps(legs, ensure_ascii=False),
+            locked_odds="6.00",
+            stake="10",
+        )], lock())
+        invalid_leg = {**finished("1002", 2, 0, "bad-1002"), "result_status": "invalid"}
+        abnormal = settle_pending(
+            pending,
+            {"1001": finished("1001", 1, 0), "1002": invalid_leg},
+            SETTLED_AT,
+        )
+
+        self.assertEqual(ABNORMAL, abnormal[0]["status"])
+        self.assertEqual("1002", json.loads(abnormal[0]["result_legs_json"])[0]["match_id"])
+
+        corrected_results = {
+            "1001": finished("1001", 1, 0),
+            "1002": finished("1002", 2, 0, "fixed-1002"),
+        }
+        reopened = settle_pending(abnormal, corrected_results, SETTLED_AT, allow_correction=True)
+        self.assertEqual(PENDING, reopened[0]["status"])
+        self.assertEqual(reopened, settle_pending(reopened, corrected_results, SETTLED_AT, allow_correction=True))
+        self.assertEqual(WON, settle_pending(reopened, corrected_results, SETTLED_AT)[0]["status"])
+
+    def test_locked_odds_keep_full_decimal_precision_until_money_is_quantized(self):
+        settled = self.settle_one(
+            plan_row(locked_odds="1.23456", odds="1.23456", stake="10"),
+            {"1001": finished("1001", 1, 0)},
+        )
+
+        self.assertEqual("12.35", settled["return"])
+        self.assertEqual("2.35", settled["profit"])
 
     def test_settlement_is_byte_idempotent_and_only_changes_allowed_fields(self):
         pending = ingest_locked_plan([], [plan_row()], lock())
@@ -249,7 +344,9 @@ class AtomicWriteTest(unittest.TestCase):
             write_ledger_atomic(path, rows)
             self.assertEqual(first, path.read_bytes())
             with path.open(encoding="utf-8-sig", newline="") as handle:
-                self.assertEqual("legacy", next(csv.DictReader(handle))["legacy_field"])
+                reader = csv.DictReader(handle)
+                self.assertIn("plan_sha256", reader.fieldnames)
+                self.assertEqual("legacy", next(reader)["legacy_field"])
 
 
 if __name__ == "__main__":
