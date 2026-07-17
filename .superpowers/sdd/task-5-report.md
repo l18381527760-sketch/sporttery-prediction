@@ -388,3 +388,100 @@ Exit code: 0
 Code/test fix commit: `55ce55eb55b7231e01900fd1bd9563b7abb0a310` (`fix: harden parlay ledger migration`).
 
 Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
+
+## Review fixes 6
+
+### Scope
+
+- Added deterministic legacy leg content to fallback migration identity and versioned the private namespace as `legacy_fallback_v2`.
+- Normalized list-of-dictionary legs to sorted `match_id`, `market_type`, `selection`, and `line` identity fields only.
+- Ignored mutable legacy leg odds, stake, and probability while preserving leg-order and JSON-key-order invariance.
+- Preserved distinct missing, raw-text, canonical raw-JSON, and non-JSON-value representations so malformed leg content cannot collapse.
+
+### Files changed
+
+- `betting_ledger.py` - private legacy leg identity normalization.
+- `tests/test_betting_ledger.py` - structured leg collision, reorder invariance, raw collision, preservation, and idempotency coverage.
+- `.superpowers/sdd/task-5-report.md` - this review chronology and verification record.
+
+### RED 1
+
+After adding the three requested migration tests and before production edits, ran:
+
+```text
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
+
+test_legacy_fallback_distinguishes_structured_leg_identities_and_keeps_rows ... FAIL
+test_legacy_fallback_structured_legs_ignore_order_key_order_and_mutable_values ... FAIL
+test_legacy_fallback_unparseable_leg_text_is_distinct_and_idempotent ... FAIL
+
+======================================================================
+FAIL: test_legacy_fallback_distinguishes_structured_leg_identities_and_keeps_rows
+----------------------------------------------------------------------
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_legacy_fallback_structured_legs_ignore_order_key_order_and_mutable_values
+----------------------------------------------------------------------
+AssertionError: 'b909f1c8c093da0d2709753545a580497e9cd98a525add0c076e7374a43ec4b3' == 'b909f1c8c093da0d2709753545a580497e9cd98a525add0c076e7374a43ec4b3'
+
+======================================================================
+FAIL: test_legacy_fallback_unparseable_leg_text_is_distinct_and_idempotent
+----------------------------------------------------------------------
+AssertionError: 2 != 1
+
+----------------------------------------------------------------------
+Ran 38 tests in 0.166s
+
+FAILED (failures=3)
+```
+
+### RED 2
+
+Self-review of the first implementation found that missing legs, empty raw text, and JSON `null` still normalized to one empty value. Added a focused assertion before refining production code:
+
+```text
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
+
+test_legacy_fallback_unparseable_leg_text_is_distinct_and_idempotent ... FAIL
+
+======================================================================
+FAIL: test_legacy_fallback_unparseable_leg_text_is_distinct_and_idempotent
+----------------------------------------------------------------------
+AssertionError: 3 != 1
+
+----------------------------------------------------------------------
+Ran 38 tests in 0.149s
+
+FAILED (failures=1)
+```
+
+### GREEN
+
+```text
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
+Ran 38 tests in 0.151s
+OK
+
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_value_portfolio tests.test_report_status -v
+Ran 69 tests in 1.002s
+OK
+
+.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile betting_ledger.py update_sporttery_results.py tests\test_betting_ledger.py tests\test_update_sporttery_results.py
+Exit code: 0
+
+git diff --check
+Exit code: 0
+```
+
+### Review
+
+- Structured legacy legs use only stable identity fields and sort by canonical JSON; equivalent reordered legs and key order hash identically.
+- Different structured leg identities produce distinct IDs, so both rows survive ingestion in original order.
+- Parseable non-leg JSON is canonically represented; unparseable strings retain normalized text, and format markers distinguish missing, empty, and JSON-null content.
+- Existing ledger fields, including original `legs`/`legs_json`, remain unchanged; synthetic migration match material is never written as an official `match_id`.
+- Existing rows with persisted `bet_id` remain immutable and bypass migration recomputation.
+
+Code/test fix commit: `65e12b6c59ecfd907d7e5a06c89baaa5a652c9c0` (`fix: include legacy parlay legs in identity`).
+
+Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
