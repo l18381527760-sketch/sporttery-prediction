@@ -14,6 +14,17 @@ COMPLETE_SELECTION_SETS = (
     frozenset(TOTAL_GOALS_SELECTIONS),
     frozenset(TOTAL_GOALS_SELECTIONS.values()),
 )
+TRUSTED_SOURCES = frozenset({"sporttery", "竞彩网", "zgzcw", "中国足彩网"})
+METADATA_KEYS = frozenset(
+    {
+        "source",
+        "source_record_id",
+        "sourceRecordId",
+        "captured_at_bjt",
+        "capturedAtBjt",
+        "captured_at",
+    }
+)
 HANDICAP_PATTERN = re.compile(r"^[+-]?\d+$")
 
 
@@ -32,8 +43,7 @@ class OfficialMarket:
 def devig(prices: dict[str, float]) -> dict[str, float]:
     if not isinstance(prices, dict) or len(prices) < 3:
         raise ValueError("market must contain every outcome")
-    selections = set(prices)
-    if any(selections < complete for complete in COMPLETE_SELECTION_SETS):
+    if frozenset(prices) not in COMPLETE_SELECTION_SETS:
         raise ValueError("market must contain every outcome")
 
     normalized_prices: dict[str, float] = {}
@@ -106,7 +116,7 @@ def parse_handicap(value: object) -> int:
 
 
 def normalize_market(match_id: str, market_type: str, raw: dict) -> OfficialMarket | None:
-    if not isinstance(match_id, str) or not match_id.strip() or not isinstance(raw, dict):
+    if not _is_canonical_match_id(match_id) or not isinstance(raw, dict):
         return None
     if not isinstance(market_type, str):
         return None
@@ -116,8 +126,22 @@ def normalize_market(match_id: str, market_type: str, raw: dict) -> OfficialMark
     if selection_map is None:
         return None
 
-    prices_raw = raw.get("prices", raw)
-    if not isinstance(prices_raw, dict) or not set(selection_map).issubset(prices_raw):
+    nested_prices = "prices" in raw
+    prices_raw = raw["prices"] if nested_prices else raw
+    if not isinstance(prices_raw, dict):
+        return None
+    selection_keys = set(selection_map)
+    price_keys = set(prices_raw)
+    if not nested_prices:
+        price_keys -= METADATA_KEYS
+    if market == "hhad":
+        price_keys.discard("goalLine")
+    if price_keys != selection_keys:
+        return None
+    allowed_raw_keys = METADATA_KEYS | ({"prices"} if nested_prices else selection_keys)
+    if market == "hhad":
+        allowed_raw_keys = allowed_raw_keys | {"goalLine"}
+    if not set(raw).issubset(allowed_raw_keys):
         return None
     if market == "hhad" and "goalLine" not in raw and "goalLine" not in prices_raw:
         return None
@@ -133,14 +157,14 @@ def normalize_market(match_id: str, market_type: str, raw: dict) -> OfficialMark
     except (TypeError, ValueError):
         return None
 
-    source = _required_string(raw, "source")
+    source = _trusted_source(raw)
     source_record_id = _required_string(raw, "source_record_id", "sourceRecordId")
     captured_at_bjt = _required_string(raw, "captured_at_bjt", "capturedAtBjt", "captured_at")
     if source is None or source_record_id is None or captured_at_bjt is None:
         return None
 
     return OfficialMarket(
-        match_id=match_id.strip(),
+        match_id=match_id,
         market_type=market,
         line=line,
         prices=prices,
@@ -184,3 +208,20 @@ def _required_string(raw: dict, *keys: str) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _trusted_source(raw: dict) -> str | None:
+    source = _required_string(raw, "source")
+    if source is None:
+        return None
+    normalized = source.lower() if source.isascii() else source
+    return normalized if normalized in TRUSTED_SOURCES else None
+
+
+def _is_canonical_match_id(match_id: object) -> bool:
+    return (
+        isinstance(match_id, str)
+        and bool(match_id)
+        and match_id == match_id.strip()
+        and all(not character.isspace() and character.isprintable() for character in match_id)
+    )

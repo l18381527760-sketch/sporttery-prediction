@@ -25,6 +25,7 @@ class OfficialMarketMathTest(unittest.TestCase):
             {"胜": 1.90, "平": 3.60, "负": 1.0},
             {"胜": 1.90, "平": math.inf, "负": 4.20},
             {f"{goals}球": 2.0 + goals for goals in range(7)},
+            {"h": 1.90, "d": 3.60, "unknown": 4.20},
         ):
             with self.subTest(prices=prices), self.assertRaises(ValueError):
                 devig(prices)
@@ -94,11 +95,67 @@ class OfficialMarketNormalizationTest(unittest.TestCase):
             normalize_market("1001", "ttg", _raw({"s0": "not-a-price", **{f"s{index}": "3.0" for index in range(1, 8)}}))
         )
 
+    def test_normalize_market_accepts_only_trusted_sources(self):
+        for source, expected in (
+            (" SportTery ", "sporttery"),
+            ("ZGZCW", "zgzcw"),
+            ("竞彩网", "竞彩网"),
+            ("中国足彩网", "中国足彩网"),
+        ):
+            with self.subTest(source=source):
+                market = normalize_market(
+                    "1001", "had", _raw({"h": "1.90", "d": "3.60", "a": "4.20"}, source=source)
+                )
+                self.assertIsNotNone(market)
+                self.assertEqual(expected, market.source)
 
-def _raw(prices: dict[str, str]) -> dict:
+        self.assertIsNone(
+            normalize_market(
+                "1001", "had", _raw({"h": "1.90", "d": "3.60", "a": "4.20"}, source="espn")
+            )
+        )
+
+    def test_normalize_market_rejects_unknown_root_or_nested_selection_keys(self):
+        self.assertIsNone(
+            normalize_market(
+                "1001",
+                "had",
+                _raw({"h": "1.90", "d": "3.60", "a": "4.20", "unknown": "8.00"}),
+            )
+        )
+        self.assertIsNone(
+            normalize_market(
+                "1001",
+                "had",
+                _raw(
+                    {"prices": {"h": "1.90", "d": "3.60", "a": "4.20", "unknown": "8.00"}}
+                ),
+            )
+        )
+
+    def test_normalize_market_allows_metadata_and_handicap_line_in_nested_prices(self):
+        market = normalize_market(
+            "1001",
+            "hhad",
+            _raw(
+                {"prices": {"h": "2.40", "d": "3.20", "a": "2.80", "goalLine": "+1"}}
+            ),
+        )
+
+        self.assertIsNotNone(market)
+        self.assertEqual(1, market.line)
+
+    def test_normalize_market_rejects_noncanonical_match_ids(self):
+        raw = _raw({"h": "1.90", "d": "3.60", "a": "4.20"})
+        for match_id in ("", "   ", "1001 2", "1001\t2", "1001\n2", "1001\x00"):
+            with self.subTest(match_id=match_id):
+                self.assertIsNone(normalize_market(match_id, "had", raw))
+
+
+def _raw(prices: dict[str, str | dict], *, source: str = "sporttery") -> dict:
     return {
         **prices,
-        "source": "sporttery",
+        "source": source,
         "source_record_id": "record-1001",
         "captured_at_bjt": "2026-07-17T10:00:00+08:00",
     }
