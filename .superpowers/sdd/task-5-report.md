@@ -229,3 +229,70 @@ Exit code: 0
 Code/test fix commit: `6ecaf08e24f1642e28e2b9ad7d0b13b9f5928166` (`fix: deduplicate unavailable fallback results`).
 
 Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
+
+## Review fixes 4
+
+### Scope
+
+- Made repeated fallback observations with a blank or malformed `source_record_id` byte-idempotent for both unique canonical IDs and ambiguous blank-ID history.
+- Limited anonymous reuse to an existing `unavailable` row with the same source, blank stored source identity, identical preserved match-ID state, and identical score.
+- Preserved the first capture timestamp and every existing field on reuse; a changed anonymous score appends a separate unavailable row without altering protected history.
+
+### Files changed
+
+- `update_sporttery_results.py` - strict anonymous-unavailable matching and no-op reuse.
+- `tests/test_update_sporttery_results.py` - unique and ambiguous anonymous repeat coverage plus changed-score protection.
+- `.superpowers/sdd/task-5-report.md` - this review chronology and verification record.
+
+### RED
+
+After extending the unique-ID test and adding the ambiguous/multiple-blank test, before production edits, ran:
+
+```text
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
+
+test_fallback_without_source_record_id_is_unavailable_despite_unique_match_id ... FAIL
+test_repeated_missing_source_ambiguous_fallback_reuses_only_matching_unavailable_row ... FAIL
+
+======================================================================
+FAIL: test_fallback_without_source_record_id_is_unavailable_despite_unique_match_id
+----------------------------------------------------------------------
+AssertionError: 1 != 2
+
+======================================================================
+FAIL: test_repeated_missing_source_ambiguous_fallback_reuses_only_matching_unavailable_row
+----------------------------------------------------------------------
+AssertionError: 4 != 5
+
+----------------------------------------------------------------------
+Ran 31 tests in 0.277s
+
+FAILED (failures=2)
+```
+
+Both failures showed the second anonymous capture appending another row instead of preserving the first file bytes and row count.
+
+### GREEN
+
+```text
+$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
+Ran 31 tests in 0.208s
+OK
+
+.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile update_sporttery_results.py tests\test_update_sporttery_results.py
+Exit code: 0
+
+git diff --check
+Exit code: 0
+```
+
+### Review
+
+- Exact date/team selection remains enforced by the existing ordered candidate index.
+- Anonymous reuse accepts only `unavailable`; `finished`, `conflict`, and differently identified rows cannot be selected or altered.
+- The preserved `match_id` must exactly equal the sole canonical ID, or remain blank when canonical IDs are absent or ambiguous.
+- Exact score equality is required. A changed score creates a new unavailable observation while the prior row, score, provenance, timestamp, unknown columns, and ordering remain unchanged.
+
+Code/test fix commit: `d2c30cbcab50efbbe8d469ca454d1e073dd1fada` (`fix: deduplicate anonymous fallback results`).
+
+Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
