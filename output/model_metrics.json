@@ -157,19 +157,19 @@
   },
   "clv": {
     "count": 13,
-    "average_clv": 0.0003797950650744961,
+    "average_clv": 0.0047630956537839065,
     "positive_rate": 0.23076923076923078
   },
   "snapshot_coverage": {
-    "files": 24,
-    "matches": 110,
+    "files": 26,
+    "matches": 126,
     "phases": {
-      "opening": 15,
-      "decision": 13,
+      "opening": 23,
+      "decision": 21,
       "monitoring": 82,
       "pre_kickoff": 0
     },
-    "latest": "2026-07-17T15:35:17.316833+08:00"
+    "latest": "2026-07-17T17:37:37.554452+08:00"
   },
   "league_draw_calibration": {}
 }

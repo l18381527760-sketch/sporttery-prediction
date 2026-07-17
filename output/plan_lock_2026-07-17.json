@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "report_date": "2026-07-17",
+  "locked_at_bjt": "2026-07-17T17:37:39+08:00",
+  "plan_path": "output/betting_plan_2026-07-17.csv",
+  "plan_sha256": "4a52c4bf823bb9bf508e8e615831105ba60bda276351b4f83fbe4cf8ec8a5086",
+  "odds_path": "data/sporttery_odds_2026-07-17.json",
+  "odds_sha256": "8f32b31feeaaba8beee93570be88084ce659f4780ebc9e13acd44a554f7165b3",
+  "odds_source": "sporttery"
+}
