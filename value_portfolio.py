@@ -312,6 +312,9 @@ def allocate_portfolio(
         if selected_matches.intersection(candidate.match_ids):
             rejections.append(f"{candidate.pair_id}:parlay_reuses_single_match")
             continue
+        if parlay is not None:
+            rejections.append(f"{candidate.pair_id}:max_parlay_count")
+            continue
         raw_stake = _parlay_stake(candidate, limit_values)
         stake, applied_limits = _capped_stake(
             raw_stake,
@@ -344,7 +347,6 @@ def allocate_portfolio(
         for match_id in candidate.match_ids:
             match_exposure[match_id] = match_exposure.get(match_id, 0) + stake
         daily_stake += stake
-        break
 
     return Portfolio(
         tuple(singles),

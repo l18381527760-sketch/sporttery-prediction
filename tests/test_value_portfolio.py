@@ -279,6 +279,10 @@ class ParlayTest(unittest.TestCase):
         self.assertEqual(2, len(portfolio.parlay.parlay.legs))
         self.assertLessEqual(portfolio.parlay.stake, 30)
         self.assertLessEqual(portfolio.total_stake, 500)
+        self.assertEqual(
+            2,
+            sum(reason.endswith(":max_parlay_count") for reason in portfolio.rejections),
+        )
 
     def test_parlay_uses_the_minimum_of_each_multiplier_type_across_legs(self):
         left = _candidate(
