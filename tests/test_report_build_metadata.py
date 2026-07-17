@@ -69,6 +69,13 @@ class ReportBuildMetadataTest(unittest.TestCase):
         )
         self.assertNotIn('run-<&"decision', html)
 
+    def test_site_uses_game_prediction_dashboard_title(self):
+        html = build_site.render_site([])
+
+        self.assertIn("<title>博弈预测看板</title>", html)
+        self.assertIn("<h1>博弈预测看板</h1>", html)
+        self.assertNotIn("世界杯每日预测看板", html)
+
     def test_png_contains_the_same_build_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

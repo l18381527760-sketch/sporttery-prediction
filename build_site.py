@@ -901,7 +901,7 @@ def render_site(rows: list[dict]) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="report-build-id" content="{html.escape(BUILD_ID, quote=True)}">
-  <title>世界杯每日预测看板</title>
+  <title>博弈预测看板</title>
   <style>
     :root {{
       color-scheme: light;
@@ -1465,7 +1465,7 @@ def render_site(rows: list[dict]) -> str:
   <section class="hero">
     <div class="hero-inner">
       <p class="eyebrow">WORLD CUP FORECAST DESK</p>
-      <h1>世界杯每日预测看板</h1>
+      <h1>博弈预测看板</h1>
       <p>每天自动汇总赛程、球队评分和模型概率，重点展示胜平负、晋级概率、预期进球和推荐判断。</p>
     </div>
   </section>
