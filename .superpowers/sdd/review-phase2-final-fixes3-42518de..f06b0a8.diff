@@ -1,0 +1,1069 @@
+diff --git a/betting_ledger.py b/betting_ledger.py
+index 76c5a2f..742d7ce 100644
+--- a/betting_ledger.py
++++ b/betting_ledger.py
+@@ -80,14 +80,22 @@ def stable_bet_id(plan_row: dict) -> str:
+     return _hash_identity(_identity_payload(plan_row))
+ 
+ 
+-def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: dict) -> list[dict]:
++def ingest_locked_plan(
++    existing_rows: list[dict],
++    plan_rows: list[dict],
++    lock: dict,
++    *,
++    canonical_evidence: dict[tuple[str, str], str] | None = None,
++) -> list[dict]:
+     """Migrate legacy rows and append only previously unseen locked plan identities."""
+     lock_source = _validate_lock(lock)
+     locked_at = _aware_datetime(lock["locked_at_bjt"], "lock locked_at_bjt")
+     if not isinstance(existing_rows, list) or not isinstance(plan_rows, list):
+         raise ValueError("ledger and plan rows must be lists")
+ 
+-    ingested, known_keys = _normalize_existing_rows(existing_rows)
++    ingested, known_keys = _normalize_existing_rows(
++        existing_rows, canonical_evidence=canonical_evidence
++    )
+ 
+     new_rows: list[tuple[dict, str]] = []
+     plan_ids: set[str] = set()
+@@ -714,16 +722,66 @@ def ingest_date(root: Path, target_date: date) -> Path:
+         raise ValueError("paid plan bytes changed after lock validation")
+     plan_rows = _parse_csv_bytes(plan_bytes)
+     existing_rows = _read_csv(ledger_path)
+-    return write_ledger_atomic(ledger_path, ingest_locked_plan(existing_rows, plan_rows, lock))
++    canonical_evidence = _load_locked_plan_evidence(root, existing_rows)
++    return write_ledger_atomic(
++        ledger_path,
++        ingest_locked_plan(
++            existing_rows,
++            plan_rows,
++            lock,
++            canonical_evidence=canonical_evidence,
++        ),
++    )
+ 
+ 
+ def settle_ledger(root: Path, results: dict, settled_at: datetime) -> Path:
+     """Settle existing canonical ledger rows without regenerating any plan."""
+-    ledger_path = Path(root) / "output" / "betting_ledger.csv"
+-    rows, _known_keys = _normalize_existing_rows(_read_csv(ledger_path))
++    root = Path(root)
++    ledger_path = root / "output" / "betting_ledger.csv"
++    source_rows = _read_csv(ledger_path)
++    canonical_evidence = _load_locked_plan_evidence(root, source_rows)
++    rows, _known_keys = _normalize_existing_rows(
++        source_rows, canonical_evidence=canonical_evidence
++    )
+     return write_ledger_atomic(ledger_path, settle_pending(rows, results, settled_at))
+ 
+ 
++def _load_locked_plan_evidence(
++    root: Path, existing_rows: list[dict]
++) -> dict[tuple[str, str], str]:
++    locally_validated, _known_keys = _normalize_existing_rows(existing_rows)
++    report_dates = {
++        _strict_canonical_date(row.get("report_date"), "report_date")
++        for row in locally_validated
++        if isinstance(row, dict)
++        and row.get("strategy_version") in NEW_PAID_STRATEGY_VERSIONS
++    }
++    evidence: dict[tuple[str, str], str] = {}
++    for report_date in sorted(report_dates):
++        target_date = date.fromisoformat(report_date)
++        lock = read_valid_lock(root, target_date)
++        expected_plan = f"output/betting_plan_{report_date}.csv"
++        if lock is None or lock.get("plan_path") != expected_plan:
++            raise ValueError("canonical ledger row lacks valid locked plan evidence")
++        lock_source = _validate_lock(lock)
++        plan_path = Path(root) / expected_plan
++        plan_bytes = _read_plan_bytes(plan_path)
++        if hashlib.sha256(plan_bytes).hexdigest() != lock["plan_sha256"].lower():
++            raise ValueError("canonical ledger locked plan evidence hash differs")
++        plan_rows = _parse_csv_bytes(plan_bytes)
++        plan_ids: set[str] = set()
++        for plan_row in plan_rows:
++            if plan_row.get("date") != report_date:
++                raise ValueError("locked plan evidence date differs")
++            bet_id = stable_bet_id(plan_row)
++            if bet_id in plan_ids:
++                raise ValueError("duplicate canonical identity in locked plan evidence")
++            plan_ids.add(bet_id)
++            expected_row = _new_locked_row(plan_row, lock, lock_source, bet_id)
++            evidence[(report_date, bet_id)] = expected_row["row_payload_sha256"]
++    return evidence
++
++
+ def _read_csv(path: Path) -> list[dict]:
+     if not path.exists():
+         return []
+@@ -854,6 +912,8 @@ def _existing_dedupe_key(row: dict) -> tuple[str, str]:
+ 
+ def _normalize_existing_rows(
+     existing_rows: list[dict],
++    *,
++    canonical_evidence: dict[tuple[str, str], str] | None = None,
+ ) -> tuple[list[dict], set[tuple[str, str]]]:
+     normalized: list[dict] = []
+     known_keys: set[tuple[str, str]] = set()
+@@ -868,6 +928,10 @@ def _normalize_existing_rows(
+                 raise ValueError(f"invalid existing canonical paid row: {exc}") from exc
+             row = dict(source_row)
+         else:
++            if _looks_like_canonical_paid_row(source_row):
++                raise ValueError(
++                    "canonical-shaped row cannot use legacy migration after strategy downgrade"
++                )
+             _validate_existing_legacy_economics(source_row)
+             row = _migrate_existing_row(source_row)
+         key_kind, identity_key = _existing_dedupe_key(row)
+@@ -881,11 +945,37 @@ def _normalize_existing_rows(
+             continue
+         known_keys.add(dedupe_key)
+         if key_kind == "canonical":
++            if canonical_evidence is not None:
++                evidence_key = (
++                    _strict_canonical_date(row.get("report_date"), "report_date"),
++                    identity_key,
++                )
++                if canonical_evidence.get(evidence_key) != row.get(
++                    "row_payload_sha256"
++                ):
++                    raise ValueError(
++                        "canonical row payload differs from locked plan evidence anchor"
++                    )
+             canonical_states[identity_key] = _existing_canonical_state(row)
+         normalized.append(row)
+     return normalized, known_keys
+ 
+ 
++def _looks_like_canonical_paid_row(row: dict) -> bool:
++    if row.get("row_payload_sha256") not in (None, ""):
++        return True
++    if row.get("plan_sha256") not in (None, ""):
++        return True
++    evidence_fields = (
++        "report_date",
++        "locked_at_bjt",
++        "odds_source_record_id",
++        "odds_captured_at_bjt",
++        "locked_odds",
++    )
++    return all(row.get(field) not in (None, "") for field in evidence_fields)
++
++
+ def _validate_existing_canonical_paid_row(row: dict) -> None:
+     row_date = _strict_canonical_date(row.get("date"), "date")
+     report_date = _strict_canonical_date(row.get("report_date"), "report_date")
+diff --git a/decision_bundle.py b/decision_bundle.py
+index 2ad0427..0dcfa12 100644
+--- a/decision_bundle.py
++++ b/decision_bundle.py
+@@ -425,6 +425,14 @@ def _validate_snapshot_import(
+         raise ValueError("decision snapshot import manifest is invalid")
+     if snapshot.get("source") != import_manifest.get("source"):
+         raise ValueError("decision snapshot import manifest source differs")
++    imported_at = _aware_datetime(
++        import_manifest.get("imported_at_bjt"), "import manifest imported_at"
++    ).astimezone(BEIJING)
++    captured_at = _aware_datetime(
++        snapshot.get("captured_at"), "snapshot captured_at"
++    ).astimezone(BEIJING)
++    if imported_at > captured_at:
++        raise ValueError("import timestamp must not follow snapshot capture")
+ 
+ 
+ def _validate_snapshot(
+diff --git a/import_sporttery.py b/import_sporttery.py
+index ae1d0dc..46ece80 100644
+--- a/import_sporttery.py
++++ b/import_sporttery.py
+@@ -60,6 +60,11 @@ def import_manifest_path(root: Path, target_date: date) -> Path:
+     return Path(root) / "data" / "import_manifests" / f"{target_date.isoformat()}.json"
+ 
+ 
++def import_extract_paths(root: Path, target_date: date) -> tuple[Path, Path]:
++    directory = Path(root) / "data" / "import_extracts" / target_date.isoformat()
++    return directory / "fixtures.csv", directory / "odds.json"
++
++
+ def write_import_manifest(
+     source: str,
+     target_date: date,
+@@ -74,10 +79,47 @@ def write_import_manifest(
+     root = DATA_DIR.resolve().parent
+     fixtures = Path(fixtures_path).resolve()
+     odds = Path(odds_path).resolve()
+-    if fixtures != (DATA_DIR / "fixtures.csv").resolve():
+-        raise ValueError("import manifest fixtures path is invalid")
+-    if odds != (DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json").resolve():
+-        raise ValueError("import manifest odds path is invalid")
++    for input_path in (fixtures, odds):
++        try:
++            input_path.relative_to(root)
++        except ValueError as exc:
++            raise ValueError("import manifest input path is invalid") from exc
++        if not input_path.is_file():
++            raise ValueError("import manifest input is missing")
++    return publish_import_manifest(
++        canonical_source,
++        target_date,
++        fixtures.read_bytes(),
++        odds.read_bytes(),
++        imported,
++    )
++
++
++def publish_import_manifest(
++    source: str,
++    target_date: date,
++    fixture_bytes: bytes,
++    odds_bytes: bytes,
++    imported_at: datetime | None = None,
++) -> Path:
++    canonical_source = str(source).strip().lower()
++    if canonical_source not in APPROVED_IMPORT_SOURCES:
++        raise ValueError("import manifest source is not approved")
++    if not isinstance(fixture_bytes, bytes) or not isinstance(odds_bytes, bytes):
++        raise ValueError("import manifest extracts must be bytes")
++    imported = _aware_import_datetime(imported_at or datetime.now(BEIJING))
++    root = DATA_DIR.resolve().parent
++    path = import_manifest_path(root, target_date)
++    if path.exists():
++        existing = read_valid_import_manifest(root, target_date)
++        _require_matching_import(
++            existing, canonical_source, fixture_bytes, odds_bytes
++        )
++        return path
++
++    fixtures, odds = import_extract_paths(root, target_date)
++    _publish_immutable_bytes(fixtures, fixture_bytes)
++    _publish_immutable_bytes(odds, odds_bytes)
+     payload = {
+         "schema_version": IMPORT_MANIFEST_SCHEMA_VERSION,
+         "target_date": target_date.isoformat(),
+@@ -86,15 +128,33 @@ def write_import_manifest(
+         "fixtures": _manifest_file_record(root, fixtures),
+         "odds": _manifest_file_record(root, odds),
+     }
+-    path = import_manifest_path(root, target_date)
+     if path.exists() or not _atomic_publish_manifest(path, payload):
+         existing = read_valid_import_manifest(root, target_date)
+-        immutable_keys = ("schema_version", "target_date", "source", "fixtures", "odds")
+-        if any(existing.get(key) != payload.get(key) for key in immutable_keys):
+-            raise ValueError("existing conflicting import manifest")
++        _require_matching_import(existing, canonical_source, fixture_bytes, odds_bytes)
+     return path
+ 
+ 
++def _require_matching_import(
++    existing: dict,
++    source: str,
++    fixture_bytes: bytes,
++    odds_bytes: bytes,
++) -> None:
++    expected = {
++        "fixtures": fixture_bytes,
++        "odds": odds_bytes,
++    }
++    if existing.get("source") != source:
++        raise ValueError("existing conflicting import manifest")
++    for key, content in expected.items():
++        record = existing.get(key, {})
++        if (
++            record.get("bytes") != len(content)
++            or record.get("sha256") != hashlib.sha256(content).hexdigest()
++        ):
++            raise ValueError("existing conflicting import manifest")
++
++
+ def read_valid_import_manifest(root: Path, target_date: date) -> dict:
+     root = Path(root).resolve()
+     path = import_manifest_path(root, target_date)
+@@ -115,8 +175,8 @@ def read_valid_import_manifest(root: Path, target_date: date) -> dict:
+         raise ValueError("import manifest contract is invalid")
+     _aware_import_datetime(payload.get("imported_at_bjt"))
+     expected = {
+-        "fixtures": f"data/fixtures.csv",
+-        "odds": f"data/sporttery_odds_{target_date.isoformat()}.json",
++        "fixtures": f"data/import_extracts/{target_date.isoformat()}/fixtures.csv",
++        "odds": f"data/import_extracts/{target_date.isoformat()}/odds.json",
+     }
+     for key, relative in expected.items():
+         record = payload.get(key)
+@@ -186,6 +246,30 @@ def _atomic_publish_manifest(path: Path, payload: dict) -> bool:
+         temporary.unlink(missing_ok=True)
+ 
+ 
++def _publish_immutable_bytes(path: Path, payload: bytes) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    if path.exists():
++        if path.read_bytes() != payload:
++            raise ValueError(f"existing conflicting import extract: {path.name}")
++        return
++    descriptor, temporary_name = tempfile.mkstemp(
++        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
++    )
++    temporary = Path(temporary_name)
++    try:
++        with os.fdopen(descriptor, "wb") as handle:
++            handle.write(payload)
++            handle.flush()
++            os.fsync(handle.fileno())
++        try:
++            os.link(temporary, path)
++        except FileExistsError:
++            if path.read_bytes() != payload:
++                raise ValueError(f"existing conflicting import extract: {path.name}")
++    finally:
++        temporary.unlink(missing_ok=True)
++
++
+ def _aware_import_datetime(value: object) -> datetime:
+     if isinstance(value, datetime):
+         parsed = value
+@@ -598,8 +682,10 @@ def attach_professional_market(matches: list[dict], market_matches: list[dict])
+     return enriched
+ 
+ 
+-def write_fixtures(matches: list[dict], target_date: date) -> Path:
+-    path = DATA_DIR / "fixtures.csv"
++def write_fixtures(
++    matches: list[dict], target_date: date, *, path: Path | None = None
++) -> Path:
++    path = path or DATA_DIR / "fixtures.csv"
+     fields = [
+         "date",
+         "kickoff_local",
+@@ -742,12 +828,30 @@ def collect_odds(matches: list[dict]) -> dict[str, dict]:
+     return odds
+ 
+ 
+-def write_odds_data(odds: dict[str, dict], target_date: date) -> Path:
+-    path = DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json"
++def write_odds_data(
++    odds: dict[str, dict], target_date: date, *, path: Path | None = None
++) -> Path:
++    path = path or DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json"
+     path.write_text(json.dumps(odds, ensure_ascii=False, indent=2), encoding="utf-8")
+     return path
+ 
+ 
++def _atomic_replace_bytes(path: Path, payload: bytes) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    descriptor, temporary_name = tempfile.mkstemp(
++        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
++    )
++    temporary = Path(temporary_name)
++    try:
++        with os.fdopen(descriptor, "wb") as handle:
++            handle.write(payload)
++            handle.flush()
++            os.fsync(handle.fileno())
++        os.replace(temporary, path)
++    finally:
++        temporary.unlink(missing_ok=True)
++
++
+ def write_source_status(
+     source: str,
+     target_date: date,
+@@ -782,6 +886,20 @@ def main() -> int:
+     args = parser.parse_args()
+ 
+     target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
++    root = DATA_DIR.resolve().parent
++    existing_manifest = import_manifest_path(root, target_date)
++    if existing_manifest.exists():
++        manifest = read_valid_import_manifest(root, target_date)
++        _atomic_replace_bytes(
++            DATA_DIR / "fixtures.csv",
++            (root / manifest["fixtures"]["path"]).read_bytes(),
++        )
++        _atomic_replace_bytes(
++            DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json",
++            (root / manifest["odds"]["path"]).read_bytes(),
++        )
++        print(f"Reusing immutable import: {existing_manifest}")
++        return 0
+     source = "竞彩网"
+     manifest_source = "sporttery"
+     source_message = ""
+@@ -822,17 +940,27 @@ def main() -> int:
+         print(f"WARNING: 专业欧赔市场暂不可用（{type(exc).__name__}），本次使用竞彩足球市场概率。")
+         selected = attach_professional_market(selected, [])
+     analysis_source = "中国足彩网专业欧赔市场" if any(item.get("analysis_source") == "中国足彩网专业欧赔市场" for item in selected) else "竞彩足球市场（专业欧赔暂缺）"
+-    fixtures_path = write_fixtures(selected, target_date)
+-    fixture_count = count_written_fixtures(fixtures_path, target_date)
++    with tempfile.TemporaryDirectory(prefix="import-stage-", dir=DATA_DIR) as tmp:
++        staging = Path(tmp)
++        staged_fixtures = write_fixtures(
++            selected, target_date, path=staging / "fixtures.csv"
++        )
++        staged_odds = write_odds_data(
++            odds_data, target_date, path=staging / "odds.json"
++        )
++        fixture_count = count_written_fixtures(staged_fixtures, target_date)
++        manifest_path = write_import_manifest(
++            manifest_source,
++            target_date,
++            staged_fixtures,
++            staged_odds,
++            datetime.now(BEIJING),
++        )
++        fixtures_path = DATA_DIR / "fixtures.csv"
++        odds_path = DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json"
++        _atomic_replace_bytes(fixtures_path, staged_fixtures.read_bytes())
++        _atomic_replace_bytes(odds_path, staged_odds.read_bytes())
+     ratings_path = write_ratings(selected)
+-    odds_path = write_odds_data(odds_data, target_date)
+-    manifest_path = write_import_manifest(
+-        manifest_source,
+-        target_date,
+-        fixtures_path,
+-        odds_path,
+-        datetime.now(BEIJING),
+-    )
+     status_path = write_source_status(
+         source,
+         target_date,
+diff --git a/tests/test_betting_ledger.py b/tests/test_betting_ledger.py
+index 7a635b7..8ef53d2 100644
+--- a/tests/test_betting_ledger.py
++++ b/tests/test_betting_ledger.py
+@@ -97,6 +97,23 @@ def lock(**overrides):
+     return payload
+ 
+ 
++def locked_plan_rows(root: Path, plan_rows: list[dict]) -> tuple[dict, list[dict]]:
++    output = root / "output"
++    output.mkdir(parents=True, exist_ok=True)
++    plan_path = output / "betting_plan_2026-07-16.csv"
++    fieldnames = list(dict.fromkeys(key for row in plan_rows for key in row))
++    with plan_path.open("w", encoding="utf-8", newline="") as handle:
++        writer = csv.DictWriter(handle, fieldnames=fieldnames)
++        writer.writeheader()
++        writer.writerows(plan_rows)
++    lock_payload = lock(
++        plan_path="output/betting_plan_2026-07-16.csv",
++        plan_sha256=sha256_file(plan_path),
++    )
++    canonical = ingest_locked_plan([], plan_rows, lock_payload)
++    return lock_payload, canonical
++
++
+ def finished(
+     match_id,
+     home,
+@@ -412,23 +429,27 @@ class IdentityAndIngestionTest(unittest.TestCase):
+         plain = {**plus, "market_line": "1"}
+         self.assertEqual(stable_bet_id(plus), stable_bet_id(plain))
+ 
+-        first = ingest_locked_plan([], [plus], lock())[0]
+-        equivalent = ingest_locked_plan([], [plain], lock())[0]
+-        self.assertEqual(
+-            [first], ingest_locked_plan([first, equivalent], [], lock())
+-        )
+-        with self.assertRaisesRegex(ValueError, "payload digest"):
+-            ingest_locked_plan(
+-                [first, {**equivalent, "stake": "22"}], [], lock()
+-            )
+-
+         with tempfile.TemporaryDirectory() as folder:
+             root = Path(folder)
++            lock_payload, canonical = locked_plan_rows(root, [plus])
++            first = canonical[0]
++            equivalent = ingest_locked_plan([], [plain], lock_payload)[0]
++            self.assertEqual(
++                [first],
++                ingest_locked_plan([first, equivalent], [], lock_payload),
++            )
++            with self.assertRaisesRegex(ValueError, "payload digest"):
++                ingest_locked_plan(
++                    [first, {**equivalent, "stake": "22"}], [], lock_payload
++                )
+             ledger_path = root / "output" / "betting_ledger.csv"
+             write_ledger_atomic(ledger_path, [first, equivalent])
+-            ledger_module.settle_ledger(
+-                root, {"1001": finished("1001", 1, 1)}, SETTLED_AT
+-            )
++            with patch.object(
++                ledger_module, "read_valid_lock", return_value=lock_payload
++            ):
++                ledger_module.settle_ledger(
++                    root, {"1001": finished("1001", 1, 1)}, SETTLED_AT
++                )
+             with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                 rows = list(csv.DictReader(handle))
+         self.assertEqual(1, len(rows))
+@@ -449,25 +470,29 @@ class IdentityAndIngestionTest(unittest.TestCase):
+         plain["legs_json"] = json.dumps(plain_legs, ensure_ascii=False)
+         self.assertEqual(stable_bet_id(plus), stable_bet_id(plain))
+ 
+-        first = ingest_locked_plan([], [plus], lock())[0]
+-        equivalent = ingest_locked_plan([], [plain], lock())[0]
+-        self.assertEqual(
+-            [first], ingest_locked_plan([first, equivalent], [], lock())
+-        )
+-        with self.assertRaisesRegex(ValueError, "payload digest"):
+-            ingest_locked_plan(
+-                [first, {**equivalent, "stake": "12"}], [], lock()
+-            )
+-
+         results = {
+             "hhad-alias-1": finished("hhad-alias-1", 1, 1),
+             "hhad-alias-2": finished("hhad-alias-2", 2, 0),
+         }
+         with tempfile.TemporaryDirectory() as folder:
+             root = Path(folder)
++            lock_payload, canonical = locked_plan_rows(root, [plus])
++            first = canonical[0]
++            equivalent = ingest_locked_plan([], [plain], lock_payload)[0]
++            self.assertEqual(
++                [first],
++                ingest_locked_plan([first, equivalent], [], lock_payload),
++            )
++            with self.assertRaisesRegex(ValueError, "payload digest"):
++                ingest_locked_plan(
++                    [first, {**equivalent, "stake": "12"}], [], lock_payload
++                )
+             ledger_path = root / "output" / "betting_ledger.csv"
+             write_ledger_atomic(ledger_path, [first, equivalent])
+-            ledger_module.settle_ledger(root, results, SETTLED_AT)
++            with patch.object(
++                ledger_module, "read_valid_lock", return_value=lock_payload
++            ):
++                ledger_module.settle_ledger(root, results, SETTLED_AT)
+             with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                 rows = list(csv.DictReader(handle))
+         self.assertEqual(1, len(rows))
+@@ -1200,18 +1225,21 @@ class SettlementTest(unittest.TestCase):
+         return settle_pending(ingest_locked_plan([], [row], lock()), results, SETTLED_AT)[0]
+ 
+     def test_settle_ledger_dedupes_equivalent_canonical_rows_before_profit(self):
+-        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+-        first = canonical
+-        duplicate = copy.deepcopy(canonical)
+-
+         with tempfile.TemporaryDirectory() as folder:
+             root = Path(folder)
++            lock_payload, canonical_rows = locked_plan_rows(root, [plan_row()])
++            canonical = canonical_rows[0]
++            first = canonical
++            duplicate = copy.deepcopy(canonical)
+             ledger_path = root / "output" / "betting_ledger.csv"
+             write_ledger_atomic(ledger_path, [first, duplicate])
+ 
+-            ledger_module.settle_ledger(
+-                root, {"1001": finished("1001", 2, 1)}, SETTLED_AT
+-            )
++            with patch.object(
++                ledger_module, "read_valid_lock", return_value=lock_payload
++            ):
++                ledger_module.settle_ledger(
++                    root, {"1001": finished("1001", 2, 1)}, SETTLED_AT
++                )
+ 
+             with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                 rows = list(csv.DictReader(handle))
+@@ -1760,6 +1788,59 @@ class LockedIngestCommandTest(unittest.TestCase):
+         self.assertEqual(1, len(rows))
+         self.assertEqual("20", rows[0]["stake"])
+ 
++    def test_settlement_rejects_tamper_even_after_row_digest_is_recomputed(self):
++        attacks = {
++            "valid stake reduction": {"stake": "18"},
++            "coherent odds and economics": {
++                "odds": "1.90",
++                "locked_odds": "1.90",
++                "net_ev": "0.03",
++                "expected_return": "34.20",
++                "expected_profit": "16.20",
++            },
++            "arbitrary plan hash": {"plan_sha256": "b" * 64},
++        }
++        for name, changes in attacks.items():
++            with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
++                root = Path(folder)
++                row = plan_row()
++                self._prepare_locked_plan(root, row)
++                canonical = ingest_locked_plan([], [row], self.lock_payload)[0]
++                tampered = {**canonical, **changes}
++                tampered["row_payload_sha256"] = ledger_module._row_payload_digest(
++                    tampered
++                )
++                write_ledger_atomic(
++                    root / "output" / "betting_ledger.csv", [tampered]
++                )
++
++                with (
++                    patch.object(
++                        ledger_module,
++                        "read_valid_lock",
++                        return_value=self.lock_payload,
++                    ),
++                    self.assertRaisesRegex(ValueError, "locked plan|evidence|anchor"),
++                ):
++                    ledger_module.settle_ledger(root, {}, SETTLED_AT)
++
++    def test_strategy_downgrade_cannot_migrate_a_canonical_shaped_row(self):
++        with tempfile.TemporaryDirectory() as folder:
++            root = Path(folder)
++            row = plan_row()
++            self._prepare_locked_plan(root, row)
++            canonical = ingest_locked_plan([], [row], self.lock_payload)[0]
++            downgraded = {**canonical, "strategy_version": "legacy-v1"}
++            downgraded["row_payload_sha256"] = ledger_module._row_payload_digest(
++                downgraded
++            )
++            write_ledger_atomic(
++                root / "output" / "betting_ledger.csv", [downgraded]
++            )
++
++            with self.assertRaisesRegex(ValueError, "canonical.*legacy|downgrade"):
++                ledger_module.settle_ledger(root, {}, SETTLED_AT)
++
+ 
+ class AtomicWriteTest(unittest.TestCase):
+     def test_atomic_writer_is_deterministic_utf8_sig_and_preserves_unknown_fields(self):
+diff --git a/tests/test_capture_odds_snapshot.py b/tests/test_capture_odds_snapshot.py
+index 2df25e1..a19034f 100644
+--- a/tests/test_capture_odds_snapshot.py
++++ b/tests/test_capture_odds_snapshot.py
+@@ -261,6 +261,12 @@ class CaptureOddsSnapshotProductionTest(unittest.TestCase):
+             json.dumps({"import-1": {"had": {"h": "2.00", "d": "3.00", "a": "4.00"}}}),
+             encoding="utf-8",
+         )
++        extracts = data / "import_extracts" / TARGET_DATE
++        extracts.mkdir(parents=True)
++        extract_fixtures = extracts / "fixtures.csv"
++        extract_odds = extracts / "odds.json"
++        extract_fixtures.write_bytes(fixtures.read_bytes())
++        extract_odds.write_bytes(odds.read_bytes())
+ 
+         def record(path: Path) -> dict:
+             payload = path.read_bytes()
+@@ -277,8 +283,8 @@ class CaptureOddsSnapshotProductionTest(unittest.TestCase):
+                 "target_date": TARGET_DATE,
+                 "source": source,
+                 "imported_at_bjt": "2026-07-16T13:00:00+08:00",
+-                "fixtures": record(fixtures),
+-                "odds": record(odds),
++                "fixtures": record(extract_fixtures),
++                "odds": record(extract_odds),
+             }),
+             encoding="utf-8",
+         )
+diff --git a/tests/test_decision_bundle.py b/tests/test_decision_bundle.py
+index df7c98d..4778737 100644
+--- a/tests/test_decision_bundle.py
++++ b/tests/test_decision_bundle.py
+@@ -87,6 +87,15 @@ class DecisionBundleTest(unittest.TestCase):
+             "data/sporttery_odds_2026-07-16.json",
+             {"1001": {"had": {"h": "2.10", "d": "3.20", "a": "3.40"}}},
+         )
++        extract_fixtures = (
++            self.root / "data" / "import_extracts" / "2026-07-16" / "fixtures.csv"
++        )
++        extract_odds = extract_fixtures.with_name("odds.json")
++        extract_fixtures.parent.mkdir(parents=True)
++        extract_fixtures.write_bytes((self.root / "data" / "fixtures.csv").read_bytes())
++        extract_odds.write_bytes(
++            (self.root / "data" / "sporttery_odds_2026-07-16.json").read_bytes()
++        )
+         self.import_manifest_path = (
+             self.root / "data" / "import_manifests" / "2026-07-16.json"
+         )
+@@ -97,10 +106,8 @@ class DecisionBundleTest(unittest.TestCase):
+                 "target_date": "2026-07-16",
+                 "source": "zgzcw",
+                 "imported_at_bjt": "2026-07-16T13:00:00+08:00",
+-                "fixtures": self._file_record(self.root / "data" / "fixtures.csv"),
+-                "odds": self._file_record(
+-                    self.root / "data" / "sporttery_odds_2026-07-16.json"
+-                ),
++                "fixtures": self._file_record(extract_fixtures),
++                "odds": self._file_record(extract_odds),
+             },
+         )
+         self._write_csv(
+@@ -221,6 +228,22 @@ class DecisionBundleTest(unittest.TestCase):
+         with self.assertRaises(ValueError):
+             create_decision_bundle(self.root, TARGET_DATE, LOCKED_AT)
+ 
++    def test_bundle_rejects_manifest_imported_after_snapshot_capture(self):
++        manifest = json.loads(self.import_manifest_path.read_text(encoding="utf-8"))
++        manifest["imported_at_bjt"] = "2026-07-16T13:30:01+08:00"
++        self.import_manifest_path.write_text(
++            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
++        )
++        snapshot = json.loads(self.snapshot_path.read_text(encoding="utf-8"))
++        snapshot["import_manifest"] = self._file_record(self.import_manifest_path)
++        self.snapshot_path.write_text(
++            json.dumps(snapshot, ensure_ascii=False), encoding="utf-8"
++        )
++        write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
++
++        with self.assertRaisesRegex(ValueError, "import.*capture|snapshot"):
++            create_decision_bundle(self.root, TARGET_DATE, LOCKED_AT)
++
+     def test_existing_conflicting_bundle_fails_closed(self):
+         write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
+         create_decision_bundle(self.root, TARGET_DATE, LOCKED_AT)
+diff --git a/tests/test_import_sporttery.py b/tests/test_import_sporttery.py
+index 22e347a..86d12fa 100644
+--- a/tests/test_import_sporttery.py
++++ b/tests/test_import_sporttery.py
+@@ -46,16 +46,20 @@ class ImportManifestTest(unittest.TestCase):
+                 self.assertEqual(first_bytes, second.read_bytes())
+                 self.assertEqual("sporttery", verified["source"])
+                 self.assertEqual(TARGET_DATE.isoformat(), verified["target_date"])
+-                self.assertEqual("data/fixtures.csv", verified["fixtures"]["path"])
+                 self.assertEqual(
+-                    "data/sporttery_odds_2026-07-16.json",
++                    "data/import_extracts/2026-07-16/fixtures.csv",
++                    verified["fixtures"]["path"],
++                )
++                self.assertEqual(
++                    "data/import_extracts/2026-07-16/odds.json",
+                     verified["odds"]["path"],
+                 )
+ 
+-                odds.write_text("{}\n", encoding="utf-8")
++                immutable_odds = root / verified["odds"]["path"]
++                immutable_odds.write_text("{}\n", encoding="utf-8")
+                 with self.assertRaisesRegex(ValueError, "hash mismatch"):
+                     import_sporttery.read_valid_import_manifest(root, TARGET_DATE)
+-                odds.write_text(
++                immutable_odds.write_text(
+                     '{"001":{"had":{"h":"2.00"}}}\n', encoding="utf-8"
+                 )
+                 with self.assertRaisesRegex(ValueError, "conflicting import manifest"):
+@@ -63,6 +67,106 @@ class ImportManifestTest(unittest.TestCase):
+                         "zgzcw", TARGET_DATE, fixtures, odds, imported_at
+                     )
+ 
++    def test_next_day_import_does_not_invalidate_prior_date_extracts(self):
++        day_two = TARGET_DATE + timedelta(days=1)
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            data_dir = root / "data"
++            data_dir.mkdir()
++            fixtures = data_dir / "fixtures.csv"
++            fixtures.write_text(
++                "date,match_id\n2026-07-16,day-one\n", encoding="utf-8"
++            )
++            day_one_odds = data_dir / "sporttery_odds_2026-07-16.json"
++            day_one_odds.write_text('{"day-one":{}}\n', encoding="utf-8")
++
++            with patch.object(import_sporttery, "DATA_DIR", data_dir):
++                import_sporttery.write_import_manifest(
++                    "sporttery", TARGET_DATE, fixtures, day_one_odds,
++                    datetime(2026, 7, 16, 13, tzinfo=BJT),
++                )
++                fixtures.write_text(
++                    "date,match_id\n2026-07-17,day-two\n", encoding="utf-8"
++                )
++                day_two_odds = data_dir / "sporttery_odds_2026-07-17.json"
++                day_two_odds.write_text('{"day-two":{}}\n', encoding="utf-8")
++                import_sporttery.write_import_manifest(
++                    "zgzcw", day_two, fixtures, day_two_odds,
++                    datetime(2026, 7, 17, 13, tzinfo=BJT),
++                )
++
++                day_one = import_sporttery.read_valid_import_manifest(
++                    root, TARGET_DATE
++                )
++                day_two_payload = import_sporttery.read_valid_import_manifest(
++                    root, day_two
++                )
++
++            self.assertNotEqual(
++                day_one["fixtures"]["path"], day_two_payload["fixtures"]["path"]
++            )
++            self.assertIn("2026-07-16", day_one["fixtures"]["path"])
++            self.assertIn("2026-07-17", day_two_payload["fixtures"]["path"])
++
++    def test_same_date_manifest_recovers_changed_shared_files_without_refetch(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            data_dir = root / "data"
++            data_dir.mkdir()
++            fixtures = data_dir / "fixtures.csv"
++            odds = data_dir / "sporttery_odds_2026-07-16.json"
++            fixtures.write_text(
++                "date,match_id\n2026-07-16,first\n", encoding="utf-8"
++            )
++            odds.write_text('{"first":{}}\n', encoding="utf-8")
++            with patch.object(import_sporttery, "DATA_DIR", data_dir):
++                manifest = import_sporttery.write_import_manifest(
++                    "sporttery", TARGET_DATE, fixtures, odds,
++                    datetime(2026, 7, 16, 13, tzinfo=BJT),
++                )
++                manifest_before = manifest.read_bytes()
++                fixtures_before = fixtures.read_bytes()
++                odds_before = odds.read_bytes()
++                fixtures.write_text(
++                    "date,match_id\n2026-07-16,partial-change\n", encoding="utf-8"
++                )
++                odds.write_text('{"partial-change":{}}\n', encoding="utf-8")
++                with (
++                    patch.object(sys, "argv", [
++                        "import_sporttery.py", "--date", "2026-07-16"
++                    ]),
++                    patch.object(
++                        import_sporttery,
++                        "fetch_selling_matches",
++                        side_effect=AssertionError("existing import was refetched"),
++                    ),
++                    patch.object(
++                        import_sporttery,
++                        "fetch_zgzcw_matches",
++                        side_effect=AssertionError("existing import used fallback"),
++                    ),
++                    patch.object(
++                        import_sporttery,
++                        "fetch_espn_matches",
++                        side_effect=AssertionError("existing import used ESPN"),
++                    ),
++                    patch.object(
++                        import_sporttery,
++                        "write_fixtures",
++                        side_effect=AssertionError("new fixture extract was generated"),
++                    ),
++                    patch.object(
++                        import_sporttery,
++                        "write_odds_data",
++                        side_effect=AssertionError("new odds extract was generated"),
++                    ),
++                ):
++                    self.assertEqual(0, import_sporttery.main())
++
++            self.assertEqual(manifest_before, manifest.read_bytes())
++            self.assertEqual(fixtures_before, fixtures.read_bytes())
++            self.assertEqual(odds_before, odds.read_bytes())
++
+ 
+ class ImportSportteryResponseValidationTest(unittest.TestCase):
+     def valid_match(self, **overrides):
+diff --git a/tests/test_plan_lock.py b/tests/test_plan_lock.py
+index 4afdb06..c7fa6dd 100644
+--- a/tests/test_plan_lock.py
++++ b/tests/test_plan_lock.py
+@@ -109,6 +109,13 @@ class PlanLockTest(unittest.TestCase):
+             json.dumps({"1001": {"had": {"h": "2.00", "d": "3.20", "a": "3.50"}}}),
+             encoding="utf-8",
+         )
++        extract_fixtures = (
++            root / "data" / "import_extracts" / "2026-07-16" / "fixtures.csv"
++        )
++        extract_odds = extract_fixtures.with_name("odds.json")
++        extract_fixtures.parent.mkdir(parents=True)
++        extract_fixtures.write_bytes((root / "data" / "fixtures.csv").read_bytes())
++        extract_odds.write_bytes(odds_path.read_bytes())
+         def record(path: Path) -> dict:
+             content = path.read_bytes()
+             return {
+@@ -124,8 +131,8 @@ class PlanLockTest(unittest.TestCase):
+                 "target_date": "2026-07-16",
+                 "source": "sporttery",
+                 "imported_at_bjt": "2026-07-16T13:29:00+08:00",
+-                "fixtures": record(root / "data" / "fixtures.csv"),
+-                "odds": record(odds_path),
++                "fixtures": record(extract_fixtures),
++                "odds": record(extract_odds),
+             }),
+             encoding="utf-8",
+         )
+@@ -218,6 +225,25 @@ class PlanLockTest(unittest.TestCase):
+             )
+             self.assertIsNone(read_valid_lock(root, date(2026, 7, 16)))
+ 
++    def test_next_day_shared_fixture_update_preserves_prior_lock(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            self.make_artifacts(root)
++            self.make_lock(root)
++
++            self.write_csv(
++                root / "data" / "fixtures.csv",
++                [{
++                    "date": "2026-07-17",
++                    "team_a": "Next A",
++                    "team_b": "Next B",
++                    "match_id": "next-1",
++                    "kickoff_at": "2026-07-17T20:00:00+08:00",
++                }],
++            )
++
++            self.assertIsNotNone(read_valid_lock(root, TARGET_DATE))
++
+     def test_lock_derives_zgzcw_source_from_the_validated_decision_bundle(self):
+         with tempfile.TemporaryDirectory() as tmp:
+             root = Path(tmp)
+diff --git a/tests/test_report_status.py b/tests/test_report_status.py
+index fc785ee..59044df 100644
+--- a/tests/test_report_status.py
++++ b/tests/test_report_status.py
+@@ -177,6 +177,18 @@ class ReportStatusTest(unittest.TestCase):
+         manifest_path = (
+             root / "data" / "import_manifests" / f"{REPORT_DATE.isoformat()}.json"
+         )
++        extracts = root / "data" / "import_extracts" / REPORT_DATE.isoformat()
++        extracts.mkdir(parents=True, exist_ok=True)
++        extract_fixtures = extracts / "fixtures.csv"
++        extract_odds = extracts / "odds.json"
++        extract_fixtures.write_bytes((root / "data" / "fixtures.csv").read_bytes())
++        extract_odds.write_bytes(
++            (
++                root
++                / "data"
++                / f"sporttery_odds_{REPORT_DATE.isoformat()}.json"
++            ).read_bytes()
++        )
+         manifest_path.parent.mkdir(parents=True, exist_ok=True)
+         manifest_path.write_text(
+             json.dumps({
+@@ -184,10 +196,8 @@ class ReportStatusTest(unittest.TestCase):
+                 "target_date": REPORT_DATE.isoformat(),
+                 "source": "sporttery",
+                 "imported_at_bjt": "2026-07-16T13:29:00+08:00",
+-                "fixtures": record(root / "data" / "fixtures.csv"),
+-                "odds": record(
+-                    root / "data" / f"sporttery_odds_{REPORT_DATE.isoformat()}.json"
+-                ),
++                "fixtures": record(extract_fixtures),
++                "odds": record(extract_odds),
+             }),
+             encoding="utf-8",
+         )
+diff --git a/tests/test_shadow_portfolio_audit.py b/tests/test_shadow_portfolio_audit.py
+index d9f2482..9fb27ac 100644
+--- a/tests/test_shadow_portfolio_audit.py
++++ b/tests/test_shadow_portfolio_audit.py
+@@ -426,6 +426,16 @@ class RepositoryAuditTest(unittest.TestCase):
+         manifest_path = (
+             self.root / "data" / "import_manifests" / f"{report_date}.json"
+         )
++        extracts = self.root / "data" / "import_extracts" / report_date
++        extracts.mkdir(parents=True, exist_ok=True)
++        extract_fixtures = extracts / "fixtures.csv"
++        extract_odds = extracts / "odds.json"
++        extract_fixtures.write_bytes(
++            (self.root / "data" / "fixtures.csv").read_bytes()
++        )
++        extract_odds.write_bytes(
++            (self.root / "data" / f"sporttery_odds_{report_date}.json").read_bytes()
++        )
+         manifest_path.parent.mkdir(parents=True, exist_ok=True)
+         manifest_path.write_text(
+             json.dumps({
+@@ -433,10 +443,8 @@ class RepositoryAuditTest(unittest.TestCase):
+                 "target_date": report_date,
+                 "source": source,
+                 "imported_at_bjt": f"{report_date}T11:58:00+08:00",
+-                "fixtures": record(self.root / "data" / "fixtures.csv"),
+-                "odds": record(
+-                    self.root / "data" / f"sporttery_odds_{report_date}.json"
+-                ),
++                "fixtures": record(extract_fixtures),
++                "odds": record(extract_odds),
+             }),
+             encoding="utf-8",
+         )
+diff --git a/tests/test_workflow_schedule.py b/tests/test_workflow_schedule.py
+index 0224c67..6b7c7fe 100644
+--- a/tests/test_workflow_schedule.py
++++ b/tests/test_workflow_schedule.py
+@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
+ from pathlib import Path
+ from unittest.mock import patch
+ 
++import betting_ledger as ledger_module
+ from betting_ledger import TERMINAL_STATUSES, settle_ledger, stable_bet_id
+ 
+ 
+@@ -256,6 +257,12 @@ if name == "import_sporttery.py":
+     odds_path.write_text(
+         json.dumps({"writer": name}), encoding="utf-8"
+     )
++    extracts = Path("data/import_extracts") / target_date
++    extracts.mkdir(parents=True, exist_ok=True)
++    extract_fixtures = extracts / "fixtures.csv"
++    extract_odds = extracts / "odds.json"
++    extract_fixtures.write_bytes(fixture_path.read_bytes())
++    extract_odds.write_bytes(odds_path.read_bytes())
+     manifest_path = Path("data/import_manifests") / f"{target_date}.json"
+     manifest_path.parent.mkdir(parents=True, exist_ok=True)
+     def file_record(path):
+@@ -271,8 +278,8 @@ if name == "import_sporttery.py":
+             "target_date": target_date,
+             "source": "zgzcw",
+             "imported_at_bjt": target_date + "T13:25:00+08:00",
+-            "fixtures": file_record(fixture_path),
+-            "odds": file_record(odds_path),
++            "fixtures": file_record(extract_fixtures),
++            "odds": file_record(extract_odds),
+         }, sort_keys=True) + "\\n",
+         encoding="utf-8",
+     )
+@@ -652,6 +659,7 @@ elif name == "generate_betting_plan.py":
+                 )
+             )
+             manifest_path = root / "data" / "import_manifests" / "2026-07-16.json"
++            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+             snapshot = json.loads(
+                 (
+                     root
+@@ -662,6 +670,14 @@ elif name == "generate_betting_plan.py":
+             )
+ 
+             self.assertEqual({"writer": "import_sporttery.py"}, odds)
++            self.assertEqual(
++                "data/import_extracts/2026-07-16/fixtures.csv",
++                manifest["fixtures"]["path"],
++            )
++            self.assertEqual(
++                "data/import_extracts/2026-07-16/odds.json",
++                manifest["odds"]["path"],
++            )
+             self.assertEqual("zgzcw", snapshot["source"])
+             self.assertEqual(
+                 self.sha256_bytes(manifest_path.read_bytes()),
+@@ -803,7 +819,15 @@ runpy.run_path(str(Path(__file__).with_name("betting_ledger_real.py")), run_name
+                     "settlement_minutes": "90",
+                 }
+             }
+-            settle_ledger(root, results, settled_at)
++            lock_payload = json.loads(
++                (
++                    root / "output" / "plan_lock_2026-07-16.json"
++                ).read_text(encoding="utf-8")
++            )
++            with patch.object(
++                ledger_module, "read_valid_lock", return_value=lock_payload
++            ):
++                settle_ledger(root, results, settled_at)
+             settled_bytes = ledger_path.read_bytes()
+             with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                 settled_rows = list(csv.DictReader(handle))
+@@ -817,11 +841,14 @@ runpy.run_path(str(Path(__file__).with_name("betting_ledger_real.py")), run_name
+                     "captured_at_bjt": (settled_at + timedelta(minutes=5)).isoformat(),
+                 }
+             }
+-            settle_ledger(
+-                root,
+-                conflicting_results,
+-                settled_at + timedelta(minutes=5),
+-            )
++            with patch.object(
++                ledger_module, "read_valid_lock", return_value=lock_payload
++            ):
++                settle_ledger(
++                    root,
++                    conflicting_results,
++                    settled_at + timedelta(minutes=5),
++                )
+             self.assertEqual(settled_bytes, ledger_path.read_bytes())
+ 
+     def test_valid_decision_lock_survives_delayed_forecast_rerun_without_writers(self):

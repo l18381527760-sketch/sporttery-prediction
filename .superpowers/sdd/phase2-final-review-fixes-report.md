@@ -331,3 +331,127 @@ one violation. The readiness probe again exited 1 with
 - The remaining concern is unchanged: activation needs a future prospective,
   pre-kickoff import manifest, snapshot, prediction metadata, immutable bundle,
   and passing audit. Until then, readiness correctly remains unavailable.
+
+## Final-Finding Wave: Durable Extracts, Ledger Anchor, and Chronology
+
+This wave resolves the three findings assigned on top of
+`42518deabf7f4892ccbe1749bf152af0c2a662bf`.
+
+### Resolution
+
+1. Import publication now stages fixture and odds bytes, publishes immutable
+   extracts at `data/import_extracts/YYYY-MM-DD/fixtures.csv` and `odds.json`,
+   and atomically publishes a manifest that names and hashes those extracts.
+   A valid same-date manifest is validated before compatibility-file writes;
+   reruns restore changed shared fixture/odds files from the immutable extracts
+   without source refetch. Conflicting extracts, source changes, manifest
+   tampering, and hash mismatches fail closed. Later dates cannot invalidate
+   prior manifests, bundles, or locks.
+2. Persisted canonical ledger rows are now reconciled to the exact plan bytes
+   named by each date's valid plan lock. Settlement and idempotent ingestion
+   rebuild the expected canonical row digest from that external evidence before
+   account arithmetic. Recomputed local digests cannot bless a valid stake
+   reduction, coherent odds/economics edits, or an arbitrary plan hash.
+   Canonical-shaped rows cannot enter legacy migration by changing
+   `strategy_version`; genuine legacy migration and terminal settlement fields
+   remain compatible.
+3. Decision-bundle validation now enforces
+   `imported_at_bjt <= captured_at <= locked_at` with aware timestamps normalized
+   to Beijing time. A future-dated import manifest is excluded rather than
+   accepted.
+
+### RED/GREEN Evidence
+
+All Python commands used
+`.superpowers\sdd\runtime\verify-venv\Scripts\python.exe`.
+
+The initial six-regression RED command was:
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_import_sporttery.ImportManifestTest.test_next_day_import_does_not_invalidate_prior_date_extracts tests.test_import_sporttery.ImportManifestTest.test_same_date_valid_manifest_is_reused_before_shared_writers tests.test_decision_bundle.DecisionBundleTest.test_bundle_rejects_manifest_imported_after_snapshot_capture tests.test_plan_lock.PlanLockTest.test_next_day_shared_fixture_update_preserves_prior_lock tests.test_betting_ledger.LockedIngestCommandTest.test_settlement_rejects_tamper_even_after_row_digest_is_recomputed tests.test_betting_ledger.LockedIngestCommandTest.test_strategy_downgrade_cannot_migrate_a_canonical_shaped_row -v
+```
+
+Result: 6 tests ran with 2 failures and 4 errors. The old shared paths
+invalidated day-N evidence, future import chronology was accepted, and the old
+shared fixture invalidated a prior lock. Two errors were test-harness issues;
+they were corrected without production changes. The refined remaining RED
+command was:
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_import_sporttery.ImportManifestTest.test_same_date_valid_manifest_is_reused_before_shared_writers tests.test_betting_ledger.LockedIngestCommandTest.test_settlement_rejects_tamper_even_after_row_digest_is_recomputed tests.test_betting_ledger.LockedIngestCommandTest.test_strategy_downgrade_cannot_migrate_a_canonical_shaped_row -v
+```
+
+Result: 3 tests ran with 3 expected failures: same-date reuse refetched, a
+recomputed digest self-blessed tampering, and a strategy downgrade entered
+legacy migration.
+
+The final six-regression GREEN command (with the recovery test's final name)
+was:
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_import_sporttery.ImportManifestTest.test_next_day_import_does_not_invalidate_prior_date_extracts tests.test_import_sporttery.ImportManifestTest.test_same_date_manifest_recovers_changed_shared_files_without_refetch tests.test_decision_bundle.DecisionBundleTest.test_bundle_rejects_manifest_imported_after_snapshot_capture tests.test_plan_lock.PlanLockTest.test_next_day_shared_fixture_update_preserves_prior_lock tests.test_betting_ledger.LockedIngestCommandTest.test_settlement_rejects_tamper_even_after_row_digest_is_recomputed tests.test_betting_ledger.LockedIngestCommandTest.test_strategy_downgrade_cannot_migrate_a_canonical_shaped_row -v
+```
+
+Result: 6 tests passed in 0.285 seconds. The recomputed-digest test includes
+three attack subtests: stake, coherent odds/economics, and plan hash.
+
+### Final Verification
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results tests.test_shadow_portfolio_audit tests.test_decision_bundle tests.test_plan_lock
+```
+
+Result: the prior focused review surface plus new regressions passed 131 tests
+in 4.678 seconds.
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+
+Result: 554 tests passed in 18.065 seconds.
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_workflow_schedule
+```
+
+Result: 39 tests passed in 7.616 seconds, including shell syntax, command order,
+immutable manifest consumption, ZGZCW lock/ingestion recovery, and idempotent
+settlement.
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile betting_ledger.py decision_bundle.py import_sporttery.py tests\test_betting_ledger.py tests\test_capture_odds_snapshot.py tests\test_decision_bundle.py tests\test_import_sporttery.py tests\test_plan_lock.py tests\test_report_status.py tests\test_shadow_portfolio_audit.py tests\test_workflow_schedule.py
+```
+
+Result: all 11 changed Python files compiled with exit 0 and no output.
+
+```powershell
+C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe --test tests\apps_script_orchestrator.test.mjs
+```
+
+Result: 42 tests passed, 0 failed.
+
+The real audit CLI exited 1 as required with `checked_dates: []`, all eight
+dates from 2026-07-11 through 2026-07-18 in `excluded_missing`, `passed: false`,
+and one violation. The readiness probe exited 1 with
+`ValueError: activation audit has not passed`. `git diff --check` exited 0.
+
+### Activation, Files, Commits, and Concerns
+
+- Activation remains `shadow`; simulation-only and no-real-money controls are
+  unchanged. No July 18 metadata, import, snapshot, or evidence was fabricated.
+- Production files changed: `import_sporttery.py`, `decision_bundle.py`, and
+  `betting_ledger.py`.
+- Test evidence changed: `tests/test_import_sporttery.py`,
+  `tests/test_capture_odds_snapshot.py`, `tests/test_decision_bundle.py`,
+  `tests/test_plan_lock.py`, `tests/test_betting_ledger.py`,
+  `tests/test_report_status.py`, `tests/test_shadow_portfolio_audit.py`, and
+  `tests/test_workflow_schedule.py`.
+- Implementation commit:
+  `f06b0a8deca097d6df2024c3caccfce04f113c03`.
+- Fresh implementation diff package:
+  `.superpowers/sdd/review-phase2-final-fixes3-42518de..f06b0a8.diff`, generated
+  from the literal `42518de..HEAD` range while `HEAD` was the implementation
+  commit. The report/package commit SHA is supplied in the delivery response.
+- Remaining concern: activation still requires a future prospective pre-kickoff
+  bundle and passing immutable audit. Readiness correctly remains unavailable
+  until that real evidence exists.
