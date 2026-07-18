@@ -167,6 +167,30 @@ class ReportStatusTest(unittest.TestCase):
     ) -> None:
         snapshots = root / "data" / "odds_snapshots"
         snapshots.mkdir(exist_ok=True)
+        def record(path: Path) -> dict:
+            content = path.read_bytes()
+            return {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": len(content),
+            }
+        manifest_path = (
+            root / "data" / "import_manifests" / f"{REPORT_DATE.isoformat()}.json"
+        )
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target_date": REPORT_DATE.isoformat(),
+                "source": "sporttery",
+                "imported_at_bjt": "2026-07-16T13:29:00+08:00",
+                "fixtures": record(root / "data" / "fixtures.csv"),
+                "odds": record(
+                    root / "data" / f"sporttery_odds_{REPORT_DATE.isoformat()}.json"
+                ),
+            }),
+            encoding="utf-8",
+        )
         with (root / "data" / "fixtures.csv").open(
             "r", encoding="utf-8", newline=""
         ) as handle:
@@ -181,6 +205,7 @@ class ReportStatusTest(unittest.TestCase):
                 "captured_at": "2026-07-16T13:30:00+08:00",
                 "capture_phase": "decision",
                 "source": "sporttery",
+                "import_manifest": record(manifest_path),
                 "source_record_id": "report-status-snapshot",
                 "matches": [{
                     "match_id": row["match_id"],

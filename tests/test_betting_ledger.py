@@ -417,7 +417,7 @@ class IdentityAndIngestionTest(unittest.TestCase):
         self.assertEqual(
             [first], ingest_locked_plan([first, equivalent], [], lock())
         )
-        with self.assertRaisesRegex(ValueError, "conflicting existing canonical"):
+        with self.assertRaisesRegex(ValueError, "payload digest"):
             ingest_locked_plan(
                 [first, {**equivalent, "stake": "22"}], [], lock()
             )
@@ -454,7 +454,7 @@ class IdentityAndIngestionTest(unittest.TestCase):
         self.assertEqual(
             [first], ingest_locked_plan([first, equivalent], [], lock())
         )
-        with self.assertRaisesRegex(ValueError, "conflicting existing canonical"):
+        with self.assertRaisesRegex(ValueError, "payload digest"):
             ingest_locked_plan(
                 [first, {**equivalent, "stake": "12"}], [], lock()
             )
@@ -477,8 +477,8 @@ class IdentityAndIngestionTest(unittest.TestCase):
         canonical = ingest_locked_plan([], [plan_row()], lock())[0]
         first = canonical
         conflicts = (
-            {**canonical, "stake": "22"},
-            {
+            ({**canonical, "stake": "22"}, "payload digest"),
+            ({
                 **canonical,
                 "status": WON,
                 "result_status": "finished",
@@ -492,11 +492,11 @@ class IdentityAndIngestionTest(unittest.TestCase):
                 "settled_at_bjt": SETTLED_AT.isoformat(),
                 "return": "40.00",
                 "profit": "20.00",
-            },
+            }, "conflicting existing canonical"),
         )
-        for conflict in conflicts:
+        for conflict, message in conflicts:
             with self.subTest(conflict=conflict), self.assertRaisesRegex(
-                ValueError, "conflicting existing canonical"
+                ValueError, message
             ):
                 ingest_locked_plan([first, conflict], [], lock())
 
@@ -1231,9 +1231,7 @@ class SettlementTest(unittest.TestCase):
             write_ledger_atomic(ledger_path, [first, conflict])
             before = ledger_path.read_bytes()
 
-            with self.assertRaisesRegex(
-                ValueError, "conflicting existing canonical"
-            ):
+            with self.assertRaisesRegex(ValueError, "payload digest"):
                 ledger_module.settle_ledger(
                     root, {"1001": finished("1001", 2, 1)}, SETTLED_AT
                 )
@@ -1317,6 +1315,53 @@ class SettlementTest(unittest.TestCase):
                 ValueError, "existing canonical paid row"
             ):
                 ingest_locked_plan([row], [], lock())
+
+    def test_new_canonical_paid_row_persists_an_immutable_payload_digest(self):
+        row = ingest_locked_plan([], [plan_row()], lock())[0]
+
+        self.assertRegex(row.get("row_payload_sha256", ""), r"^[0-9a-f]{64}$")
+
+    def test_payload_digest_rejects_valid_looking_stake_odds_and_plan_hash_edits(self):
+        canonical = ingest_locked_plan([], [plan_row(
+            expected_value="1.06",
+            expected_return="21.20",
+            expected_profit="1.20",
+        )], lock())[0]
+        cases = (
+            {**canonical, "stake": "18"},
+            {**canonical, "odds": "2.20", "locked_odds": "2.20"},
+            {**canonical, "plan_sha256": "b" * 64},
+            {
+                **canonical,
+                "expected_value": "2.06",
+                "expected_return": "41.20",
+                "expected_profit": "21.20",
+            },
+            {key: value for key, value in canonical.items() if key != "row_payload_sha256"},
+        )
+
+        for row in cases:
+            with self.subTest(row=row), self.assertRaisesRegex(
+                ValueError, "payload digest"
+            ):
+                ingest_locked_plan([row], [], lock())
+
+    def test_payload_digest_rejects_coherent_terminal_odds_and_economics_edit(self):
+        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+        settled = settle_pending(
+            [canonical], {"1001": finished("1001", 2, 1)}, SETTLED_AT
+        )[0]
+        tampered = {
+            **settled,
+            "odds": "3.00",
+            "locked_odds": "3.00",
+            "return": "60.00",
+            "profit": "40.00",
+        }
+
+        with self.assertRaisesRegex(ValueError, "payload digest"):
+            ingest_locked_plan([tampered], [], lock())
+        self.assertEqual([settled], ingest_locked_plan([settled], [], lock()))
 
     def test_existing_abnormal_and_parlay_rows_bind_economics_and_result_scope(self):
         canonical = ingest_locked_plan([], [plan_row()], lock())[0]
@@ -1403,6 +1448,7 @@ class SettlementTest(unittest.TestCase):
     def test_settlement_uses_market_type_not_legacy_english_play_label(self):
         legacy_single = plan_row(
             bet_id="legacy-existing-id",
+            strategy_version="legacy-v1",
             play="2-leg parlay",
             market_type="had",
             status=PENDING,

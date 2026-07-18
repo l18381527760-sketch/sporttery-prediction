@@ -416,11 +416,36 @@ class RepositoryAuditTest(unittest.TestCase):
 
     def _write_snapshot(self, report_date, *, source="sporttery", valid=True):
         match_id = f"match-{report_date}"
+        def record(path):
+            content = path.read_bytes()
+            return {
+                "path": path.relative_to(self.root).as_posix(),
+                "sha256": sha256(content).hexdigest(),
+                "bytes": len(content),
+            }
+        manifest_path = (
+            self.root / "data" / "import_manifests" / f"{report_date}.json"
+        )
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target_date": report_date,
+                "source": source,
+                "imported_at_bjt": f"{report_date}T11:58:00+08:00",
+                "fixtures": record(self.root / "data" / "fixtures.csv"),
+                "odds": record(
+                    self.root / "data" / f"sporttery_odds_{report_date}.json"
+                ),
+            }),
+            encoding="utf-8",
+        )
         payload = {
             "target_date": report_date,
             "captured_at": f"{report_date}T12:00:00+08:00",
             "capture_phase": "decision",
             "source": source,
+            "import_manifest": record(manifest_path),
             "source_record_id": f"snapshot-{report_date}",
             "matches": [
                 {

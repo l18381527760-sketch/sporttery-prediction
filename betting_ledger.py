@@ -41,7 +41,7 @@ NEW_PAID_STRATEGY_VERSIONS = frozenset({"legacy-v3", "value-v4"})
 
 REQUIRED_FIELD_ORDER = (
     "bet_id", "date", "report_date", "strategy_version", "model_version",
-    "locked_at_bjt", "plan_sha256", "match_id", "team_a", "team_b", "kickoff_local",
+    "locked_at_bjt", "plan_sha256", "row_payload_sha256", "match_id", "team_a", "team_b", "kickoff_local",
     "play", "market_type", "market_line", "selection", "legs_json",
     "canonical_legs_json", "odds_source", "odds_source_record_id",
     "odds_captured_at_bjt", "locked_odds", "odds", "raw_probability",
@@ -53,6 +53,23 @@ REQUIRED_FIELD_ORDER = (
     "source_record_id", "captured_at_bjt", "score_scope", "settlement_minutes",
     "home_goals", "away_goals",
     "settled_at_bjt", "return", "profit", "result_legs_json", "clv",
+)
+
+ROW_PAYLOAD_SCHEMA_VERSION = 1
+IMMUTABLE_ROW_PAYLOAD_FIELDS = (
+    "bet_id", "date", "report_date", "strategy_version", "model_version",
+    "locked_at_bjt", "plan_sha256", "stage", "match", "match_id", "team_a",
+    "team_b", "kickoff_local", "play", "market_type", "market_line",
+    "selection", "legs_json", "canonical_legs_json", "odds_source",
+    "odds_source_record_id", "odds_captured_at_bjt", "locked_odds", "odds",
+    "probability", "raw_probability", "raw_model_probability",
+    "calibrated_probability", "league_calibrated_probability",
+    "league_calibration_samples", "official_market_probability",
+    "market_probability", "conservative_probability", "edge", "value_edge",
+    "net_ev", "expected_value", "stake", "expected_return", "expected_profit",
+    "full_kelly", "kelly_fraction", "data_quality_multiplier",
+    "volatility_multiplier", "performance_multiplier", "portfolio_rank",
+    "binding_limits", "data_quality", "volatility_band", "reason",
 )
 
 
@@ -485,6 +502,10 @@ def settle_pending(
     updated: list[dict] = []
     for source_row in rows:
         row = dict(source_row)
+        if row.get("strategy_version") in NEW_PAID_STRATEGY_VERSIONS:
+            stake = _required_decimal(row.get("stake"), "canonical stake")
+            if stake > MONEY_ZERO:
+                _verify_row_payload_digest(row)
         status = row.get("status", PENDING)
         if allow_correction:
             if status == ABNORMAL:
@@ -873,6 +894,7 @@ def _validate_existing_canonical_paid_row(row: dict) -> None:
     provided_id = _required_text(row.get("bet_id"), "bet_id")
     if provided_id != stable_bet_id(row):
         raise ValueError("bet_id must equal the stable canonical identity")
+    _verify_row_payload_digest(row)
     locked_at = _aware_datetime(row.get("locked_at_bjt"), "locked_at_bjt")
     plan_hash = row.get("plan_sha256")
     if (
@@ -930,6 +952,49 @@ def _strict_canonical_date(value: object, name: str) -> str:
     if parsed.isoformat() != value:
         raise ValueError(f"{name} must be canonical YYYY-MM-DD")
     return value
+
+
+def _row_payload_digest(row: dict) -> str:
+    immutable = {
+        field: _row_payload_value(field, row)
+        for field in IMMUTABLE_ROW_PAYLOAD_FIELDS
+    }
+    payload = {
+        "schema_version": ROW_PAYLOAD_SCHEMA_VERSION,
+        "immutable": immutable,
+        "initial_economics": {
+            "status": PENDING,
+            "return": "0.00",
+            "profit": "0.00",
+        },
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _row_payload_value(field: str, row: dict) -> object:
+    if field == "market_line":
+        market_type = _required_text(row.get("market_type"), "market_type").lower()
+        return _canonical_market_line(
+            market_type, row.get("market_line", row.get("line", ""))
+        )
+    return _existing_state_value(field, row.get(field, ""))
+
+
+def _verify_row_payload_digest(row: dict) -> None:
+    digest = row.get("row_payload_sha256")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or digest != _row_payload_digest(row)
+    ):
+        raise ValueError("canonical row payload digest is missing or invalid")
 
 
 def _validate_existing_terminal_economics(row: dict) -> None:
@@ -1138,6 +1203,7 @@ def _new_locked_row(source_row: dict, lock: dict, lock_source: str, bet_id: str)
         row[field] = ""
     row["return"] = "0.00"
     row["profit"] = "0.00"
+    row["row_payload_sha256"] = _row_payload_digest(row)
     return row
 
 

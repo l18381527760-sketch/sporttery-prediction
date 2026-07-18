@@ -371,19 +371,19 @@ class MarketHeatCollectorTest(unittest.TestCase):
             "market_a": "3.1",
         }
         with tempfile.TemporaryDirectory() as folder:
-            with patch.object(snapshot, "SNAPSHOT_DIR", Path(folder)), patch.object(
-                snapshot, "fetch_zgzcw_matches", return_value=[source_match]
-            ):
+            with patch.object(snapshot, "SNAPSHOT_DIR", Path(folder)):
                 output = snapshot.capture(
                     date(2026, 7, 12),
                     phase="decision",
                     captured_at=datetime(2026, 7, 12, 13, 30, tzinfo=timezone(timedelta(hours=8))),
+                    matches=[source_match],
+                    odds_by_match={},
                 )
 
             payload = json.loads(output.read_text(encoding="utf-8"))
 
         match = payload["matches"][0]
-        self.assertEqual("zgzcw", payload["source"])
+        self.assertEqual("injected", payload["source"])
         self.assertEqual("3.8", match["h"])
         self.assertEqual("3.6", match["d"])
         self.assertEqual("1.95", match["a"])
@@ -407,12 +407,12 @@ class MarketHeatCollectorTest(unittest.TestCase):
             "a": "4.0",
         }
         with tempfile.TemporaryDirectory() as folder:
-            with patch.object(snapshot, "SNAPSHOT_DIR", Path(folder)), patch.object(
-                snapshot, "fetch_zgzcw_matches", return_value=[source_match]
-            ):
+            with patch.object(snapshot, "SNAPSHOT_DIR", Path(folder)):
                 output = snapshot.capture(
                     date(2026, 7, 12),
                     captured_at=datetime(2026, 7, 12, 13, 1, tzinfo=timezone(timedelta(hours=8))),
+                    matches=[source_match],
+                    odds_by_match={},
                 )
 
         self.assertIsNone(output)

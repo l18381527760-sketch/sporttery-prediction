@@ -1,4 +1,6 @@
 import argparse
+import csv
+import hashlib
 import json
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -7,6 +9,8 @@ from pathlib import Path
 from import_sporttery import (
     fetch_selling_matches,
     fetch_zgzcw_matches,
+    import_manifest_path,
+    read_valid_import_manifest,
     single_eligibility,
 )
 from report_status import verified_zero_fixture_day
@@ -32,15 +36,17 @@ def capture(
         raise ValueError(f"unsupported capture phase: {phase}")
     captured_at = _beijing_time(captured_at or datetime.now(BEIJING))
     source = "injected"
-    if matches is None:
-        try:
-            matches = fetch_selling_matches(target_date)
-            source = "sporttery"
-        except Exception:
-            matches = fetch_zgzcw_matches(target_date)
-            source = "zgzcw"
-    if odds_by_match is None:
-        odds_by_match = _load_odds(target_date)
+    manifest_record = None
+    if matches is None and odds_by_match is None:
+        manifest = read_valid_import_manifest(ROOT, target_date)
+        source = manifest["source"]
+        matches = _load_manifest_matches(ROOT, target_date, manifest)
+        odds_by_match = _load_manifest_odds(ROOT, manifest)
+        manifest_record = _manifest_record(ROOT, target_date)
+        if read_valid_import_manifest(ROOT, target_date) != manifest:
+            raise ValueError("import manifest changed during snapshot capture")
+    elif matches is None or odds_by_match is None:
+        raise ValueError("injected snapshot inputs must include matches and odds")
     normalized_matches = []
     for item in matches:
         if not item.get("homeTeam") or not item.get("awayTeam"):
@@ -94,6 +100,8 @@ def capture(
         "source": source,
         "matches": normalized_matches,
     }
+    if manifest_record is not None:
+        payload["import_manifest"] = manifest_record
     if not payload["matches"] and matches:
         print("No Sporttery matches available for this snapshot.")
         return None
@@ -121,6 +129,64 @@ def _load_odds(target_date: date) -> dict[str, dict]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _load_manifest_matches(root: Path, target_date: date, manifest: dict) -> list[dict]:
+    path = root / manifest["fixtures"]["path"]
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise ValueError("manifest fixtures are invalid") from exc
+    matches = []
+    seen = set()
+    for row in rows:
+        if row.get("date") != target_date.isoformat():
+            continue
+        match_id = str(row.get("match_id") or "").strip()
+        home = str(row.get("team_a") or "").strip()
+        away = str(row.get("team_b") or "").strip()
+        if not match_id or not home or not away or match_id in seen:
+            raise ValueError("manifest fixture identity is invalid")
+        seen.add(match_id)
+        matches.append({
+            "matchId": match_id,
+            "matchNumStr": row.get("match_num", ""),
+            "homeTeam": home,
+            "awayTeam": away,
+            "kickoff_at": row.get("kickoff_at", ""),
+            "isSingleHad": row.get("is_single_had", ""),
+            "isSingleHhad": row.get("is_single_hhad", ""),
+            "isSingleTtg": row.get("is_single_ttg", ""),
+            "h": row.get("odds_a", ""),
+            "d": row.get("odds_draw", ""),
+            "a": row.get("odds_b", ""),
+            "market_h": row.get("market_odds_a", ""),
+            "market_d": row.get("market_odds_draw", ""),
+            "market_a": row.get("market_odds_b", ""),
+        })
+    return matches
+
+
+def _load_manifest_odds(root: Path, manifest: dict) -> dict[str, dict]:
+    path = root / manifest["odds"]["path"]
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("manifest odds are invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("manifest odds are invalid")
+    return payload
+
+
+def _manifest_record(root: Path, target_date: date) -> dict:
+    path = import_manifest_path(root, target_date)
+    payload = path.read_bytes()
+    return {
+        "path": path.relative_to(root).as_posix(),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+    }
 
 
 def _snapshot_has_matches(path: Path | None) -> bool:

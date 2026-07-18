@@ -208,3 +208,126 @@ Activation cannot be restored yet. A future business date must capture real
 prediction metadata and the immutable decision bundle before kickoff, persist
 the corresponding activation evidence, and pass the mechanical audit. Until
 then, active routing correctly remains unavailable.
+
+## Re-review Wave: Import Binding and Ledger Payload Integrity
+
+This wave resolves the two Important findings raised on top of
+`e0e0b00a46adc28e65bf405326932cd780db227e` and
+`0cfd3111e4d9992844187d272647f9cf9e1c71c6`.
+
+### Resolution
+
+1. `import_sporttery.py` now atomically publishes one immutable manifest at
+   `data/import_manifests/YYYY-MM-DD.json`. It binds the approved domestic
+   source, target date, aware Beijing import timestamp, and exact fixture/odds
+   paths, byte counts, and SHA-256 hashes. Identical reruns preserve the first
+   manifest bytes; source conflicts and file tampering fail closed.
+2. Production snapshot capture loads only the fixture and odds files named by
+   that validated manifest. It performs no availability redetection or source
+   refetch. The snapshot embeds the exact manifest record, and decision-bundle
+   schema 2 requires the same live manifest payload, record, and source.
+3. New canonical paid ledger rows persist `row_payload_sha256`. The digest
+   covers canonical identity, date/lock/plan hash, teams and kickoff, market and
+   legs, all known plan probability/calibration aliases, odds provenance,
+   projected economics, stake, Kelly/risk controls, quality/rank/limits, and
+   the initial pending/zero-return/zero-profit state. Existing canonical paid
+   rows are checked before account arithmetic, and direct settlement verifies
+   the digest before any state transition. Terminal result fields remain
+   mutable through the existing settlement contract; explicit noncanonical
+   legacy handling and stable bet identity are unchanged.
+
+### Re-review RED/GREEN Evidence
+
+Manifest/source binding RED:
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_import_sporttery.ImportManifestTest.test_manifest_is_immutable_idempotent_and_hash_validated tests.test_capture_odds_snapshot.CaptureOddsSnapshotProductionTest.test_capture_uses_sporttery_import_when_later_availability_flips_to_zgzcw tests.test_capture_odds_snapshot.CaptureOddsSnapshotProductionTest.test_capture_uses_zgzcw_import_when_later_availability_flips_to_sporttery tests.test_decision_bundle.DecisionBundleTest.test_bundle_rejects_snapshot_source_divergent_from_import_manifest -v
+```
+
+Result: 4 tests ran with 3 failures and 1 error. There was no manifest writer,
+capture refetched the newly available source in both divergence directions,
+and the bundle accepted a source divergent from import.
+
+The identical command then passed all 4 tests. The surrounding import,
+capture, and decision-bundle modules passed 43 tests.
+
+Canonical payload digest RED:
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger.SettlementTest.test_new_canonical_paid_row_persists_an_immutable_payload_digest tests.test_betting_ledger.SettlementTest.test_payload_digest_rejects_valid_looking_stake_odds_and_plan_hash_edits tests.test_betting_ledger.SettlementTest.test_payload_digest_rejects_coherent_terminal_odds_and_economics_edit -v
+```
+
+Result: 3 tests ran with 6 failing assertions/subtests. No digest was persisted,
+and missing digest, stake reduction, coherent odds/economics edits, and an
+arbitrary valid-looking plan hash were accepted. The identical command then
+passed all 3 tests; the complete ledger module passed 60 tests.
+
+Self-review projected-economics RED:
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger.SettlementTest.test_payload_digest_rejects_valid_looking_stake_odds_and_plan_hash_edits -v
+```
+
+Result: 1 test ran with 1 failing subtest because coherent edits to
+`expected_value`, `expected_return`, and `expected_profit` were not initially
+covered. After expanding the immutable field set, the command passed 1 test
+and the ledger module again passed all 60 tests.
+
+The first expanded focused run exposed 30 synthetic bundle-fixture errors in
+161 tests. The first full discovery exposed 12 errors in 548 tests: 2 old
+capture callers, 3 direct canonical-ledger helpers, and 7 report-status bundle
+fixtures. After fixing the first 5, the next discovery run reported the
+remaining 7 report-status errors. Each fixture was changed to construct the
+required manifest or enter through canonical ingestion. No runtime validator
+was relaxed. The final focused and full commands below are green.
+
+### Re-review Final Verification
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results tests.test_shadow_portfolio_audit tests.test_decision_bundle tests.test_plan_lock tests.test_import_sporttery tests.test_capture_odds_snapshot
+```
+
+Result: 161 tests passed in 4.714 seconds.
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+
+Result: 548 tests passed in 18.359 seconds.
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_workflow_schedule
+```
+
+Result: 39 tests passed in 7.855 seconds, including shell syntax, command order,
+exact-manifest workflow consumption, nonempty ZGZCW lock, and ingestion
+recovery coverage.
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile betting_ledger.py capture_odds_snapshot.py decision_bundle.py import_sporttery.py tests/test_betting_ledger.py tests/test_capture_odds_snapshot.py tests/test_collect_market_heat.py tests/test_decision_bundle.py tests/test_import_sporttery.py tests/test_plan_lock.py tests/test_report_status.py tests/test_shadow_portfolio_audit.py tests/test_value_strategy_integration.py tests/test_workflow_schedule.py
+```
+
+Result: 14 changed Python files compiled with exit 0 and no output.
+
+```powershell
+C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe --test tests\apps_script_orchestrator.test.mjs
+```
+
+Result: 42 tests passed, 0 failed.
+
+The real audit CLI again exited 1 with `checked_dates: []`, all eight dates
+from 2026-07-11 through 2026-07-18 in `excluded_missing`, `passed: false`, and
+one violation. The readiness probe again exited 1 with
+`ValueError: activation audit has not passed`. `git diff --check` exited 0.
+
+### Re-review Activation, Commits, and Concerns
+
+- Activation remains `shadow`; simulation-only/no-real-money controls are
+  unchanged, and no July 18 metadata or evidence was fabricated.
+- Base commits are `e0e0b00a46adc28e65bf405326932cd780db227e` and
+  `0cfd3111e4d9992844187d272647f9cf9e1c71c6`. The local re-review commit SHA is
+  supplied in the final delivery response because this report is part of that
+  commit.
+- The remaining concern is unchanged: activation needs a future prospective,
+  pre-kickoff import manifest, snapshot, prediction metadata, immutable bundle,
+  and passing audit. Until then, readiness correctly remains unavailable.

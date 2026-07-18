@@ -1,6 +1,9 @@
 import csv
+import hashlib
 import json
 import math
+import os
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -11,6 +14,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
+BEIJING = timezone(timedelta(hours=8))
+IMPORT_MANIFEST_SCHEMA_VERSION = 1
+APPROVED_IMPORT_SOURCES = frozenset({"sporttery", "zgzcw"})
 API_URL = "https://webapi.sporttery.cn/gateway/uniform/football/getUniformMatchResultV1.qry"
 MATCH_LIST_URL = "https://webapi.sporttery.cn/gateway/uniform/football/getMatchListV1.qry"
 ODDS_URL = "https://webapi.sporttery.cn/gateway/uniform/football/getFixedBonusV1.qry"
@@ -48,6 +54,151 @@ HEADERS = {
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "X-Requested-With": "XMLHttpRequest",
 }
+
+
+def import_manifest_path(root: Path, target_date: date) -> Path:
+    return Path(root) / "data" / "import_manifests" / f"{target_date.isoformat()}.json"
+
+
+def write_import_manifest(
+    source: str,
+    target_date: date,
+    fixtures_path: Path,
+    odds_path: Path,
+    imported_at: datetime | None = None,
+) -> Path:
+    canonical_source = str(source).strip().lower()
+    if canonical_source not in APPROVED_IMPORT_SOURCES:
+        raise ValueError("import manifest source is not approved")
+    imported = _aware_import_datetime(imported_at or datetime.now(BEIJING))
+    root = DATA_DIR.resolve().parent
+    fixtures = Path(fixtures_path).resolve()
+    odds = Path(odds_path).resolve()
+    if fixtures != (DATA_DIR / "fixtures.csv").resolve():
+        raise ValueError("import manifest fixtures path is invalid")
+    if odds != (DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json").resolve():
+        raise ValueError("import manifest odds path is invalid")
+    payload = {
+        "schema_version": IMPORT_MANIFEST_SCHEMA_VERSION,
+        "target_date": target_date.isoformat(),
+        "source": canonical_source,
+        "imported_at_bjt": imported.astimezone(BEIJING).isoformat(),
+        "fixtures": _manifest_file_record(root, fixtures),
+        "odds": _manifest_file_record(root, odds),
+    }
+    path = import_manifest_path(root, target_date)
+    if path.exists() or not _atomic_publish_manifest(path, payload):
+        existing = read_valid_import_manifest(root, target_date)
+        immutable_keys = ("schema_version", "target_date", "source", "fixtures", "odds")
+        if any(existing.get(key) != payload.get(key) for key in immutable_keys):
+            raise ValueError("existing conflicting import manifest")
+    return path
+
+
+def read_valid_import_manifest(root: Path, target_date: date) -> dict:
+    root = Path(root).resolve()
+    path = import_manifest_path(root, target_date)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("import manifest is missing or invalid") from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {
+            "schema_version", "target_date", "source", "imported_at_bjt",
+            "fixtures", "odds",
+        }
+        or payload.get("schema_version") != IMPORT_MANIFEST_SCHEMA_VERSION
+        or payload.get("target_date") != target_date.isoformat()
+        or payload.get("source") not in APPROVED_IMPORT_SOURCES
+    ):
+        raise ValueError("import manifest contract is invalid")
+    _aware_import_datetime(payload.get("imported_at_bjt"))
+    expected = {
+        "fixtures": f"data/fixtures.csv",
+        "odds": f"data/sporttery_odds_{target_date.isoformat()}.json",
+    }
+    for key, relative in expected.items():
+        record = payload.get(key)
+        if not isinstance(record, dict) or record.get("path") != relative:
+            raise ValueError(f"import manifest {key} path is invalid")
+        _verify_manifest_file_record(root, record)
+    return payload
+
+
+def _manifest_file_record(root: Path, path: Path) -> dict:
+    try:
+        relative = path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise ValueError("import manifest path escapes repository root") from exc
+    if not path.is_file():
+        raise ValueError(f"import manifest input is missing: {relative}")
+    payload = path.read_bytes()
+    return {
+        "path": relative,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+    }
+
+
+def _verify_manifest_file_record(root: Path, record: dict) -> None:
+    relative = record.get("path")
+    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+        raise ValueError("import manifest file record is invalid")
+    path = (root / relative).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("import manifest path escapes repository root") from exc
+    expected_hash = record.get("sha256")
+    expected_bytes = record.get("bytes")
+    if (
+        not isinstance(expected_hash, str)
+        or len(expected_hash) != 64
+        or not isinstance(expected_bytes, int)
+        or expected_bytes < 0
+        or not path.is_file()
+    ):
+        raise ValueError("import manifest file record is invalid")
+    payload = path.read_bytes()
+    if len(payload) != expected_bytes or hashlib.sha256(payload).hexdigest() != expected_hash:
+        raise ValueError(f"import manifest hash mismatch: {relative}")
+
+
+def _atomic_publish_manifest(path: Path, payload: dict) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _aware_import_datetime(value: object) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("import manifest timestamp must be ISO-8601") from exc
+    else:
+        raise ValueError("import manifest timestamp must be ISO-8601")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("import manifest timestamp must include a timezone")
+    return parsed
 
 
 def fetch_json(url: str, retries: int = 3) -> dict:
@@ -632,11 +783,13 @@ def main() -> int:
 
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
     source = "竞彩网"
+    manifest_source = "sporttery"
     source_message = ""
     try:
         selected = fetch_selling_matches(target_date)
     except Exception as exc:
         source = "中国足彩网"
+        manifest_source = "zgzcw"
         source_message = f"竞彩网云端接口暂时不可用（{type(exc).__name__}），已切换中国足彩网竞彩页面。"
         print(f"WARNING: {source_message}")
         try:
@@ -648,6 +801,7 @@ def main() -> int:
                 item["zgzcw_odds"] = fallback_odds.get(str(item.get("matchId", "")), {})
         except Exception as fallback_exc:
             source = "ESPN"
+            manifest_source = None
             source_message += f" 中国足彩网也不可用（{type(fallback_exc).__name__}），已切换 ESPN。"
             print(f"WARNING: {source_message}")
             selected = fetch_espn_matches(target_date)
@@ -659,6 +813,7 @@ def main() -> int:
     if args.include_finished:
         matches = fetch_matches(target_date)
         selected = matches
+        manifest_source = "sporttery"
     odds_data = collect_odds(selected)
     selected = attach_had_odds(selected, odds_data)
     try:
@@ -671,6 +826,13 @@ def main() -> int:
     fixture_count = count_written_fixtures(fixtures_path, target_date)
     ratings_path = write_ratings(selected)
     odds_path = write_odds_data(odds_data, target_date)
+    manifest_path = write_import_manifest(
+        manifest_source,
+        target_date,
+        fixtures_path,
+        odds_path,
+        datetime.now(BEIJING),
+    )
     status_path = write_source_status(
         source,
         target_date,
@@ -689,6 +851,7 @@ def main() -> int:
     print(f"Updated: {fixtures_path}")
     print(f"Updated: {ratings_path}")
     print(f"Updated: {odds_path}")
+    print(f"Updated: {manifest_path}")
     print(f"Data source: {source}")
     print(f"Updated: {status_path}")
     return 0

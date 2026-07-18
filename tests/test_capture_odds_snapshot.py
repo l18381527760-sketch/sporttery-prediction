@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import sys
 import tempfile
@@ -226,99 +227,118 @@ class CaptureOddsSnapshotCliTest(unittest.TestCase):
 
 
 class CaptureOddsSnapshotProductionTest(unittest.TestCase):
-    def test_capture_keeps_an_empty_direct_schedule_without_fallback(self):
-        captured_at = datetime(2026, 7, 16, 13, 30, tzinfo=timezone(timedelta(hours=8)))
-        with tempfile.TemporaryDirectory() as tmp, patch.object(
-            capture_odds_snapshot, "SNAPSHOT_DIR", Path(tmp)
-        ), patch.object(
-            capture_odds_snapshot, "fetch_selling_matches", return_value=[]
-        ) as fetch_direct, patch.object(
-            capture_odds_snapshot, "fetch_zgzcw_matches"
-        ) as fetch_fallback, patch.object(
-            capture_odds_snapshot, "_load_odds", return_value={}
-        ):
-            output = capture_odds_snapshot.capture(date(2026, 7, 16), captured_at=captured_at)
-            self.assertIsNotNone(output)
-            payload = json.loads(output.read_text(encoding="utf-8"))
-
-        self.assertEqual("sporttery", payload["source"])
-        self.assertEqual([], payload["matches"])
-        fetch_direct.assert_called_once_with(date(2026, 7, 16))
-        fetch_fallback.assert_not_called()
-
-    def test_capture_preserves_direct_sporttery_market_eligibility(self):
-        direct_match = {
-            "matchId": "001",
-            "matchNumStr": "001",
-            "homeTeam": "Home",
-            "awayTeam": "Away",
-            "kickoff_at": "2026-07-16 20:00",
-            "isSingleHad": True,
-            "isSingleHhad": True,
-            "isSingleTtg": True,
-        }
-        captured_at = datetime(2026, 7, 16, 13, 30, tzinfo=timezone(timedelta(hours=8)))
-        with tempfile.TemporaryDirectory() as tmp, patch.object(
-            capture_odds_snapshot, "SNAPSHOT_DIR", Path(tmp)
-        ), patch.object(
-            capture_odds_snapshot,
-            "fetch_selling_matches",
-            return_value=[direct_match],
-            create=True,
-        ) as fetch_direct, patch.object(
-            capture_odds_snapshot, "fetch_zgzcw_matches"
-        ) as fetch_fallback, patch.object(
-            capture_odds_snapshot,
-            "_load_odds",
-            return_value={"001": {"had": {}, "hhad": {}, "ttg": {}}},
-        ):
-            output = capture_odds_snapshot.capture(date(2026, 7, 16), captured_at=captured_at)
-            self.assertIsNotNone(output)
-            payload = json.loads(output.read_text(encoding="utf-8"))
-
-        self.assertEqual("sporttery", payload["source"])
-        self.assertEqual(
-            {"had": True, "hhad": True, "ttg": True},
-            payload["matches"][0]["single_eligibility"],
+    def write_import_contract(self, root: Path, source: str) -> Path:
+        data = root / "data"
+        manifests = data / "import_manifests"
+        snapshots = data / "odds_snapshots"
+        manifests.mkdir(parents=True)
+        snapshots.mkdir(parents=True)
+        fixtures = data / "fixtures.csv"
+        with fixtures.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=(
+                    "date", "kickoff_at", "stage", "team_a", "team_b",
+                    "is_single_had", "is_single_hhad", "is_single_ttg",
+                    "match_num", "match_id",
+                ),
+            )
+            writer.writeheader()
+            writer.writerow({
+                "date": TARGET_DATE,
+                "kickoff_at": "2026-07-16T20:00:00+08:00",
+                "stage": "Test",
+                "team_a": "Imported Home",
+                "team_b": "Imported Away",
+                "is_single_had": "true",
+                "is_single_hhad": "false",
+                "is_single_ttg": "false",
+                "match_num": "001",
+                "match_id": "import-1",
+            })
+        odds = data / f"sporttery_odds_{TARGET_DATE}.json"
+        odds.write_text(
+            json.dumps({"import-1": {"had": {"h": "2.00", "d": "3.00", "a": "4.00"}}}),
+            encoding="utf-8",
         )
-        fetch_direct.assert_called_once_with(date(2026, 7, 16))
+
+        def record(path: Path) -> dict:
+            payload = path.read_bytes()
+            return {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
+            }
+
+        manifest = manifests / f"{TARGET_DATE}.json"
+        manifest.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target_date": TARGET_DATE,
+                "source": source,
+                "imported_at_bjt": "2026-07-16T13:00:00+08:00",
+                "fixtures": record(fixtures),
+                "odds": record(odds),
+            }),
+            encoding="utf-8",
+        )
+        return manifest
+
+    def test_capture_uses_sporttery_import_when_later_availability_flips_to_zgzcw(self):
+        captured_at = datetime(2026, 7, 16, 13, 30, tzinfo=timezone(timedelta(hours=8)))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_import_contract(root, "sporttery")
+            with patch.object(capture_odds_snapshot, "ROOT", root), patch.object(
+                capture_odds_snapshot, "SNAPSHOT_DIR", root / "data" / "odds_snapshots"
+            ), patch.object(
+                capture_odds_snapshot,
+                "fetch_selling_matches",
+                side_effect=RuntimeError("Sporttery now unavailable"),
+            ) as fetch_direct, patch.object(
+                capture_odds_snapshot,
+                "fetch_zgzcw_matches",
+                return_value=[{"matchId": "network-z", "homeTeam": "Z", "awayTeam": "G"}],
+            ) as fetch_fallback:
+                output = capture_odds_snapshot.capture(
+                    TARGET_DATE_VALUE, captured_at=captured_at
+                )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+        self.assertEqual("sporttery", payload["source"])
+        self.assertEqual(["import-1"], [row["match_id"] for row in payload["matches"]])
+        self.assertEqual(
+            "data/import_manifests/2026-07-16.json",
+            payload["import_manifest"]["path"],
+        )
+        self.assertEqual(manifest_hash, payload["import_manifest"]["sha256"])
+        fetch_direct.assert_not_called()
         fetch_fallback.assert_not_called()
 
-    def test_capture_uses_had_only_zgzcw_fallback_after_direct_failure(self):
-        fallback_match = {
-            "matchId": "001",
-            "matchNumStr": "001",
-            "homeTeam": "Home",
-            "awayTeam": "Away",
-            "kickoff_at": "2026-07-16 20:00",
-            "isSingleHad": True,
-        }
+    def test_capture_uses_zgzcw_import_when_later_availability_flips_to_sporttery(self):
         captured_at = datetime(2026, 7, 16, 13, 30, tzinfo=timezone(timedelta(hours=8)))
-        with tempfile.TemporaryDirectory() as tmp, patch.object(
-            capture_odds_snapshot, "SNAPSHOT_DIR", Path(tmp)
-        ), patch.object(
-            capture_odds_snapshot,
-            "fetch_selling_matches",
-            side_effect=RuntimeError("Sporttery unavailable"),
-            create=True,
-        ) as fetch_direct, patch.object(
-            capture_odds_snapshot, "fetch_zgzcw_matches", return_value=[fallback_match]
-        ) as fetch_fallback, patch.object(
-            capture_odds_snapshot,
-            "_load_odds",
-            return_value={"001": {"had": {}, "hhad": {}, "ttg": {}}},
-        ):
-            output = capture_odds_snapshot.capture(date(2026, 7, 16), captured_at=captured_at)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_import_contract(root, "zgzcw")
+            with patch.object(capture_odds_snapshot, "ROOT", root), patch.object(
+                capture_odds_snapshot, "SNAPSHOT_DIR", root / "data" / "odds_snapshots"
+            ), patch.object(
+                capture_odds_snapshot,
+                "fetch_selling_matches",
+                return_value=[{"matchId": "network-s", "homeTeam": "S", "awayTeam": "P"}],
+            ) as fetch_direct, patch.object(
+                capture_odds_snapshot, "fetch_zgzcw_matches"
+            ) as fetch_fallback:
+                output = capture_odds_snapshot.capture(
+                    TARGET_DATE_VALUE, captured_at=captured_at
+                )
             payload = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual("zgzcw", payload["source"])
-        self.assertEqual(
-            {"had": True, "hhad": False, "ttg": False},
-            payload["matches"][0]["single_eligibility"],
-        )
-        fetch_direct.assert_called_once_with(date(2026, 7, 16))
-        fetch_fallback.assert_called_once_with(date(2026, 7, 16))
-
+        self.assertEqual(["import-1"], [row["match_id"] for row in payload["matches"]])
+        fetch_direct.assert_not_called()
+        fetch_fallback.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

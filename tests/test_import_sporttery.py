@@ -2,7 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +11,57 @@ from report_status import artifact_state
 
 
 TARGET_DATE = date(2026, 7, 16)
+BJT = timezone(timedelta(hours=8))
+
+
+class ImportManifestTest(unittest.TestCase):
+    def test_manifest_is_immutable_idempotent_and_hash_validated(self):
+        imported_at = datetime(2026, 7, 16, 13, 0, tzinfo=BJT)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            data_dir.mkdir()
+            fixtures = data_dir / "fixtures.csv"
+            odds = data_dir / "sporttery_odds_2026-07-16.json"
+            fixtures.write_text("date,match_id\n2026-07-16,001\n", encoding="utf-8")
+            odds.write_text('{"001":{"had":{"h":"2.00"}}}\n', encoding="utf-8")
+
+            with patch.object(import_sporttery, "DATA_DIR", data_dir):
+                first = import_sporttery.write_import_manifest(
+                    "sporttery", TARGET_DATE, fixtures, odds, imported_at
+                )
+                first_bytes = first.read_bytes()
+                second = import_sporttery.write_import_manifest(
+                    "sporttery",
+                    TARGET_DATE,
+                    fixtures,
+                    odds,
+                    imported_at + timedelta(minutes=5),
+                )
+                verified = import_sporttery.read_valid_import_manifest(
+                    root, TARGET_DATE
+                )
+
+                self.assertEqual(first, second)
+                self.assertEqual(first_bytes, second.read_bytes())
+                self.assertEqual("sporttery", verified["source"])
+                self.assertEqual(TARGET_DATE.isoformat(), verified["target_date"])
+                self.assertEqual("data/fixtures.csv", verified["fixtures"]["path"])
+                self.assertEqual(
+                    "data/sporttery_odds_2026-07-16.json",
+                    verified["odds"]["path"],
+                )
+
+                odds.write_text("{}\n", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "hash mismatch"):
+                    import_sporttery.read_valid_import_manifest(root, TARGET_DATE)
+                odds.write_text(
+                    '{"001":{"had":{"h":"2.00"}}}\n', encoding="utf-8"
+                )
+                with self.assertRaisesRegex(ValueError, "conflicting import manifest"):
+                    import_sporttery.write_import_manifest(
+                        "zgzcw", TARGET_DATE, fixtures, odds, imported_at
+                    )
 
 
 class ImportSportteryResponseValidationTest(unittest.TestCase):

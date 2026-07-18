@@ -209,7 +209,15 @@ def settled_value_single(
         "stake": stake,
         "status": ledger_module.PENDING,
     }
-    row["bet_id"] = ledger_module.stable_bet_id(row)
+    if Decimal(stake) > 0:
+        row = ledger_module.ingest_locked_plan([], [row], {
+            "report_date": report_date,
+            "locked_at_bjt": row["locked_at_bjt"],
+            "plan_sha256": "a" * 64,
+            "odds_source": "sporttery",
+        })[0]
+    else:
+        row["bet_id"] = ledger_module.stable_bet_id(row)
     result = {
         "match_id": match_id,
         "result_status": "finished",
@@ -272,7 +280,12 @@ def settled_value_parlay(report_date: str = "2026-07-17") -> dict:
         "stake": "10",
         "status": ledger_module.PENDING,
     }
-    row["bet_id"] = ledger_module.stable_bet_id(row)
+    row = ledger_module.ingest_locked_plan([], [row], {
+        "report_date": report_date,
+        "locked_at_bjt": row["locked_at_bjt"],
+        "plan_sha256": "b" * 64,
+        "odds_source": "sporttery",
+    })[0]
     results = {
         "maturity-parlay-a": {
             "match_id": "maturity-parlay-a",

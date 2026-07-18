@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import multiprocessing
 import os
@@ -103,6 +104,31 @@ class PlanLockTest(unittest.TestCase):
                 "kickoff_at": "2026-07-16T20:00:00+08:00",
             }],
         )
+        odds_path = root / "data" / "sporttery_odds_2026-07-16.json"
+        odds_path.write_text(
+            json.dumps({"1001": {"had": {"h": "2.00", "d": "3.20", "a": "3.50"}}}),
+            encoding="utf-8",
+        )
+        def record(path: Path) -> dict:
+            content = path.read_bytes()
+            return {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": len(content),
+            }
+        manifest_path = root / "data" / "import_manifests" / "2026-07-16.json"
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target_date": "2026-07-16",
+                "source": "sporttery",
+                "imported_at_bjt": "2026-07-16T13:29:00+08:00",
+                "fixtures": record(root / "data" / "fixtures.csv"),
+                "odds": record(odds_path),
+            }),
+            encoding="utf-8",
+        )
         self.write_csv(
             root / "output" / "predictions_2026-07-16.csv",
             [{
@@ -122,6 +148,7 @@ class PlanLockTest(unittest.TestCase):
                 "captured_at": "2026-07-16T13:30:00+08:00",
                 "capture_phase": "decision",
                 "source": "sporttery",
+                "import_manifest": record(manifest_path),
                 "matches": [{
                     "match_id": "1001",
                     "team_a": "A",

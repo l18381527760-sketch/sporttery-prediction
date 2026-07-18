@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import tempfile
 import unittest
@@ -82,6 +83,26 @@ class DecisionBundleTest(unittest.TestCase):
                 },
             ],
         )
+        self._write_json(
+            "data/sporttery_odds_2026-07-16.json",
+            {"1001": {"had": {"h": "2.10", "d": "3.20", "a": "3.40"}}},
+        )
+        self.import_manifest_path = (
+            self.root / "data" / "import_manifests" / "2026-07-16.json"
+        )
+        self._write_json(
+            "data/import_manifests/2026-07-16.json",
+            {
+                "schema_version": 1,
+                "target_date": "2026-07-16",
+                "source": "zgzcw",
+                "imported_at_bjt": "2026-07-16T13:00:00+08:00",
+                "fixtures": self._file_record(self.root / "data" / "fixtures.csv"),
+                "odds": self._file_record(
+                    self.root / "data" / "sporttery_odds_2026-07-16.json"
+                ),
+            },
+        )
         self._write_csv(
             "output/predictions_2026-07-16.csv",
             [
@@ -113,6 +134,7 @@ class DecisionBundleTest(unittest.TestCase):
                     "captured_at": "2026-07-16T13:30:00+08:00",
                     "capture_phase": "decision",
                     "source": "zgzcw",
+                    "import_manifest": self._file_record(self.import_manifest_path),
                     "matches": [
                         {
                             "match_id": "1001",
@@ -170,6 +192,10 @@ class DecisionBundleTest(unittest.TestCase):
         self.assertEqual(first_bytes, (self.root / "output" / "decision_bundle_2026-07-16.json").read_bytes())
         self.assertEqual(BUNDLE_SCHEMA_VERSION, verified["schema_version"])
         self.assertEqual("zgzcw", verified["decision_snapshot"]["source"])
+        self.assertEqual(
+            "data/import_manifests/2026-07-16.json",
+            verified["import_manifest"]["path"],
+        )
         self.assertEqual(["1001"], [row["match_id"] for row in verified["decision_snapshot"]["match_identities"]])
         self.assertEqual(
             {"had": {"h": "2.10", "d": "3.20", "a": "3.40"}, "hhad": {}, "ttg": {}},
@@ -178,6 +204,22 @@ class DecisionBundleTest(unittest.TestCase):
         self.assertEqual("decision_snapshot", verified["roles"]["paid_odds"])
         self.assertIn("fixture_extract", verified["roles"]["model_reference_inputs"])
         self.assertEqual([], verified["history_inputs"]["paid_history"]["rows"])
+
+    def test_bundle_rejects_snapshot_source_divergent_from_import_manifest(self):
+        manifest = json.loads(self.import_manifest_path.read_text(encoding="utf-8"))
+        manifest["source"] = "sporttery"
+        self.import_manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
+        snapshot = json.loads(self.snapshot_path.read_text(encoding="utf-8"))
+        snapshot["import_manifest"] = self._file_record(self.import_manifest_path)
+        self.snapshot_path.write_text(
+            json.dumps(snapshot, ensure_ascii=False), encoding="utf-8"
+        )
+        write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
+
+        with self.assertRaises(ValueError):
+            create_decision_bundle(self.root, TARGET_DATE, LOCKED_AT)
 
     def test_existing_conflicting_bundle_fails_closed(self):
         write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
@@ -302,6 +344,14 @@ class DecisionBundleTest(unittest.TestCase):
             writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
             writer.writeheader()
             writer.writerows(rows)
+
+    def _file_record(self, path: Path) -> dict:
+        payload = path.read_bytes()
+        return {
+            "path": path.relative_to(self.root).as_posix(),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "bytes": len(payload),
+        }
 
 
 if __name__ == "__main__":

@@ -183,6 +183,13 @@ def read_valid_decision_bundle(root, target_date, *, expected_locked_at=None, ve
     snapshot_path = Path(root) / snapshot["path"]
     if _sha256(snapshot_path) != snapshot["sha256"]:
         raise ValueError("bundle snapshot mismatch")
+    manifest = payload["import_manifest"]
+    manifest_path = Path(root) / manifest["path"]
+    if _sha256(manifest_path) != manifest["sha256"]:
+        raise ValueError("bundle import manifest mismatch")
+    snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    if snapshot_payload.get("import_manifest") != manifest:
+        raise ValueError("snapshot import manifest mismatch")
     return payload
 
 def main():
@@ -193,6 +200,11 @@ def main():
     with Path("writer-calls.log").open("a", encoding="utf-8") as handle:
         handle.write("decision_bundle.py\\n")
     snapshot_path = Path("data/odds_snapshots") / f"{args.date}-133000-decision.json"
+    manifest_path = Path("data/import_manifests") / f"{args.date}.json"
+    manifest_record = {
+        "path": manifest_path.as_posix(),
+        "sha256": _sha256(manifest_path),
+    }
     payload = {
         "target_date": args.date,
         "locked_at_bjt": datetime.fromisoformat(args.locked_at).astimezone(
@@ -203,6 +215,7 @@ def main():
             "path": snapshot_path.as_posix(),
             "sha256": _sha256(snapshot_path),
         },
+        "import_manifest": manifest_record,
     }
     output = Path("output") / f"decision_bundle_{args.date}.json"
     output.write_text(json.dumps(payload, sort_keys=True) + "\\n", encoding="utf-8")
@@ -214,6 +227,7 @@ if __name__ == "__main__":
             encoding="utf-8",
         )
         stub = '''import csv
+import hashlib
 import json
 import os
 import sys
@@ -232,25 +246,57 @@ if name == "capture_odds_snapshot.py" and os.environ.get("FAIL_CAPTURE") == "tru
 Path("data").mkdir(exist_ok=True)
 Path("output").mkdir(exist_ok=True)
 if name == "import_sporttery.py":
-    Path(f"data/sporttery_odds_{target_date}.json").write_text(
-        json.dumps({"writer": name}), encoding="utf-8"
-    )
-elif name == "capture_odds_snapshot.py":
-    Path(f"data/sporttery_odds_{target_date}.json").write_text(
-        json.dumps({
-            "writer": name,
-            "phase": phase,
-            "source_odds": os.environ.get("MOCK_SOURCE_ODDS", "initial"),
-        }),
+    fixture_path = Path("data/fixtures.csv")
+    fixture_path.write_text(
+        "match_id,team_a,team_b,kickoff_local\\n"
+        + f"workflow-match,Home,Away,{target_date}T14:00:00+08:00\\n",
         encoding="utf-8",
     )
+    odds_path = Path(f"data/sporttery_odds_{target_date}.json")
+    odds_path.write_text(
+        json.dumps({"writer": name}), encoding="utf-8"
+    )
+    manifest_path = Path("data/import_manifests") / f"{target_date}.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    def file_record(path):
+        payload = path.read_bytes()
+        return {
+            "path": path.as_posix(),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "bytes": len(payload),
+        }
+    manifest_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target_date": target_date,
+            "source": "zgzcw",
+            "imported_at_bjt": target_date + "T13:25:00+08:00",
+            "fixtures": file_record(fixture_path),
+            "odds": file_record(odds_path),
+        }, sort_keys=True) + "\\n",
+        encoding="utf-8",
+    )
+elif name == "capture_odds_snapshot.py":
+    manifest_path = Path("data/import_manifests") / f"{target_date}.json"
+    manifest_bytes = manifest_path.read_bytes()
+    manifest = json.loads(manifest_bytes)
+    for key in ("fixtures", "odds"):
+        record = manifest[key]
+        payload = Path(record["path"]).read_bytes()
+        if len(payload) != record["bytes"] or hashlib.sha256(payload).hexdigest() != record["sha256"]:
+            raise SystemExit(19)
+    manifest_record = {
+        "path": manifest_path.as_posix(),
+        "sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+    }
     Path("data/odds_snapshots").mkdir(parents=True, exist_ok=True)
     Path(f"data/odds_snapshots/{target_date}-133000-decision.json").write_text(
         json.dumps({
             "target_date": target_date,
             "captured_at": target_date + "T13:30:00+08:00",
             "capture_phase": "decision",
-            "source": "zgzcw",
+            "source": manifest["source"],
+            "import_manifest": manifest_record,
             "matches": [{"match_id": "workflow-match"}],
         }),
         encoding="utf-8",
@@ -586,6 +632,41 @@ elif name == "generate_betting_plan.py":
             '--generate-only --locked-at "$LOCKED_AT_BJT"'
         )
         self.assertEqual(1, step.count(command))
+
+    def test_decision_workflow_capture_consumes_the_exact_import_manifest(self):
+        body = self.multiline_step_body(
+            self.read_workflow("draw-alert-refresh.yml"),
+            "refresh",
+            "Refresh required decision plan",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_workflow_writer_stubs(root)
+
+            completed = self.run_workflow_body(body, root)
+
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            odds = json.loads(
+                (root / "data" / "sporttery_odds_2026-07-16.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            manifest_path = root / "data" / "import_manifests" / "2026-07-16.json"
+            snapshot = json.loads(
+                (
+                    root
+                    / "data"
+                    / "odds_snapshots"
+                    / "2026-07-16-133000-decision.json"
+                ).read_text(encoding="utf-8")
+            )
+
+            self.assertEqual({"writer": "import_sporttery.py"}, odds)
+            self.assertEqual("zgzcw", snapshot["source"])
+            self.assertEqual(
+                self.sha256_bytes(manifest_path.read_bytes()),
+                snapshot["import_manifest"]["sha256"],
+            )
 
     def test_valid_lock_recovers_ingestion_after_post_lock_failure(self):
         body = self.multiline_step_body(

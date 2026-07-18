@@ -11,9 +11,11 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from import_sporttery import import_manifest_path, read_valid_import_manifest
+
 
 BEIJING = timezone(timedelta(hours=8))
-BUNDLE_SCHEMA_VERSION = 1
+BUNDLE_SCHEMA_VERSION = 2
 PREDICTION_METADATA_SCHEMA_VERSION = 1
 DOMESTIC_DECISION_SOURCES = frozenset({"sporttery", "zgzcw"})
 MODEL_CODE_PATHS = (
@@ -26,6 +28,7 @@ MODEL_CODE_PATHS = (
     "strategy_controls.py",
 )
 MODEL_REFERENCE_INPUTS = (
+    "import_manifest",
     "fixture_extract",
     "prediction_config",
     "ratings",
@@ -124,7 +127,15 @@ def create_decision_bundle(
         locked,
         verify_current_inputs=True,
     )
-    snapshot_path, snapshot = _select_snapshot(root, target_date, locked)
+    import_manifest = read_valid_import_manifest(root, target_date)
+    manifest_record = _file_record(root, import_manifest_path(root, target_date))
+    snapshot_path, snapshot = _select_snapshot(
+        root,
+        target_date,
+        locked,
+        import_manifest=import_manifest,
+        manifest_record=manifest_record,
+    )
     predictions_path = root / metadata["predictions"]["path"]
     predictions = _read_csv(predictions_path, required=True)
     fixtures = metadata["fixture_extract"]["rows"]
@@ -152,6 +163,10 @@ def create_decision_bundle(
         "schema_version": BUNDLE_SCHEMA_VERSION,
         "target_date": target_date.isoformat(),
         "locked_at_bjt": locked.isoformat(),
+        "import_manifest": {
+            **manifest_record,
+            "payload": import_manifest,
+        },
         "decision_snapshot": {
             **_file_record(root, snapshot_path),
             "source": snapshot["source"].lower(),
@@ -222,13 +237,30 @@ def read_valid_decision_bundle(
 
     snapshot_record = payload.get("decision_snapshot")
     prediction_record = payload.get("predictions")
-    if not isinstance(snapshot_record, dict) or not isinstance(prediction_record, dict):
+    manifest_record = payload.get("import_manifest")
+    if (
+        not isinstance(snapshot_record, dict)
+        or not isinstance(prediction_record, dict)
+        or not isinstance(manifest_record, dict)
+    ):
         raise ValueError("decision bundle artifact records are invalid")
+    _verify_file_record(root, manifest_record)
     _verify_file_record(root, snapshot_record)
     _verify_file_record(root, prediction_record)
     _verify_file_record(root, prediction_record.get("metadata"))
     snapshot = snapshot_record.get("payload")
     _validate_snapshot(snapshot, target_date, locked.astimezone(BEIJING))
+    import_manifest = read_valid_import_manifest(root, target_date)
+    actual_manifest_record = _file_record(root, import_manifest_path(root, target_date))
+    if (
+        manifest_record.get("payload") != import_manifest
+        or any(
+            manifest_record.get(key) != actual_manifest_record.get(key)
+            for key in ("path", "sha256", "bytes")
+        )
+    ):
+        raise ValueError("decision bundle import manifest is inconsistent")
+    _validate_snapshot_import(snapshot, import_manifest, actual_manifest_record)
     if snapshot_record.get("source") != snapshot.get("source", "").lower():
         raise ValueError("decision bundle source is inconsistent")
     if snapshot_record.get("captured_at_bjt") != _aware_datetime(
@@ -358,6 +390,9 @@ def _select_snapshot(
     root: Path,
     target_date: date,
     locked_at: datetime,
+    *,
+    import_manifest: dict,
+    manifest_record: dict,
 ) -> tuple[Path, dict]:
     candidates = []
     for path in sorted(
@@ -368,6 +403,7 @@ def _select_snapshot(
         try:
             payload = _read_json(path)
             captured = _validate_snapshot(payload, target_date, locked_at)
+            _validate_snapshot_import(payload, import_manifest, manifest_record)
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
             continue
         candidates.append((captured, path, payload))
@@ -375,6 +411,20 @@ def _select_snapshot(
         raise ValueError("no valid decision snapshot exists at the bundle lock")
     _captured, path, payload = max(candidates, key=lambda item: (item[0], item[1].name))
     return path, payload
+
+
+def _validate_snapshot_import(
+    snapshot: dict,
+    import_manifest: dict,
+    manifest_record: dict,
+) -> None:
+    expected_record = {
+        key: manifest_record[key] for key in ("path", "sha256", "bytes")
+    }
+    if snapshot.get("import_manifest") != expected_record:
+        raise ValueError("decision snapshot import manifest is invalid")
+    if snapshot.get("source") != import_manifest.get("source"):
+        raise ValueError("decision snapshot import manifest source differs")
 
 
 def _validate_snapshot(
