@@ -106,6 +106,57 @@ def finished(match_id, home, away, source_record_id=None):
 
 
 class IdentityAndIngestionTest(unittest.TestCase):
+    def test_value_v4_ingestion_rejects_invalid_portfolio_semantics(self):
+        valid_legs = [
+            {"match_id": "1001", "market_type": "had", "selection": "胜", "line": ""},
+            {"match_id": "1002", "market_type": "ttg", "selection": "2球", "line": ""},
+        ]
+        invalid_plans = (
+            [plan_row(play="SCORE", market_type="score")],
+            [plan_row(play="SCORE", market_type="had")],
+            [plan_row(selection="1-0")],
+            [plan_row(play="HHAD", market_type="hhad", market_line="+0.5")],
+            [plan_row(play="TTG", market_type="ttg", selection="8球")],
+            [plan_row(
+                play="PARLAY", market_type="parlay",
+                legs_json=json.dumps([
+                    valid_legs[0],
+                    {**valid_legs[1], "market_type": "score"},
+                ], ensure_ascii=False),
+            )],
+            [plan_row(
+                play="PARLAY", market_type="parlay",
+                legs_json=json.dumps([
+                    valid_legs[0],
+                    {**valid_legs[1], "market_type": "hhad", "line": "+0.5", "selection": "胜"},
+                ], ensure_ascii=False),
+            )],
+            [plan_row(
+                play="PARLAY", market_type="parlay",
+                legs_json=json.dumps([
+                    valid_legs[0],
+                    {**valid_legs[1], "match_id": "1001"},
+                ], ensure_ascii=False),
+            )],
+            [
+                plan_row(
+                    play="PARLAY", market_type="parlay",
+                    legs_json=json.dumps(valid_legs, ensure_ascii=False),
+                ),
+                plan_row(
+                    play="PARLAY-2", market_type="parlay",
+                    legs_json=json.dumps([
+                        {**valid_legs[0], "match_id": "2001"},
+                        {**valid_legs[1], "match_id": "2002"},
+                    ], ensure_ascii=False),
+                ),
+            ],
+        )
+
+        for rows in invalid_plans:
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                ingest_locked_plan([], rows, lock())
+
     def test_identity_uses_only_canonical_immutable_fields(self):
         first = plan_row()
         changed = plan_row(

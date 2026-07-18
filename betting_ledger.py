@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
+from official_markets import THREE_WAY_SELECTIONS, TOTAL_GOALS_SELECTIONS, parse_handicap
 from plan_lock import read_valid_lock
 
 
@@ -17,6 +18,10 @@ REFUNDED = "退款"
 ABNORMAL = "异常"
 
 DOMESTIC_ODDS_SOURCES = frozenset({"sporttery", "zgzcw"})
+VALUE_V4_SINGLE_MARKETS = frozenset({"had", "hhad", "ttg"})
+VALUE_V4_PLAY_BY_MARKET = {"had": "HAD", "hhad": "HHAD", "ttg": "TTG"}
+VALUE_V4_THREE_WAY_SELECTIONS = frozenset(THREE_WAY_SELECTIONS.values())
+VALUE_V4_TOTAL_GOALS_SELECTIONS = frozenset(TOTAL_GOALS_SELECTIONS.values())
 TERMINAL_STATUSES = frozenset({WON, LOST, REFUNDED})
 MONEY_ZERO = Decimal("0.00")
 MONEY_QUANTUM = Decimal("0.01")
@@ -49,6 +54,7 @@ def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: d
     lock_source = _validate_lock(lock)
     if not isinstance(existing_rows, list) or not isinstance(plan_rows, list):
         raise ValueError("ledger and plan rows must be lists")
+    _validate_value_v4_portfolio(plan_rows)
 
     ingested: list[dict] = []
     known_ids: set[str] = set()
@@ -71,6 +77,58 @@ def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: d
         known_ids.add(bet_id)
         ingested.append(_new_locked_row(source_row, lock, lock_source, bet_id))
     return ingested
+
+
+def _validate_value_v4_portfolio(plan_rows: list[dict]) -> None:
+    parlays = 0
+    for row in plan_rows:
+        if not isinstance(row, dict) or row.get("strategy_version") != "value-v4":
+            continue
+        market_type = _required_text(row.get("market_type"), "market_type").lower()
+        _required_text(row.get("odds_source_record_id"), "odds_source_record_id")
+        _aware_iso(row.get("odds_captured_at_bjt"), "odds_captured_at_bjt")
+        if market_type == "parlay":
+            parlays += 1
+            legs = _canonical_legs(row)
+            if len({leg["match_id"] for leg in legs}) != 2:
+                raise ValueError("value-v4 parlay legs must use distinct matches")
+            for leg in legs:
+                if leg["market_type"] not in VALUE_V4_SINGLE_MARKETS:
+                    raise ValueError("value-v4 parlay leg market is unsupported")
+                _validate_value_v4_market(
+                    leg["market_type"], leg["selection"], leg["line"], "parlay leg"
+                )
+            continue
+        if market_type not in VALUE_V4_SINGLE_MARKETS:
+            raise ValueError("value-v4 single market is unsupported")
+        if _required_text(row.get("play"), "play") != VALUE_V4_PLAY_BY_MARKET[market_type]:
+            raise ValueError("value-v4 play must match market_type")
+        _canonical_match_id(row.get("match_id"))
+        selection = _required_text(row.get("selection"), "selection")
+        line = _line_value(row.get("market_line", row.get("line", "")))
+        _validate_value_v4_market(market_type, selection, line, "single")
+    if parlays > 1:
+        raise ValueError("value-v4 permits at most one parlay")
+
+
+def _validate_value_v4_market(
+    market_type: str, selection: str, line: str, context: str
+) -> None:
+    if market_type in {"had", "hhad"}:
+        if selection not in VALUE_V4_THREE_WAY_SELECTIONS:
+            raise ValueError(f"value-v4 {context} selection is unsupported")
+    elif selection not in VALUE_V4_TOTAL_GOALS_SELECTIONS:
+        raise ValueError(f"value-v4 {context} selection is unsupported")
+
+    if market_type == "hhad":
+        try:
+            parse_handicap(line)
+        except ValueError as exc:
+            raise ValueError(
+                f"value-v4 HHAD {context} requires an integer handicap"
+            ) from exc
+    elif line:
+        raise ValueError(f"value-v4 HAD/TTG {context} cannot have a line")
 
 
 def settle_pending(

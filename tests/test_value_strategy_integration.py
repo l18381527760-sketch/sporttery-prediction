@@ -1,5 +1,6 @@
 import csv
 import json
+import sys
 import tempfile
 import unittest
 from copy import deepcopy
@@ -9,7 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import generate_betting_plan as strategy
+from betting_ledger import ingest_date
 from official_markets import normalize_market
+from plan_lock import lock_plan
 from value_candidates import ValueCandidate
 
 
@@ -27,7 +30,6 @@ def value_config(mode: str = "shadow") -> dict:
         "value_strategy": {
             "activation_mode": mode,
             "strict_until_samples": 100,
-            "settled_samples": 0,
             "strict_min_probability_edge": 0.01,
             "min_probability_edge": 0.01,
             "strict_min_ev": 0.06,
@@ -157,6 +159,304 @@ def candidate(match_id: str, *, market_type: str = "had", play: str | None = Non
 
 
 class ValueV4PlanIntegrationTest(unittest.TestCase):
+    def test_generator_exposes_no_public_paid_ledger_rebuild_writer(self):
+        self.assertFalse(hasattr(strategy, "write_ledger"))
+
+    def test_canonical_settled_observations_drive_candidates_and_limits_together(self):
+        configured = value_config()
+        configured["value_strategy"].update(
+            strict_max_single_stake=50, max_single_stake=200
+        )
+        captured = {}
+        settled = [
+            {
+                "date": "2026-07-17",
+                "strategy_version": "value-v4",
+                "bet_id": f"settled-{index}",
+                "match_id": f"match-{index}",
+                "market_type": "had",
+                "status": "命中",
+                "stake": "0",
+            }
+            for index in range(100)
+        ]
+        observations = [
+            *settled,
+            dict(settled[0]),
+            {**settled[0], "bet_id": "pending", "status": "未结算"},
+            {**settled[0], "bet_id": "legacy", "strategy_version": "legacy-v3"},
+            {**settled[0], "bet_id": "future", "date": TARGET_DATE.isoformat()},
+            {
+                **settled[0],
+                "bet_id": "malformed-parlay",
+                "market_type": "parlay",
+                "match_id": "",
+                "canonical_legs_json": json.dumps([
+                    {"match_id": "same", "market_type": "had", "selection": "胜", "line": ""},
+                    {"match_id": "same", "market_type": "ttg", "selection": "2球", "line": ""},
+                ], ensure_ascii=False),
+            },
+        ]
+        real_allocate = strategy.allocate_portfolio
+
+        def load_history(path: Path):
+            return observations if path.name == "observation_ledger.csv" else []
+
+        def capture_candidates(predictions, markets, snapshot, config, calibrations):
+            captured["candidate_samples"] = config["value_strategy"]["settled_samples"]
+            return []
+
+        def capture_limits(candidates, limits, account):
+            captured["limit_samples"] = limits.settled_samples
+            captured["max_single_stake"] = limits.max_single_stake
+            return real_allocate(candidates, limits, account)
+
+        with self.strategy_context(configured):
+            with (
+                patch.object(strategy, "load_csv", side_effect=load_history),
+                patch.object(strategy, "build_candidates", side_effect=capture_candidates),
+                patch.object(strategy, "allocate_portfolio", side_effect=capture_limits),
+            ):
+                strategy.build_value_v4_plan(TARGET_DATE, locked_at=LOCKED_AT)
+
+        self.assertEqual(100, captured["candidate_samples"])
+        self.assertEqual(100, captured["limit_samples"])
+        self.assertEqual(200, captured["max_single_stake"])
+
+    def test_active_mode_audit_has_no_selected_shadow_rows(self):
+        with self.strategy_context(value_config("active")):
+            with (
+                patch.object(strategy, "build_legacy_value_plan", return_value=([], [])),
+                patch.object(strategy, "build_candidates", return_value=[candidate("active")]),
+            ):
+                outputs = strategy.build_strategy_outputs(TARGET_DATE, locked_at=LOCKED_AT)
+
+        self.assertEqual([], outputs.shadow_plan)
+        self.assertEqual([], outputs.audit["selected_shadow"])
+
+    def test_empty_shadow_generation_writes_full_schema_and_never_paid_ledger(self):
+        for generate_only in (False, True):
+            with self.subTest(generate_only=generate_only), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                output = root / "output"
+                output.mkdir()
+                ledger_path = output / "betting_ledger.csv"
+                ledger_path.write_bytes(b"locked-ledger-bytes")
+                argv = [
+                    "generate_betting_plan.py", "--date", str(TARGET_DATE),
+                    "--locked-at", LOCKED_AT.isoformat(),
+                ]
+                if generate_only:
+                    argv.append("--generate-only")
+                empty_outputs = strategy.StrategyOutputs(
+                    [], [], [], {"activation_mode": "shadow", "selected_shadow": []}
+                )
+                with (
+                    patch.object(strategy, "ROOT", root),
+                    patch.object(strategy, "OUTPUT_DIR", output),
+                    patch.object(strategy, "DATA_DIR", root / "data"),
+                    patch.object(strategy, "build_strategy_outputs", return_value=empty_outputs),
+                    patch.object(strategy, "write_daily_decision", return_value=output / "decision.json"),
+                    patch.object(strategy, "settle_ledger") as settle_mock,
+                    patch.object(sys, "argv", argv),
+                ):
+                    result = strategy.main()
+                shadow_path = output / f"shadow_betting_plan_{TARGET_DATE}.csv"
+                with shadow_path.open(encoding="utf-8-sig", newline="") as handle:
+                    fields = csv.DictReader(handle).fieldnames
+
+                self.assertEqual(0, result)
+                self.assertIn("bet_id", fields)
+                self.assertIn("market_type", fields)
+                self.assertIn("locked_odds", fields)
+                self.assertEqual(b"locked-ledger-bytes", ledger_path.read_bytes())
+                settle_mock.assert_not_called()
+
+    def test_generate_only_and_settle_only_are_mutually_exclusive(self):
+        with (
+            patch.object(sys, "argv", [
+                "generate_betting_plan.py", "--generate-only", "--settle-only"
+            ]),
+            patch.object(strategy, "settle_ledger") as settle_mock,
+            self.assertRaises(SystemExit),
+        ):
+            strategy.main()
+        settle_mock.assert_not_called()
+
+    def test_settle_only_delegates_to_ledger_without_generation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "data").mkdir()
+            ledger_path = root / "output" / "betting_ledger.csv"
+            with (
+                patch.object(strategy, "ROOT", root),
+                patch.object(strategy, "OUTPUT_DIR", root / "output"),
+                patch.object(strategy, "DATA_DIR", root / "data"),
+                patch.object(strategy, "settle_ledger", return_value=ledger_path) as settle_mock,
+                patch.object(strategy, "build_strategy_outputs", side_effect=AssertionError("generated")),
+                patch.object(sys, "argv", [
+                    "generate_betting_plan.py", "--date", str(TARGET_DATE), "--settle-only"
+                ]),
+            ):
+                result = strategy.main()
+
+        self.assertEqual(0, result)
+        self.assertEqual(root, settle_mock.call_args.args[0])
+        self.assertEqual({}, settle_mock.call_args.args[1])
+
+    def write_real_generation_fixture(self, root: Path) -> None:
+        output = root / "output"
+        data = root / "data"
+        snapshots = data / "odds_snapshots"
+        output.mkdir(parents=True)
+        snapshots.mkdir(parents=True)
+        (root / "betting_config.json").write_text(
+            json.dumps(value_config(), ensure_ascii=False), encoding="utf-8"
+        )
+        predictions = []
+        for index in range(1, 4):
+            row = prediction(f"legacy-{index}")
+            row["is_single_had"] = "true" if index == 1 else "false"
+            predictions.append(row)
+        with (output / f"predictions_{TARGET_DATE.isoformat()}.csv").open(
+            "w", encoding="utf-8-sig", newline=""
+        ) as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(predictions[0]))
+            writer.writeheader()
+            writer.writerows(predictions)
+        odds = {
+            row["match_id"]: {"had": {"h": "3.00", "d": "3.00", "a": "3.00"}}
+            for row in predictions
+        }
+        (data / f"sporttery_odds_{TARGET_DATE.isoformat()}.json").write_text(
+            json.dumps(odds), encoding="utf-8"
+        )
+        snapshot = {
+            "target_date": TARGET_DATE.isoformat(),
+            "capture_phase": "decision",
+            "captured_at": CAPTURED_AT,
+            "source": "sporttery",
+            "source_record_id": "decision-snapshot-before-lock",
+            "matches": [
+                {
+                    **row,
+                    "markets": odds[row["match_id"]],
+                    "single_eligibility": {"had": row["is_single_had"] == "true"},
+                }
+                for row in predictions
+            ],
+        }
+        (snapshots / f"{TARGET_DATE.isoformat()}-132000-decision.json").write_text(
+            json.dumps(snapshot), encoding="utf-8"
+        )
+
+    def test_real_shadow_plan_writes_locks_and_ingests_canonical_legacy_rows(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.write_real_generation_fixture(root)
+            with (
+                patch.object(strategy, "ROOT", root),
+                patch.object(strategy, "OUTPUT_DIR", root / "output"),
+                patch.object(strategy, "DATA_DIR", root / "data"),
+            ):
+                outputs = strategy.build_strategy_outputs(TARGET_DATE, locked_at=LOCKED_AT)
+                plan_path = strategy.write_plan(outputs.active_plan, TARGET_DATE)
+            lock_plan(root, TARGET_DATE, LOCKED_AT, "sporttery")
+            ledger_path = ingest_date(root, TARGET_DATE)
+            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            locked_plan_bytes = plan_path.read_bytes()
+
+        self.assertEqual({"had", "parlay"}, {row["market_type"] for row in rows})
+        self.assertTrue(all(row["match_id"] or row["market_type"] == "parlay" for row in rows))
+        self.assertTrue(all(row["bet_id"] for row in rows))
+        parlay = next(row for row in rows if row["market_type"] == "parlay")
+        legs = json.loads(parlay["canonical_legs_json"])
+        self.assertEqual(2, len(legs))
+        self.assertEqual(2, len({leg["match_id"] for leg in legs}))
+        self.assertTrue(locked_plan_bytes.startswith(b"\xef\xbb\xbf"))
+
+    def test_snapshot_and_market_normalization_use_latest_capture_not_after_lock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            snapshots = root / "data" / "odds_snapshots"
+            snapshots.mkdir(parents=True)
+            before = market_fixture("cutoff", "had")[1]
+            before["source_record_id"] = "before-lock"
+            after = deepcopy(before)
+            after["captured_at"] = "2026-07-18T13:40:00+08:00"
+            after["source_record_id"] = "after-lock"
+            after["matches"][0]["markets"]["had"]["h"] = "9.00"
+            (snapshots / f"{TARGET_DATE}-132000-decision.json").write_text(
+                json.dumps(before), encoding="utf-8"
+            )
+            (snapshots / f"{TARGET_DATE}-134000-decision.json").write_text(
+                json.dumps(after), encoding="utf-8"
+            )
+            with (
+                patch.object(strategy, "ROOT", root),
+                patch.object(strategy, "OUTPUT_DIR", root / "output"),
+                patch.object(strategy, "DATA_DIR", root / "data"),
+            ):
+                selected = strategy.load_value_snapshot(TARGET_DATE, locked_at=LOCKED_AT)
+                markets = strategy.load_official_decision_markets(
+                    TARGET_DATE, snapshot=selected
+                )
+
+        self.assertEqual(CAPTURED_AT, selected["captured_at"])
+        self.assertEqual(3.0, markets["cutoff"]["had"].prices["胜"])
+        self.assertIn("before-lock", markets["cutoff"]["had"].source_record_id)
+
+    def test_valid_existing_lock_bypasses_generation_and_preserves_plan_bytes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output = root / "output"
+            data = root / "data"
+            output.mkdir()
+            data.mkdir()
+            plan_path = output / f"betting_plan_{TARGET_DATE}.csv"
+            plan_path.write_bytes(b"date,stake\n2026-07-18,10\n")
+            (data / f"sporttery_odds_{TARGET_DATE}.json").write_text("{}", encoding="utf-8")
+            lock_plan(root, TARGET_DATE, LOCKED_AT, "sporttery")
+            snapshots = data / "odds_snapshots"
+            snapshots.mkdir()
+            later_snapshot = market_fixture("later", "had")[1]
+            later_snapshot["captured_at"] = "2026-07-18T13:40:00+08:00"
+            later_snapshot["matches"][0]["markets"]["had"]["h"] = "9.00"
+            (snapshots / f"{TARGET_DATE}-134000-decision.json").write_text(
+                json.dumps(later_snapshot), encoding="utf-8"
+            )
+            original = plan_path.read_bytes()
+            with (
+                patch.object(strategy, "ROOT", root),
+                patch.object(strategy, "OUTPUT_DIR", output),
+                patch.object(strategy, "DATA_DIR", data),
+                patch.object(strategy, "build_strategy_outputs", side_effect=AssertionError("regenerated")),
+                patch.object(sys, "argv", ["generate_betting_plan.py", "--date", str(TARGET_DATE), "--locked-at", LOCKED_AT.isoformat()]),
+            ):
+                result = strategy.main()
+                final = plan_path.read_bytes()
+
+        self.assertEqual(0, result)
+        self.assertEqual(original, final)
+
+    def test_existing_invalid_lock_fails_before_generation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output = root / "output"
+            output.mkdir()
+            (output / f"plan_lock_{TARGET_DATE}.json").write_text("{}", encoding="utf-8")
+            with (
+                patch.object(strategy, "ROOT", root),
+                patch.object(strategy, "OUTPUT_DIR", output),
+                patch.object(strategy, "DATA_DIR", root / "data"),
+                patch.object(strategy, "build_strategy_outputs", side_effect=AssertionError("regenerated")),
+                patch.object(sys, "argv", ["generate_betting_plan.py", "--date", str(TARGET_DATE), "--locked-at", LOCKED_AT.isoformat()]),
+            ):
+                result = strategy.main()
+
+        self.assertEqual(1, result)
+
     def run_v4(self, market_type: str):
         markets, snapshot = market_fixture(f"match-{market_type}", market_type)
         row = prediction(f"match-{market_type}")
@@ -196,7 +496,8 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
             with self.subTest(mode=mode), self.strategy_context(value_config(mode)):
                 with (
                     patch.object(strategy, "build_legacy_value_plan", return_value=([{"strategy_version": "legacy-v3", "stake": 10}], []), create=True),
-                    patch.object(strategy, "build_value_v4_plan", return_value=([{"strategy_version": "value-v4", "stake": 20}], [{"strategy_version": "value-v4", "stake": 0}]), create=True),
+                    patch.object(strategy, "_finalize_legacy_plan", side_effect=lambda rows, markets, locked_at: rows),
+                    patch.object(strategy, "build_value_v4_plan", return_value=([{"strategy_version": "value-v4", "bet_id": "v4", "market_type": "had", "stake": 20}], [{"strategy_version": "value-v4", "stake": 0}]), create=True),
                 ):
                     outputs = strategy.build_strategy_outputs(TARGET_DATE, locked_at=LOCKED_AT)
 
