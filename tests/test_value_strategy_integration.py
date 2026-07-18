@@ -13,7 +13,11 @@ from unittest.mock import patch
 import generate_betting_plan as strategy
 import betting_ledger as ledger_module
 from betting_ledger import ingest_date
-from official_markets import normalize_market
+from official_markets import (
+    THREE_WAY_SELECTIONS,
+    TOTAL_GOALS_SELECTIONS,
+    normalize_market,
+)
 from plan_lock import lock_plan
 from value_candidates import ValueCandidate
 
@@ -226,6 +230,72 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
         self.assertEqual(100, captured["candidate_samples"])
         self.assertEqual(100, captured["limit_samples"])
         self.assertEqual(200, captured["max_single_stake"])
+
+    def test_settled_maturity_counts_unique_market_units_not_selections(self):
+        settled_date = (TARGET_DATE - timedelta(days=1)).isoformat()
+
+        def settled(match_id, market_type, line, selection, suffix):
+            return {
+                "date": settled_date,
+                "strategy_version": "value-v4",
+                "bet_id": f"{match_id}:{market_type}:{line}:{suffix}",
+                "match_id": match_id,
+                "market_type": market_type,
+                "market_line": line,
+                "selection": selection,
+                "status": ledger_module.WON,
+            }
+
+        had_vector = [
+            settled("vector-match", "had", "", selection, code)
+            for code, selection in THREE_WAY_SELECTIONS.items()
+        ]
+        ttg_vector = [
+            settled("vector-match", "ttg", "", selection, code)
+            for code, selection in TOTAL_GOALS_SELECTIONS.items()
+        ]
+        paid = [had_vector[0], ttg_vector[0]]
+        observations = [*had_vector, *ttg_vector, deepcopy(had_vector[0])]
+
+        self.assertEqual(
+            2,
+            strategy._settled_sample_count(paid, observations, TARGET_DATE),
+        )
+
+        different_report_date = deepcopy(had_vector[0])
+        different_report_date.update(
+            bet_id="vector-match:had:other-report-date",
+            report_date=(TARGET_DATE - timedelta(days=2)).isoformat(),
+        )
+        self.assertEqual(
+            3,
+            strategy._settled_sample_count(
+                paid, [*observations, different_report_date], TARGET_DATE
+            ),
+        )
+
+        another_match = settled(
+            "other-match", "had", "", THREE_WAY_SELECTIONS["h"], "other"
+        )
+        hhad_plus_one = [
+            settled(
+                "vector-match", "hhad", line, selection, f"plus-{code}"
+            )
+            for line, (code, selection) in zip(
+                ("+1", "1"), tuple(THREE_WAY_SELECTIONS.items())[:2]
+            )
+        ]
+        hhad_minus_one = settled(
+            "vector-match", "hhad", "-1", THREE_WAY_SELECTIONS["a"], "minus"
+        )
+        self.assertEqual(
+            5,
+            strategy._settled_sample_count(
+                [*paid, another_match],
+                [*observations, *hhad_plus_one, hhad_minus_one],
+                TARGET_DATE,
+            ),
+        )
 
     def test_active_mode_audit_has_no_selected_shadow_rows(self):
         with self.strategy_context(value_config("active")):
@@ -484,6 +554,60 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
                 self.assertIn("bet_id", reader.fieldnames)
                 self.assertIn("market_type", reader.fieldnames)
                 self.assertEqual([], list(reader))
+
+    def test_empty_observation_plan_uses_full_canonical_schema(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "output"
+            output.mkdir()
+            with patch.object(strategy, "OUTPUT_DIR", output):
+                path = strategy.write_observation_plan([], TARGET_DATE)
+            with path.open(encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle)
+                self.assertEqual(list(strategy.PLAN_FIELD_ORDER), reader.fieldnames)
+                self.assertEqual([], list(reader))
+
+    def test_legacy_parlay_finalization_serializes_exact_decimal_product(self):
+        markets = {}
+        for match_id, home_odds in (("decimal-a", "2.10"), ("decimal-b", "2.20")):
+            market = normalize_market(match_id, "had", {
+                "h": home_odds,
+                "d": "3.20",
+                "a": "3.80",
+                "source": "sporttery",
+                "source_record_id": f"record-{match_id}",
+                "captured_at_bjt": CAPTURED_AT,
+            })
+            self.assertIsNotNone(market)
+            markets[match_id] = {"had": market}
+        legs = [
+            {
+                "match_id": match_id,
+                "selection": THREE_WAY_SELECTIONS["h"],
+                "odds": odds,
+            }
+            for match_id, odds in (("decimal-a", 2.1), ("decimal-b", 2.2))
+        ]
+        raw = {
+            "date": TARGET_DATE.isoformat(),
+            "strategy_version": "legacy-v3",
+            "play": "legacy combo display",
+            "selection": "two legs",
+            "legs_json": json.dumps(legs, ensure_ascii=False),
+            "odds": 2.1 * 2.2,
+            "probability": 0.40,
+            "stake": 10,
+        }
+
+        finalized = strategy._finalize_legacy_plan([raw], markets, LOCKED_AT)[0]
+        exact_product = Decimal("2.10") * Decimal("2.20")
+
+        self.assertEqual(exact_product, Decimal(str(finalized["odds"])))
+        self.assertEqual(exact_product, Decimal(str(finalized["locked_odds"])))
+        self.assertEqual(
+            exact_product,
+            Decimal(json.loads(finalized["legs_json"])[0]["odds"])
+            * Decimal(json.loads(finalized["legs_json"])[1]["odds"]),
+        )
 
     def write_real_generation_fixture(self, root: Path) -> None:
         output = root / "output"

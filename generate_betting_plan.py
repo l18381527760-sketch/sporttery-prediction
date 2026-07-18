@@ -15,7 +15,7 @@ from betting_ledger import (
     write_ledger_atomic,
 )
 from model_metrics import play_family, summarize, write_metrics
-from official_markets import normalize_market
+from official_markets import normalize_market, parse_handicap
 from plan_lock import read_valid_lock
 from strategy_controls import (
     apply_league_draw_calibration,
@@ -819,7 +819,7 @@ def _finalize_legacy_plan(
                     "match_id": match_id,
                     "market_type": "had",
                     "line": "",
-                    "odds": official_odds,
+                    "odds": format(Decimal(str(official_odds)), "f"),
                     "odds_source": market.source,
                     "odds_source_record_id": market.source_record_id,
                     "odds_captured_at_bjt": market.captured_at_bjt,
@@ -827,20 +827,26 @@ def _finalize_legacy_plan(
                 evidence.append(market)
             if len({leg["match_id"] for leg in legs}) != 2:
                 raise ValueError("legacy paid parlay legs must use distinct matches")
-            locked_odds = math.prod(leg["odds"] for leg in legs)
-            if not math.isclose(float(row.get("odds")), locked_odds, rel_tol=0.0, abs_tol=0.01):
+            locked_odds = Decimal("1")
+            for leg in legs:
+                locked_odds *= Decimal(leg["odds"])
+            if not math.isclose(
+                float(row.get("odds")), float(locked_odds),
+                rel_tol=0.0, abs_tol=0.01,
+            ):
                 raise ValueError("legacy parlay price does not match its official legs")
             row.update(
                 match_id="",
                 market_type="parlay",
                 market_line="",
                 legs_json=json.dumps(legs, ensure_ascii=False, sort_keys=True),
+                odds=format(locked_odds, "f"),
                 odds_source=evidence[0].source,
                 odds_source_record_id=json.dumps(
                     sorted(item.source_record_id for item in evidence), ensure_ascii=False
                 ),
                 odds_captured_at_bjt=max(item.captured_at_bjt for item in evidence),
-                locked_odds=locked_odds,
+                locked_odds=format(locked_odds, "f"),
             )
         else:
             match_id = str(row.get("match_id") or "").strip()
@@ -857,10 +863,11 @@ def _finalize_legacy_plan(
                 match_id=match_id,
                 market_type="had",
                 market_line="",
+                odds=format(Decimal(str(official_odds)), "f"),
                 odds_source=market.source,
                 odds_source_record_id=market.source_record_id,
                 odds_captured_at_bjt=market.captured_at_bjt,
-                locked_odds=official_odds,
+                locked_odds=format(Decimal(str(official_odds)), "f"),
             )
         probability = float(row.get("probability"))
         odds = float(row.get("locked_odds"))
@@ -930,15 +937,15 @@ def _v4_limits(config: dict, account: dict, settled_samples: int) -> PortfolioLi
 def _settled_sample_count(
     history: list[dict], observation_history: list[dict], target_date: date
 ) -> int:
-    """Count unique terminal canonical v4 identities strictly before target_date."""
-    identities = set()
+    """Count unique terminal v4 market units strictly before target_date."""
+    market_units: set[tuple[str, str, str, str]] = set()
     for row in [*history, *observation_history]:
         if not isinstance(row, dict) or row.get("strategy_version") != "value-v4":
             continue
         if row.get("status") not in TERMINAL_STATUSES:
             continue
         try:
-            row_date = date.fromisoformat(str(row.get("date") or row.get("report_date")))
+            row_date = date.fromisoformat(str(row.get("report_date") or row.get("date")))
         except ValueError:
             continue
         if row_date >= target_date:
@@ -946,8 +953,6 @@ def _settled_sample_count(
         bet_id = str(row.get("bet_id") or "").strip()
         market_type = str(row.get("market_type") or "").strip().lower()
         if not bet_id or market_type not in {"had", "hhad", "ttg", "parlay"}:
-            continue
-        if market_type != "parlay" and not str(row.get("match_id") or "").strip():
             continue
         if market_type == "parlay":
             try:
@@ -966,8 +971,60 @@ def _settled_sample_count(
                 or len({str(leg["match_id"]).strip() for leg in legs}) != 2
             ):
                 continue
-        identities.add(bet_id)
-    return len(identities)
+            leg_units = [
+                _market_sample_key(
+                    row_date,
+                    leg.get("match_id"),
+                    leg.get("market_type"),
+                    leg.get("line", leg.get("market_line", "")),
+                )
+                for leg in legs
+            ]
+            if any(unit is None for unit in leg_units):
+                continue
+            market_units.update(unit for unit in leg_units if unit is not None)
+            continue
+        unit = _market_sample_key(
+            row_date,
+            row.get("match_id"),
+            market_type,
+            row.get("market_line", row.get("line", "")),
+        )
+        if unit is not None:
+            market_units.add(unit)
+    return len(market_units)
+
+
+def _market_sample_key(
+    report_date: date,
+    match_id: object,
+    market_type: object,
+    line: object,
+) -> tuple[str, str, str, str] | None:
+    if not (
+        isinstance(match_id, str)
+        and bool(match_id)
+        and match_id == match_id.strip()
+        and all(
+            character.isprintable() and not character.isspace()
+            for character in match_id
+        )
+    ):
+        return None
+    market = str(market_type or "").strip().lower()
+    if market not in {"had", "hhad", "ttg"}:
+        return None
+    line_text = "" if line is None else str(line).strip()
+    if market == "hhad":
+        try:
+            canonical_line = str(parse_handicap(line_text))
+        except ValueError:
+            return None
+    else:
+        if line_text:
+            return None
+        canonical_line = ""
+    return report_date.isoformat(), match_id, market, canonical_line
 
 
 def _candidate_plan_row(
@@ -1300,13 +1357,7 @@ def write_shadow_plan(plan: list[dict], target_date: date) -> Path:
 
 def write_observation_plan(observations: list[dict], target_date: date) -> Path:
     path = OUTPUT_DIR / f"observation_plan_{target_date.isoformat()}.csv"
-    fields = _plan_fields(observations, [
-        "date", "strategy_version", "stage", "match", "team_a", "team_b",
-        "play", "selection", "probability", "raw_model_probability", "odds",
-        "league_calibrated_probability", "league_calibration_samples",
-        "market_probability", "value_edge", "expected_value", "stake",
-        "expected_return", "expected_profit", "reason", "legs_json",
-    ])
+    fields = _plan_fields(observations, list(PLAN_FIELD_ORDER))
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()

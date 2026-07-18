@@ -139,6 +139,202 @@ def v4_parlay_row(prefix="parlay", stake="10"):
 
 
 class IdentityAndIngestionTest(unittest.TestCase):
+    def test_legacy_v3_new_rows_share_canonical_market_and_parlay_validation(self):
+        valid_single = plan_row(
+            strategy_version="legacy-v3",
+            play="legacy display label",
+            kelly_fraction="",
+        )
+        valid_parlay = v4_parlay_row("legacy-valid")
+        valid_parlay.update(
+            strategy_version="legacy-v3",
+            play="legacy combo display",
+            kelly_fraction="",
+        )
+        self.assertEqual(1, len(ingest_locked_plan([], [valid_single], lock())))
+        legacy_display_only = {**valid_single, "play": "2-leg parlay display"}
+        self.assertEqual(
+            1, len(ingest_locked_plan([], [legacy_display_only], lock()))
+        )
+        self.assertEqual(1, len(ingest_locked_plan([], [valid_parlay], lock())))
+
+        def changed_parlay(change):
+            row = copy.deepcopy(valid_parlay)
+            legs = json.loads(row["legs_json"])
+            change(row, legs)
+            row["legs_json"] = json.dumps(legs, ensure_ascii=False)
+            return row
+
+        cases = (
+            (
+                "score single",
+                plan_row(
+                    strategy_version="legacy-v3",
+                    play="legacy score",
+                    market_type="score",
+                    selection="1-0",
+                    kelly_fraction="",
+                ),
+                "market",
+            ),
+            (
+                "half full single",
+                plan_row(
+                    strategy_version="legacy-v3",
+                    play="legacy half full",
+                    market_type="half_full",
+                    selection="win-win",
+                    kelly_fraction="",
+                ),
+                "market",
+            ),
+            (
+                "unsupported single selection",
+                {**valid_single, "selection": "1-0"},
+                "selection",
+            ),
+            (
+                "same match parlay",
+                changed_parlay(
+                    lambda _row, legs: legs[1].update(match_id=legs[0]["match_id"])
+                ),
+                "distinct",
+            ),
+            (
+                "unsupported parlay leg",
+                changed_parlay(
+                    lambda _row, legs: legs[1].update(
+                        market_type="score", selection="1-0"
+                    )
+                ),
+                "market",
+            ),
+            (
+                "invalid handicap line",
+                changed_parlay(
+                    lambda _row, legs: legs[1].update(
+                        market_type="hhad",
+                        selection=THREE_WAY_SELECTIONS["h"],
+                        line="+0.5",
+                    )
+                ),
+                "integer handicap",
+            ),
+            (
+                "missing leg source record",
+                changed_parlay(
+                    lambda _row, legs: legs[1].update(odds_source_record_id="")
+                ),
+                "record",
+            ),
+            (
+                "naive leg capture",
+                changed_parlay(
+                    lambda _row, legs: legs[1].update(
+                        odds_captured_at_bjt="2026-07-16T13:30:00"
+                    )
+                ),
+                "timezone",
+            ),
+            (
+                "wrong leg source",
+                changed_parlay(
+                    lambda _row, legs: legs[1].update(odds_source="zgzcw")
+                ),
+                "source",
+            ),
+            (
+                "tampered leg price",
+                changed_parlay(
+                    lambda _row, legs: legs[1].update(odds="3.10")
+                ),
+                "product",
+            ),
+            (
+                "tampered combined price",
+                changed_parlay(
+                    lambda row, _legs: row.update(odds="6.01", locked_odds="6.01")
+                ),
+                "product",
+            ),
+        )
+        for name, row, message in cases:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
+                ingest_locked_plan([], [row], lock())
+
+        second_parlay = v4_parlay_row("legacy-second")
+        second_parlay.update(
+            strategy_version="legacy-v3",
+            play="legacy combo display",
+            kelly_fraction="",
+        )
+        with self.assertRaisesRegex(ValueError, "parlay count"):
+            ingest_locked_plan([], [valid_parlay, second_parlay], lock())
+
+    def test_existing_canonical_rows_dedupe_by_derived_identity_and_preserve_first(self):
+        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+        first = {**canonical, "bet_id": "spoofed-first"}
+        equivalent = {**canonical, "bet_id": "spoofed-second"}
+
+        deduplicated = ingest_locked_plan([first, equivalent], [], lock())
+
+        self.assertEqual([first], deduplicated)
+        rerun = ingest_locked_plan([first, equivalent], [plan_row()], lock())
+        self.assertEqual([first], rerun)
+
+    def test_existing_canonical_duplicate_conflicts_fail_closed(self):
+        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+        first = {**canonical, "bet_id": "spoofed-first"}
+        conflicts = (
+            {**canonical, "bet_id": "spoofed-second", "stake": "22"},
+            {
+                **canonical,
+                "bet_id": "spoofed-second",
+                "status": WON,
+                "result_status": "finished",
+                "result_source": "sporttery",
+                "source_record_id": "result-conflict",
+                "captured_at_bjt": "2026-07-17T11:00:00+08:00",
+                "home_goals": "2",
+                "away_goals": "1",
+                "settled_at_bjt": SETTLED_AT.isoformat(),
+                "return": "40.00",
+                "profit": "20.00",
+            },
+        )
+        for conflict in conflicts:
+            with self.subTest(conflict=conflict), self.assertRaisesRegex(
+                ValueError, "conflicting existing canonical"
+            ):
+                ingest_locked_plan([first, conflict], [], lock())
+
+    def test_existing_equivalent_duplicates_do_not_double_count_caps_or_profit(self):
+        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+        first = {
+            **canonical,
+            "bet_id": "spoofed-first",
+            "status": LOST,
+            "result_status": "finished",
+            "result_source": "sporttery",
+            "source_record_id": "result-loss",
+            "captured_at_bjt": "2026-07-17T11:00:00+08:00",
+            "home_goals": "0",
+            "away_goals": "1",
+            "settled_at_bjt": SETTLED_AT.isoformat(),
+            "return": "0.00",
+            "profit": "-2500.00",
+        }
+        equivalent = {**first, "bet_id": "spoofed-second"}
+
+        ingested = ingest_locked_plan(
+            [first, equivalent],
+            [plan_row(match_id="account-new", stake="20")],
+            lock(),
+        )
+
+        self.assertEqual(2, len(ingested))
+        self.assertEqual(first, ingested[0])
+
     def test_new_paid_rows_reject_invalid_boundary_fields_and_versions(self):
         valid = plan_row()
         cases = (
@@ -537,13 +733,12 @@ class IdentityAndIngestionTest(unittest.TestCase):
         duplicate = copy.deepcopy(rerun[0])
         duplicate["locked_odds"] = "99.00"
         duplicate["stake"] = "999"
-        deduplicated = ingest_locked_plan([rerun[0], duplicate], [], lock())
+        with self.assertRaisesRegex(ValueError, "conflicting existing canonical"):
+            ingest_locked_plan([rerun[0], duplicate], [], lock())
 
         self.assertEqual(1, len(rerun))
         self.assertEqual("2.00", rerun[0]["locked_odds"])
         self.assertEqual("20", rerun[0]["stake"])
-        self.assertEqual(1, len(deduplicated))
-        self.assertEqual("2.00", deduplicated[0]["locked_odds"])
         self.assertEqual(plan, plan_row())
 
     def test_legacy_parlay_without_legs_uses_deterministic_fallback_identity(self):
@@ -994,6 +1189,28 @@ class SettlementTest(unittest.TestCase):
         for name, row, message in cases:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
                 ledger_module.update_observation_ledger([], [row], {}, SETTLED_AT)
+
+    def test_observation_outcome_vectors_keep_selection_in_stable_identity(self):
+        observations = [
+            plan_row(
+                match_id="vector-had",
+                selection=selection,
+                stake="0",
+                odds_source_record_id=f"vector-{code}",
+            )
+            for code, selection in THREE_WAY_SELECTIONS.items()
+        ]
+
+        rows = ledger_module.update_observation_ledger(
+            [], observations, {}, SETTLED_AT
+        )
+
+        self.assertEqual(3, len(rows))
+        self.assertEqual(3, len({row["bet_id"] for row in rows}))
+        self.assertEqual(
+            set(THREE_WAY_SELECTIONS.values()),
+            {row["selection"] for row in rows},
+        )
 
 
 class LockedIngestCommandTest(unittest.TestCase):

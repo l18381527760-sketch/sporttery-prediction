@@ -69,13 +69,22 @@ def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: d
         raise ValueError("ledger and plan rows must be lists")
 
     ingested: list[dict] = []
-    known_ids: set[str] = set()
+    known_keys: set[tuple[str, str]] = set()
+    canonical_states: dict[str, str] = {}
     for source_row in existing_rows:
         row = _migrate_existing_row(source_row)
-        bet_id = row["bet_id"]
-        if bet_id in known_ids:
+        key_kind, identity_key = _existing_dedupe_key(row)
+        dedupe_key = (key_kind, identity_key)
+        if dedupe_key in known_keys:
+            if (
+                key_kind == "canonical"
+                and canonical_states[identity_key] != _existing_canonical_state(row)
+            ):
+                raise ValueError("conflicting existing canonical ledger rows")
             continue
-        known_ids.add(bet_id)
+        known_keys.add(dedupe_key)
+        if key_kind == "canonical":
+            canonical_states[identity_key] = _existing_canonical_state(row)
         ingested.append(row)
 
     new_rows: list[tuple[dict, str]] = []
@@ -89,7 +98,7 @@ def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: d
         if bet_id in plan_ids:
             raise ValueError("duplicate canonical identity in locked plan")
         plan_ids.add(bet_id)
-        if bet_id in known_ids:
+        if ("canonical", bet_id) in known_keys:
             continue
         new_rows.append((source_row, bet_id))
 
@@ -134,7 +143,7 @@ def _validate_new_paid_rows(
         if strategy_version == "value-v4":
             _value_v4_kelly(row.get("kelly_fraction"))
 
-    _validate_value_v4_portfolio(new_rows, lock_source)
+    _validate_paid_portfolio(new_rows, lock_source)
     _validate_paid_account_caps(
         existing_rows, new_rows, new_stakes, report_date
     )
@@ -271,10 +280,15 @@ def _account_match_ids(row: dict) -> list[str]:
         return []
 
 
-def _validate_value_v4_portfolio(plan_rows: list[dict], lock_source: str) -> None:
+def _validate_paid_portfolio(plan_rows: list[dict], lock_source: str) -> None:
     parlays = 0
     for row in plan_rows:
-        if not isinstance(row, dict) or row.get("strategy_version") != "value-v4":
+        if not isinstance(row, dict):
+            continue
+        strategy_version = _required_text(
+            row.get("strategy_version"), "strategy_version"
+        )
+        if strategy_version not in NEW_PAID_STRATEGY_VERSIONS:
             continue
         market_type = _required_text(row.get("market_type"), "market_type").lower()
         _required_text(row.get("odds_source_record_id"), "odds_source_record_id")
@@ -284,12 +298,17 @@ def _validate_value_v4_portfolio(plan_rows: list[dict], lock_source: str) -> Non
             legs = _canonical_legs(row)
             raw_legs = _raw_legs(row)
             if len({leg["match_id"] for leg in legs}) != 2:
-                raise ValueError("value-v4 parlay legs must use distinct matches")
+                raise ValueError(
+                    f"{strategy_version} parlay legs must use distinct matches"
+                )
             for leg in legs:
                 if leg["market_type"] not in VALUE_V4_SINGLE_MARKETS:
-                    raise ValueError("value-v4 parlay leg market is unsupported")
-                _validate_value_v4_market(
-                    leg["market_type"], leg["selection"], leg["line"], "parlay leg"
+                    raise ValueError(
+                        f"{strategy_version} parlay leg market is unsupported"
+                    )
+                _validate_paid_market(
+                    leg["market_type"], leg["selection"], leg["line"],
+                    "parlay leg", strategy_version,
                 )
             combined_odds = Decimal("1")
             for leg in raw_legs:
@@ -297,7 +316,9 @@ def _validate_value_v4_portfolio(plan_rows: list[dict], lock_source: str) -> Non
                     leg.get("odds_source"), "parlay leg odds_source"
                 ).lower()
                 if source not in DOMESTIC_ODDS_SOURCES or source != lock_source:
-                    raise ValueError("value-v4 parlay leg source must match the lock")
+                    raise ValueError(
+                        f"{strategy_version} parlay leg source must match the lock"
+                    )
                 _required_text(
                     leg.get("odds_source_record_id"),
                     "parlay leg odds_source_record_id",
@@ -310,38 +331,56 @@ def _validate_value_v4_portfolio(plan_rows: list[dict], lock_source: str) -> Non
             locked_odds = _decimal_odds(row.get("locked_odds"), "locked_odds")
             display_odds = _decimal_odds(row.get("odds"), "odds")
             if combined_odds != locked_odds or locked_odds != display_odds:
-                raise ValueError("value-v4 parlay odds must equal the exact leg product")
+                raise ValueError(
+                    f"{strategy_version} parlay odds must equal the exact leg product"
+                )
             continue
         if market_type not in VALUE_V4_SINGLE_MARKETS:
-            raise ValueError("value-v4 single market is unsupported")
-        if _required_text(row.get("play"), "play") != VALUE_V4_PLAY_BY_MARKET[market_type]:
+            raise ValueError(f"{strategy_version} single market is unsupported")
+        if (
+            strategy_version == "value-v4"
+            and _required_text(row.get("play"), "play")
+            != VALUE_V4_PLAY_BY_MARKET[market_type]
+        ):
             raise ValueError("value-v4 play must match market_type")
         _canonical_match_id(row.get("match_id"))
         selection = _required_text(row.get("selection"), "selection")
         line = _line_value(row.get("market_line", row.get("line", "")))
-        _validate_value_v4_market(market_type, selection, line, "single")
+        _validate_paid_market(
+            market_type, selection, line, "single", strategy_version
+        )
     if parlays > 1:
-        raise ValueError("value-v4 parlay count exceeds 1")
+        raise ValueError("paid parlay count exceeds 1")
 
 
-def _validate_value_v4_market(
-    market_type: str, selection: str, line: str, context: str
+def _validate_paid_market(
+    market_type: str,
+    selection: str,
+    line: str,
+    context: str,
+    strategy_version: str,
 ) -> None:
     if market_type in {"had", "hhad"}:
         if selection not in VALUE_V4_THREE_WAY_SELECTIONS:
-            raise ValueError(f"value-v4 {context} selection is unsupported")
+            raise ValueError(
+                f"{strategy_version} {context} selection is unsupported"
+            )
     elif selection not in VALUE_V4_TOTAL_GOALS_SELECTIONS:
-        raise ValueError(f"value-v4 {context} selection is unsupported")
+        raise ValueError(
+            f"{strategy_version} {context} selection is unsupported"
+        )
 
     if market_type == "hhad":
         try:
             parse_handicap(line)
         except ValueError as exc:
             raise ValueError(
-                f"value-v4 HHAD {context} requires an integer handicap"
+                f"{strategy_version} HHAD {context} requires an integer handicap"
             ) from exc
     elif line:
-        raise ValueError(f"value-v4 HAD/TTG {context} cannot have a line")
+        raise ValueError(
+            f"{strategy_version} HAD/TTG {context} cannot have a line"
+        )
 
 
 def _decimal_odds(value: object, name: str) -> Decimal:
@@ -404,7 +443,9 @@ def _validate_new_observation(row: dict) -> str:
     _canonical_match_id(row.get("match_id"))
     selection = _required_text(row.get("selection"), "selection")
     line = _line_value(row.get("market_line", row.get("line", "")))
-    _validate_value_v4_market(market_type, selection, line, "observation")
+    _validate_paid_market(
+        market_type, selection, line, "observation", "value-v4"
+    )
 
     source = _required_text(row.get("odds_source"), "odds_source").lower()
     if source not in DOMESTIC_ODDS_SOURCES:
@@ -592,7 +633,11 @@ def _identity_payload(row: dict, *, allow_legacy_match: bool = False) -> dict:
     strategy_version = _required_text(row.get("strategy_version"), "strategy_version")
     play = _required_text(row.get("play"), "play")
     market_type = _required_text(row.get("market_type"), "market_type").lower()
-    if market_type != "parlay" and "parlay" in play.lower():
+    if (
+        strategy_version == "value-v4"
+        and market_type != "parlay"
+        and "parlay" in play.lower()
+    ):
         raise ValueError("play contradicts non-parlay market_type")
     if market_type == "parlay":
         legs = _canonical_legs(row, allow_legacy_match=allow_legacy_match)
@@ -636,6 +681,54 @@ def _canonical_legs(row: dict, *, allow_legacy_match: bool = False) -> list[dict
             "line": _line_value(leg.get("line", leg.get("market_line", ""))),
         })
     return sorted(legs, key=lambda leg: json.dumps(leg, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _existing_dedupe_key(row: dict) -> tuple[str, str]:
+    try:
+        return "canonical", stable_bet_id(row)
+    except ValueError:
+        return "legacy", _required_text(row.get("bet_id"), "bet_id")
+
+
+def _existing_canonical_state(row: dict) -> str:
+    state = {
+        field: _existing_state_value(field, row.get(field, ""))
+        for field in REQUIRED_FIELD_ORDER
+        if field != "bet_id"
+    }
+    state["identity"] = _identity_payload(row)
+    if "legs" in row:
+        state["legs"] = _existing_state_value("legs", row.get("legs"))
+    return json.dumps(
+        state,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _existing_state_value(field: str, value: object) -> object:
+    if field not in {"legs", "legs_json", "canonical_legs_json", "result_legs_json"}:
+        return "" if value is None else str(value)
+    if value in (None, ""):
+        return ""
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    if isinstance(parsed, list):
+        return sorted(
+            parsed,
+            key=lambda item: json.dumps(
+                item,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    return parsed
 
 
 def _migrate_existing_row(source_row: dict) -> dict:
