@@ -306,6 +306,150 @@ class IdentityAndIngestionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflicting existing canonical"):
             ingest_locked_plan([first, conflict], [], lock())
 
+    def test_stable_identity_canonicalizes_whitespace_and_compact_dates(self):
+        expected = stable_bet_id(plan_row())
+        aliases = (
+            plan_row(date="   ", report_date=" 2026-07-16 "),
+            plan_row(date=" 2026-07-16 "),
+            plan_row(date="20260716"),
+        )
+
+        actual = []
+        for row in aliases:
+            try:
+                actual.append(stable_bet_id(row))
+            except ValueError:
+                actual.append("invalid")
+        self.assertEqual([expected] * len(aliases), actual)
+
+    def test_existing_canonical_date_aliases_dedupe_or_conflict_by_values(self):
+        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+        first = {**canonical, "bet_id": "spoofed-first"}
+        aliases = (
+            {**canonical, "date": "   ", "bet_id": "spoofed-whitespace"},
+            {**canonical, "date": "20260716", "bet_id": "spoofed-compact"},
+        )
+
+        for alias in aliases:
+            with self.subTest(date=alias["date"]):
+                self.assertEqual(
+                    [first], ingest_locked_plan([first, alias], [], lock())
+                )
+                conflict = {**alias, "stake": "22"}
+                with self.assertRaisesRegex(
+                    ValueError, "conflicting existing canonical"
+                ):
+                    ingest_locked_plan([first, conflict], [], lock())
+
+    def test_settle_ledger_dedupes_canonical_date_aliases_before_profit(self):
+        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+        first = {**canonical, "bet_id": "spoofed-first"}
+        aliases = (
+            {**canonical, "date": "   ", "bet_id": "spoofed-whitespace"},
+            {**canonical, "date": "20260716", "bet_id": "spoofed-compact"},
+        )
+
+        for alias in aliases:
+            with self.subTest(date=alias["date"]), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                ledger_path = root / "output" / "betting_ledger.csv"
+                write_ledger_atomic(ledger_path, [first, alias])
+
+                ledger_module.settle_ledger(
+                    root, {"1001": finished("1001", 2, 1)}, SETTLED_AT
+                )
+
+                with ledger_path.open(
+                    encoding="utf-8-sig", newline=""
+                ) as handle:
+                    rows = list(csv.DictReader(handle))
+                self.assertEqual(1, len(rows))
+                self.assertEqual("spoofed-first", rows[0]["bet_id"])
+                self.assertEqual("20.00", rows[0]["profit"])
+
+    def test_hhad_single_line_aliases_share_identity_dedupe_and_settle_once(self):
+        plus = plan_row(
+            play="HHAD",
+            market_type="hhad",
+            market_line="+1",
+            selection=THREE_WAY_SELECTIONS["h"],
+        )
+        plain = {**plus, "market_line": "1"}
+        self.assertEqual(stable_bet_id(plus), stable_bet_id(plain))
+
+        first = {
+            **ingest_locked_plan([], [plus], lock())[0],
+            "bet_id": "spoofed-first",
+        }
+        equivalent = {
+            **ingest_locked_plan([], [plain], lock())[0],
+            "bet_id": "spoofed-second",
+        }
+        self.assertEqual(
+            [first], ingest_locked_plan([first, equivalent], [], lock())
+        )
+        with self.assertRaisesRegex(ValueError, "conflicting existing canonical"):
+            ingest_locked_plan(
+                [first, {**equivalent, "stake": "22"}], [], lock()
+            )
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            ledger_path = root / "output" / "betting_ledger.csv"
+            write_ledger_atomic(ledger_path, [first, equivalent])
+            ledger_module.settle_ledger(
+                root, {"1001": finished("1001", 1, 1)}, SETTLED_AT
+            )
+            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        self.assertEqual(1, len(rows))
+        self.assertEqual("20.00", rows[0]["profit"])
+
+    def test_hhad_parlay_line_aliases_share_identity_dedupe_and_settle_once(self):
+        plus = v4_parlay_row("hhad-alias")
+        plus_legs = json.loads(plus["legs_json"])
+        plus_legs[0].update(
+            market_type="hhad",
+            selection=THREE_WAY_SELECTIONS["h"],
+            line="+1",
+        )
+        plus["legs_json"] = json.dumps(plus_legs, ensure_ascii=False)
+        plain = copy.deepcopy(plus)
+        plain_legs = json.loads(plain["legs_json"])
+        plain_legs[0]["line"] = "1"
+        plain["legs_json"] = json.dumps(plain_legs, ensure_ascii=False)
+        self.assertEqual(stable_bet_id(plus), stable_bet_id(plain))
+
+        first = {
+            **ingest_locked_plan([], [plus], lock())[0],
+            "bet_id": "spoofed-first",
+        }
+        equivalent = {
+            **ingest_locked_plan([], [plain], lock())[0],
+            "bet_id": "spoofed-second",
+        }
+        self.assertEqual(
+            [first], ingest_locked_plan([first, equivalent], [], lock())
+        )
+        with self.assertRaisesRegex(ValueError, "conflicting existing canonical"):
+            ingest_locked_plan(
+                [first, {**equivalent, "stake": "12"}], [], lock()
+            )
+
+        results = {
+            "hhad-alias-1": finished("hhad-alias-1", 1, 1),
+            "hhad-alias-2": finished("hhad-alias-2", 2, 0),
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            ledger_path = root / "output" / "betting_ledger.csv"
+            write_ledger_atomic(ledger_path, [first, equivalent])
+            ledger_module.settle_ledger(root, results, SETTLED_AT)
+            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        self.assertEqual(1, len(rows))
+        self.assertEqual("50.00", rows[0]["profit"])
+
     def test_existing_canonical_duplicate_conflicts_fail_closed(self):
         canonical = ingest_locked_plan([], [plan_row()], lock())[0]
         first = {**canonical, "bet_id": "spoofed-first"}

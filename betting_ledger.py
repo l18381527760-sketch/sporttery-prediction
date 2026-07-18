@@ -522,6 +522,7 @@ def settled_market_identities(row: dict) -> list[dict]:
     try:
         if _required_text(row.get("bet_id"), "bet_id") != stable_bet_id(row):
             return []
+        _validate_maturity_economics(row)
         _aware_iso(row.get("settled_at_bjt"), "settled_at_bjt")
         market_type = _required_text(row.get("market_type"), "market_type").lower()
         if market_type == "parlay":
@@ -546,6 +547,21 @@ def settled_market_identities(row: dict) -> list[dict]:
         return [identity] if row.get("status") == expected_status else []
     except (TypeError, ValueError):
         return []
+
+
+def _validate_maturity_economics(row: dict) -> None:
+    stake = _required_decimal(row.get("stake"), "stake")
+    locked_at = _aware_datetime(row.get("locked_at_bjt"), "locked_at_bjt")
+    if stake == MONEY_ZERO:
+        _validate_new_observation(row)
+        _capture_not_after_lock(
+            row.get("odds_captured_at_bjt"), "odds_captured_at_bjt", locked_at
+        )
+        return
+    lock_source = _required_text(row.get("odds_source"), "odds_source").lower()
+    _validate_new_paid_rows(
+        [], [row], lock_source, _identity_date(row), locked_at
+    )
 
 
 def _settled_parlay_identities(row: dict) -> list[dict]:
@@ -620,8 +636,11 @@ def _sorted_result_legs(result_legs: list[dict]) -> list[dict]:
                     result.get("market_type"), "leg market_type"
                 ).lower(),
                 "selection": _required_text(result.get("selection"), "leg selection"),
-                "line": _line_value(
-                    result.get("line", result.get("market_line", ""))
+                "line": _canonical_market_line(
+                    _required_text(
+                        result.get("market_type"), "leg market_type"
+                    ).lower(),
+                    result.get("line", result.get("market_line", "")),
                 ),
             },
             ensure_ascii=False,
@@ -741,7 +760,7 @@ def _validate_lock(lock: dict) -> str:
 
 
 def _identity_payload(row: dict, *, allow_legacy_match: bool = False) -> dict:
-    report_date = _required_date(row.get("date") or row.get("report_date"))
+    report_date = _identity_date(row)
     strategy_version = _required_text(row.get("strategy_version"), "strategy_version")
     play = _required_text(row.get("play"), "play")
     market_type = _required_text(row.get("market_type"), "market_type").lower()
@@ -767,7 +786,9 @@ def _identity_payload(row: dict, *, allow_legacy_match: bool = False) -> dict:
         "market_type": market_type,
         "match_id": _canonical_match_id(row.get("match_id"), allow_legacy_match=allow_legacy_match),
         "selection": _required_text(row.get("selection"), "selection"),
-        "line": _line_value(row.get("market_line", row.get("line", ""))),
+        "line": _canonical_market_line(
+            market_type, row.get("market_line", row.get("line", ""))
+        ),
     }
 
 
@@ -786,11 +807,16 @@ def _canonical_legs(row: dict, *, allow_legacy_match: bool = False) -> list[dict
     for leg in raw_legs:
         if not isinstance(leg, dict):
             raise ValueError("parlay leg must be a mapping")
+        market_type = _required_text(
+            leg.get("market_type"), "leg market_type"
+        ).lower()
         legs.append({
             "match_id": _canonical_match_id(leg.get("match_id"), allow_legacy_match=allow_legacy_match),
-            "market_type": _required_text(leg.get("market_type"), "leg market_type").lower(),
+            "market_type": market_type,
             "selection": _required_text(leg.get("selection"), "leg selection"),
-            "line": _line_value(leg.get("line", leg.get("market_line", ""))),
+            "line": _canonical_market_line(
+                market_type, leg.get("line", leg.get("market_line", ""))
+            ),
         })
     return sorted(legs, key=lambda leg: json.dumps(leg, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
@@ -830,7 +856,10 @@ def _existing_canonical_state(row: dict) -> str:
     state = {
         field: _existing_state_value(field, row.get(field, ""))
         for field in REQUIRED_FIELD_ORDER
-        if field != "bet_id"
+        if field not in {
+            "bet_id", "date", "report_date", "strategy_version", "play",
+            "market_type", "market_line", "match_id", "selection",
+        }
     }
     state["identity"] = _identity_payload(row)
     if "legs" in row:
@@ -855,6 +884,7 @@ def _existing_state_value(field: str, value: object) -> object:
         except json.JSONDecodeError:
             return value
     if isinstance(parsed, list):
+        parsed = [_canonical_existing_item(item) for item in parsed]
         return sorted(
             parsed,
             key=lambda item: json.dumps(
@@ -865,6 +895,26 @@ def _existing_state_value(field: str, value: object) -> object:
             ),
         )
     return parsed
+
+
+def _canonical_existing_item(item: object) -> object:
+    if not isinstance(item, dict):
+        return item
+    normalized = dict(item)
+    market_type = str(normalized.get("market_type") or "").strip().lower()
+    if market_type:
+        normalized["market_type"] = market_type
+    for field in ("match_id", "selection"):
+        value = normalized.get(field)
+        if isinstance(value, str):
+            normalized[field] = value.strip()
+    line = normalized.get("line", normalized.get("market_line", ""))
+    try:
+        normalized["line"] = _canonical_market_line(market_type, line)
+    except ValueError:
+        normalized["line"] = _line_value(line)
+    normalized.pop("market_line", None)
+    return normalized
 
 
 def _migrate_existing_row(source_row: dict) -> dict:
@@ -1104,7 +1154,10 @@ def _sorted_raw_legs(legs: list[dict]) -> list[dict]:
         "match_id": _canonical_match_id(leg.get("match_id")),
         "market_type": _required_text(leg.get("market_type"), "leg market_type").lower(),
         "selection": _required_text(leg.get("selection"), "leg selection"),
-        "line": _line_value(leg.get("line", leg.get("market_line", ""))),
+        "line": _canonical_market_line(
+            _required_text(leg.get("market_type"), "leg market_type").lower(),
+            leg.get("line", leg.get("market_line", "")),
+        ),
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
@@ -1115,11 +1168,19 @@ def _is_parlay(row: dict) -> bool:
 def _required_date(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("date is required")
+    text = value.strip()
     try:
-        date.fromisoformat(value)
+        parsed = date.fromisoformat(text)
     except ValueError as exc:
         raise ValueError("date must be YYYY-MM-DD") from exc
-    return value
+    return parsed.isoformat()
+
+
+def _identity_date(row: dict) -> str:
+    value = row.get("date")
+    if value is None or (isinstance(value, str) and not value.strip()):
+        value = row.get("report_date")
+    return _required_date(value)
 
 
 def _required_text(value: object, name: str) -> str:
@@ -1273,6 +1334,16 @@ def _legacy_match_id(row: dict) -> str:
 
 def _line_value(value: object) -> str:
     return "" if value is None else str(value).strip()
+
+
+def _canonical_market_line(market_type: str, value: object) -> str:
+    line = _line_value(value)
+    if market_type == "hhad":
+        try:
+            return str(parse_handicap(line))
+        except ValueError:
+            return line
+    return line
 
 
 def _aware_iso(value: object, name: str) -> str:

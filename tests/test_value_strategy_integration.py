@@ -173,6 +173,7 @@ def settled_value_single(
     report_date: str = "2026-07-17",
     home_goals: int = 2,
     away_goals: int = 0,
+    stake: str = "0",
 ) -> dict:
     row = {
         "date": report_date,
@@ -189,7 +190,9 @@ def settled_value_single(
         "odds_source": "sporttery",
         "odds_source_record_id": f"odds-{match_id}-{market_type}",
         "odds_captured_at_bjt": "2026-07-17T13:00:00+08:00",
-        "stake": "0",
+        "locked_at_bjt": "2026-07-17T13:05:00+08:00",
+        "kelly_fraction": "0.25",
+        "stake": stake,
         "status": ledger_module.PENDING,
     }
     row["bet_id"] = ledger_module.stable_bet_id(row)
@@ -248,7 +251,9 @@ def settled_value_parlay(report_date: str = "2026-07-17") -> dict:
         "odds_source": "sporttery",
         "odds_source_record_id": "odds-maturity-parlay",
         "odds_captured_at_bjt": "2026-07-17T13:00:00+08:00",
-        "stake": "0",
+        "locked_at_bjt": "2026-07-17T13:05:00+08:00",
+        "kelly_fraction": "0.25",
+        "stake": "10",
         "status": ledger_module.PENDING,
     }
     row["bet_id"] = ledger_module.stable_bet_id(row)
@@ -501,6 +506,82 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
             ("mismatched result identity", mismatched_result_identity),
             ("unsupported plan leg", unsupported_leg),
             ("same-match plan legs", same_match),
+        )
+        for name, row in cases:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    0, strategy._settled_sample_count([], [row], TARGET_DATE)
+                )
+
+    def test_settled_maturity_requires_valid_paid_or_observation_economics(self):
+        observation = settled_value_single(
+            "economic-observation", "had", THREE_WAY_SELECTIONS["h"]
+        )
+        paid_single = settled_value_single(
+            "economic-paid", "had", THREE_WAY_SELECTIONS["h"], stake="20"
+        )
+        paid_parlay = settled_value_parlay()
+        self.assertEqual(
+            1, strategy._settled_sample_count([], [observation], TARGET_DATE)
+        )
+        self.assertEqual(
+            1, strategy._settled_sample_count([paid_single], [], TARGET_DATE)
+        )
+        self.assertEqual(
+            2, strategy._settled_sample_count([paid_parlay], [], TARGET_DATE)
+        )
+
+        def changed_leg(row, **changes):
+            changed = deepcopy(row)
+            legs = json.loads(changed["legs_json"])
+            legs[0].update(changes)
+            changed["legs_json"] = json.dumps(legs, ensure_ascii=False)
+            return changed
+
+        cases = (
+            ("nonnumeric stake", {**paid_single, "stake": "not-money"}),
+            ("negative stake", {**paid_single, "stake": "-2"}),
+            ("odd stake", {**paid_single, "stake": "3"}),
+            ("single cap", {**paid_single, "stake": "202"}),
+            ("foreign paid source", {**paid_single, "odds_source": "external"}),
+            ("missing paid record", {**paid_single, "odds_source_record_id": ""}),
+            ("missing paid lock", {**paid_single, "locked_at_bjt": ""}),
+            ("post-lock paid capture", {
+                **paid_single,
+                "odds_captured_at_bjt": "2026-07-17T13:05:00.000001+08:00",
+            }),
+            ("missing paid locked odds", {**paid_single, "locked_odds": ""}),
+            ("paid odds mismatch", {**paid_single, "odds": "2.10"}),
+            ("invalid paid Kelly", {**paid_single, "kelly_fraction": "0"}),
+            ("foreign observation source", {
+                **observation, "odds_source": "external"
+            }),
+            ("missing observation record", {
+                **observation, "odds_source_record_id": ""
+            }),
+            ("missing observation lock", {
+                **observation, "locked_at_bjt": ""
+            }),
+            ("post-lock observation capture", {
+                **observation,
+                "odds_captured_at_bjt": "2026-07-17T13:05:00.000001+08:00",
+            }),
+            ("observation odds mismatch", {**observation, "odds": "2.10"}),
+            ("zero-stake parlay", {**paid_parlay, "stake": "0"}),
+            ("parlay stake cap", {**paid_parlay, "stake": "32"}),
+            ("missing parlay leg record", changed_leg(
+                paid_parlay, odds_source_record_id=""
+            )),
+            ("foreign parlay leg source", changed_leg(
+                paid_parlay, odds_source="external"
+            )),
+            ("post-lock parlay leg capture", changed_leg(
+                paid_parlay,
+                odds_captured_at_bjt="2026-07-17T13:05:00.000001+08:00",
+            )),
+            ("parlay product mismatch", {
+                **paid_parlay, "odds": "6.01", "locked_odds": "6.01"
+            }),
         )
         for name, row in cases:
             with self.subTest(name=name):
