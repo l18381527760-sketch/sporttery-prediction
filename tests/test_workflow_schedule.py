@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from betting_ledger import settle_ledger
+from betting_ledger import TERMINAL_STATUSES, settle_ledger, stable_bet_id
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -490,10 +490,10 @@ elif name == "generate_betting_plan.py":
             self.INVALID_LOCK_MESSAGE,
             "exit 1",
             "else",
-            'LOCKED_AT_BJT="$(date --iso-8601=seconds)"',
             'python import_sporttery.py --date "$TARGET_DATE"',
             'python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision',
             'python predict_today.py --date "$TARGET_DATE"',
+            'LOCKED_AT_BJT="$(date --iso-8601=seconds)"',
             'python generate_betting_plan.py --date "$TARGET_DATE" --generate-only --locked-at "$LOCKED_AT_BJT"',
             "python plan_lock.py lock \\",
             "--date \"$TARGET_DATE\" \\",
@@ -504,6 +504,97 @@ elif name == "generate_betting_plan.py":
         self.assert_commands_in_order(step, expected)
         self.assertEqual(1, step.count('LOCKED_AT_BJT="$(date --iso-8601=seconds)"'))
         self.assertNotIn("continue-on-error: true", step)
+
+    def test_decision_workflow_uses_active_v4_simulation_entrypoint(self):
+        config = json.loads((ROOT / "betting_config.json").read_text(encoding="utf-8"))
+        self.assertEqual("value-v4", config["strategy_version"])
+        self.assertEqual("active", config["value_strategy"]["activation_mode"])
+        self.assertEqual("simulation", config["simulation_account"]["mode"])
+        self.assertFalse(config["simulation_account"]["real_money_automation"])
+
+        step = self.step_block(
+            self.read_workflow("draw-alert-refresh.yml"),
+            "refresh",
+            "Refresh required decision plan",
+        )
+        command = (
+            'python generate_betting_plan.py --date "$TARGET_DATE" '
+            '--generate-only --locked-at "$LOCKED_AT_BJT"'
+        )
+        self.assertEqual(1, step.count(command))
+
+    def test_valid_lock_recovers_ingestion_after_post_lock_failure(self):
+        body = self.multiline_step_body(
+            self.read_workflow("draw-alert-refresh.yml"),
+            "refresh",
+            "Refresh required decision plan",
+        )
+        expected_calls = [
+            "import_sporttery.py",
+            "capture_odds_snapshot.py:decision",
+            "predict_today.py",
+            "generate_betting_plan.py",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_workflow_writer_stubs(root)
+            real_ledger = root / "betting_ledger_real.py"
+            shutil.copy2(root / "betting_ledger.py", real_ledger)
+            (root / "betting_ledger.py").write_text(
+                '''import os
+import runpy
+from pathlib import Path
+
+if os.environ.get("FAIL_INGEST") == "true":
+    raise SystemExit(17)
+runpy.run_path(str(Path(__file__).with_name("betting_ledger_real.py")), run_name="__main__")
+''',
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"FAIL_INGEST": "true"}):
+                first = self.run_workflow_body(body, root)
+            self.assertEqual(17, first.returncode, first.stderr)
+            self.assertEqual(expected_calls, self.writer_calls(root))
+
+            lock_path = root / "output" / "plan_lock_2026-07-16.json"
+            plan_path = root / "output" / "betting_plan_2026-07-16.csv"
+            odds_path = root / "data" / "sporttery_odds_2026-07-16.json"
+            ledger_path = root / "output" / "betting_ledger.csv"
+            self.assertTrue(lock_path.is_file())
+            self.assertFalse(ledger_path.exists())
+            lock_check = subprocess.run(
+                [sys.executable, "plan_lock.py", "is-locked", "--date", "2026-07-16"],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, lock_check.returncode, lock_check.stderr)
+            lock_before = lock_path.read_bytes()
+            plan_before = plan_path.read_bytes()
+            odds_before = odds_path.read_bytes()
+            with plan_path.open(encoding="utf-8-sig", newline="") as handle:
+                locked_plan = list(csv.DictReader(handle))
+            expected_bet_ids = [stable_bet_id(row) for row in locked_plan]
+            expected_locked_odds = [row["locked_odds"] for row in locked_plan]
+            expected_stakes = [row["stake"] for row in locked_plan]
+
+            second = self.run_workflow_body(body, root)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertEqual(expected_calls, self.writer_calls(root))
+            self.assertEqual(lock_before, lock_path.read_bytes())
+            self.assertEqual(plan_before, plan_path.read_bytes())
+            self.assertEqual(odds_before, odds_path.read_bytes())
+            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                recovered_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(locked_plan), len(recovered_rows))
+            self.assertEqual(expected_bet_ids, [row["bet_id"] for row in recovered_rows])
+            self.assertEqual(
+                expected_locked_odds,
+                [row["locked_odds"] for row in recovered_rows],
+            )
+            self.assertEqual(expected_stakes, [row["stake"] for row in recovered_rows])
 
     def test_decision_workflow_reuses_locked_portfolio_and_settles_idempotently(self):
         body = self.multiline_step_body(
@@ -559,7 +650,23 @@ elif name == "generate_betting_plan.py":
             }
             settle_ledger(root, results, settled_at)
             settled_bytes = ledger_path.read_bytes()
-            settle_ledger(root, results, settled_at)
+            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                settled_rows = list(csv.DictReader(handle))
+            self.assertTrue(all(row["status"] in TERMINAL_STATUSES for row in settled_rows))
+            conflicting_results = {
+                "workflow-match": {
+                    **results["workflow-match"],
+                    "home_goals": "0",
+                    "away_goals": "1",
+                    "source_record_id": "workflow-result-conflict",
+                    "captured_at_bjt": (settled_at + timedelta(minutes=5)).isoformat(),
+                }
+            }
+            settle_ledger(
+                root,
+                conflicting_results,
+                settled_at + timedelta(minutes=5),
+            )
             self.assertEqual(settled_bytes, ledger_path.read_bytes())
 
     def test_valid_decision_lock_survives_delayed_forecast_rerun_without_writers(self):

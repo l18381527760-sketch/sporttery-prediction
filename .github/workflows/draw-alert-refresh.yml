@@ -70,10 +70,10 @@ jobs:
               exit 1
             fi
           else
-            LOCKED_AT_BJT="$(date --iso-8601=seconds)"
             python import_sporttery.py --date "$TARGET_DATE"
             python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision
             python predict_today.py --date "$TARGET_DATE"
+            LOCKED_AT_BJT="$(date --iso-8601=seconds)"
             python generate_betting_plan.py --date "$TARGET_DATE" --generate-only --locked-at "$LOCKED_AT_BJT"
             python plan_lock.py lock \
               --date "$TARGET_DATE" \
