@@ -4,6 +4,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from betting_ledger import TERMINAL_STATUSES, settle_ledger, stable_bet_id
@@ -18,7 +19,7 @@ from strategy_controls import (
     simulation_account_state,
 )
 from value_candidates import ValueCandidate, build_candidates
-from value_portfolio import Portfolio, PortfolioLimits, allocate_portfolio
+from value_portfolio import Portfolio, PortfolioLimits, _validated_limits, allocate_portfolio
 
 
 ROOT = Path(__file__).resolve().parent
@@ -902,12 +903,14 @@ def _candidate_plan_row(
     market_type: str | None = None,
     play: str | None = None,
     selection: str | None = None,
-    odds: float | None = None,
+    odds: float | Decimal | None = None,
     probability: float | None = None,
     legs: list[dict] | None = None,
 ) -> dict:
     market_type = market_type or candidate.market_type
     odds = candidate.official_odds if odds is None else odds
+    odds_number = float(odds)
+    serialized_odds = format(odds, "f") if isinstance(odds, Decimal) else odds
     probability = candidate.conservative_probability if probability is None else probability
     row = {
         "date": candidate.date,
@@ -935,12 +938,12 @@ def _candidate_plan_row(
         "conservative_probability": probability,
         "edge": candidate.probability_edge,
         "value_edge": candidate.probability_edge,
-        "net_ev": probability * odds - 1.0,
-        "expected_value": probability * odds - 1.0,
-        "expected_return": probability * odds,
-        "expected_profit": stake * (probability * odds - 1.0),
-        "odds": odds,
-        "locked_odds": odds,
+        "net_ev": probability * odds_number - 1.0,
+        "expected_value": probability * odds_number - 1.0,
+        "expected_return": probability * odds_number,
+        "expected_profit": stake * (probability * odds_number - 1.0),
+        "odds": serialized_odds,
+        "locked_odds": serialized_odds,
         "locked_at_bjt": locked_at.isoformat(),
         "odds_source": candidate.odds_source,
         "odds_source_record_id": candidate.source_record_id,
@@ -977,16 +980,22 @@ def _portfolio_rows(portfolio: Portfolio, locked_at: datetime) -> list[dict]:
             {
                 "match_id": leg.match_id, "market_type": leg.market_type,
                 "selection": leg.selection, "line": "" if leg.line is None else str(leg.line),
-                "odds": leg.official_odds,
+                "odds": format(Decimal(str(leg.official_odds)), "f"),
+                "odds_source": leg.odds_source,
+                "odds_source_record_id": leg.source_record_id,
+                "odds_captured_at_bjt": leg.captured_at_bjt,
             }
             for leg in item.parlay.legs
         ]
+        combined_odds = Decimal("1")
+        for leg in legs:
+            combined_odds *= Decimal(leg["odds"])
         rows.append(_candidate_plan_row(
             item.parlay.legs[0], item.stake, locked_at=locked_at, portfolio_rank=item.rank,
             full_kelly=item.full_kelly, kelly_fraction=item.kelly_fraction,
             binding_limits=item.applied_limits, market_type="parlay", play="PARLAY",
             selection=" + ".join(leg.selection for leg in item.parlay.legs),
-            odds=item.parlay.combined_odds, probability=item.parlay.combined_probability, legs=legs,
+            odds=combined_odds, probability=item.parlay.combined_probability, legs=legs,
         ))
     return rows
 
@@ -994,7 +1003,7 @@ def _portfolio_rows(portfolio: Portfolio, locked_at: datetime) -> list[dict]:
 def _portfolio_audit(
     candidates: list[ValueCandidate],
     portfolio: Portfolio,
-    account: dict,
+    limits: PortfolioLimits,
     diagnostics: list[dict] | None = None,
 ) -> dict:
     counts = {market: sum(candidate.market_type == market for candidate in candidates) for market in ("had", "hhad", "ttg")}
@@ -1004,6 +1013,46 @@ def _portfolio_audit(
             item, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ),
     )
+    risk_checks = [
+        {"name": check.name, "value": check.value, "limit": check.limit, "passed": check.passed}
+        for check in portfolio.limit_checks
+    ]
+    check_names = {check["name"] for check in risk_checks}
+    selected = [*portfolio.singles, *portfolio.parlays]
+    stakes = [item.stake for item in selected if item.stake > 0]
+
+    def add_check(name: str, value: float, limit: float, passed: bool) -> None:
+        if name not in check_names:
+            risk_checks.append({
+                "name": name, "value": value, "limit": limit, "passed": passed,
+            })
+            check_names.add(name)
+
+    kelly_values = [item.kelly_fraction for item in selected]
+    add_check(
+        "kelly_fraction_cap",
+        float(max(kelly_values, default=0.0)),
+        0.25,
+        all(value <= 0.25 for value in kelly_values),
+    )
+    add_check(
+        "stake_unit",
+        float(sum(1 for stake in stakes if stake % limits.stake_unit)),
+        0.0,
+        all(stake % limits.stake_unit == 0 for stake in stakes),
+    )
+    add_check(
+        "max_single_count",
+        float(len(portfolio.singles)),
+        float(limits.max_single_count),
+        len(portfolio.singles) <= limits.max_single_count,
+    )
+    add_check(
+        "max_parlay_count",
+        float(len(portfolio.parlays)),
+        1.0,
+        len(portfolio.parlays) <= 1,
+    )
     return {
         "candidate_counts": counts,
         "rejection_reasons": [
@@ -1011,16 +1060,25 @@ def _portfolio_audit(
             *candidate_diagnostics,
         ],
         "selected_shadow": [],
-        "risk_checks": [
-            {"name": check.name, "value": check.value, "limit": check.limit, "passed": check.passed}
-            for check in portfolio.limit_checks
-        ],
+        "risk_checks": risk_checks,
         "risk_caps": {
-            "max_match_exposure": 200,
-            "max_daily_stake": 500,
-            "max_daily_combo_stake": 30,
-            "monthly_budget_cap": account.get("monthly_budget_cap", 5000),
-            "monthly_stop_loss": account.get("monthly_stop_loss", 5000),
+            "bankroll": limits.bankroll,
+            "reference_bankroll": limits.bankroll,
+            "kelly_fraction": limits.kelly_fraction,
+            "stake_unit": limits.stake_unit,
+            "max_match_exposure": limits.max_match_exposure,
+            "max_single_stake": limits.max_single_stake,
+            "single_budget_cap": limits.single_budget_cap,
+            "max_single_count": limits.max_single_count,
+            "max_parlay_count": 1,
+            "max_parlay_stake": limits.max_parlay_stake,
+            "max_daily_combo_stake": limits.max_parlay_stake,
+            "max_daily_stake": limits.max_daily_stake,
+            "monthly_budget_cap": limits.monthly_budget_cap,
+            "monthly_stop_loss": limits.monthly_stop_loss,
+            "settled_samples": limits.settled_samples,
+            "strict_until_samples": limits.strict_until_samples,
+            "strict_mode": limits.settled_samples < limits.strict_until_samples,
         },
     }
 
@@ -1056,15 +1114,16 @@ def build_value_v4_plan(target_date: date, *, locked_at: datetime) -> tuple[list
         calibrations,
         diagnostics=diagnostics,
     )
-    portfolio = allocate_portfolio(
-        candidates, _v4_limits(config, account, settled_samples), account
-    )
+    limits = _validated_limits(_v4_limits(config, account, settled_samples))
+    if limits is None:
+        raise ValueError("value-v4 portfolio limits are invalid")
+    portfolio = allocate_portfolio(candidates, limits, account)
     plan = _portfolio_rows(portfolio, locked_time)
     observations = [
         _candidate_plan_row(candidate, 0, locked_at=locked_time, portfolio_rank=0)
         for candidate in sorted(candidates, key=lambda item: item.candidate_id)
     ]
-    audit = _portfolio_audit(candidates, portfolio, account, diagnostics)
+    audit = _portfolio_audit(candidates, portfolio, limits, diagnostics)
     audit["settled_samples"] = settled_samples
     audit["selected_shadow"] = [
         {"bet_id": row["bet_id"], "stake": row["stake"], "market_type": row["market_type"]}

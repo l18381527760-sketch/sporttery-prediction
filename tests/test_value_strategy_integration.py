@@ -6,6 +6,7 @@ import unittest
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -522,6 +523,35 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
                 self.assertTrue(observations)
                 self.assertTrue(all(float(row["stake"]) == 0 for row in observations))
 
+    def test_generated_parlay_legs_persist_official_evidence(self):
+        candidates = []
+        for index in range(6):
+            official_odds = (Decimal("2.123456789") if index % 2 else Decimal("3.987654321"))
+            candidates.append(replace(
+                candidate(f"evidence-{index}"),
+                official_odds=float(official_odds),
+                expected_value=0.60 * float(official_odds) - 1.0,
+            ))
+        with self.strategy_context(value_config()):
+            with (
+                patch.object(strategy, "build_legacy_value_plan", return_value=([], [])),
+                patch.object(strategy, "build_candidates", return_value=candidates),
+            ):
+                outputs = strategy.build_strategy_outputs(TARGET_DATE, locked_at=LOCKED_AT)
+
+        parlay = next(row for row in outputs.shadow_plan if row["market_type"] == "parlay")
+        legs = json.loads(parlay["legs_json"])
+        self.assertEqual(2, len(legs))
+        exact_product = Decimal("1")
+        for leg in legs:
+            self.assertEqual("sporttery", leg["odds_source"])
+            self.assertEqual(f"decision-{leg['match_id']}", leg["odds_source_record_id"])
+            self.assertEqual(CAPTURED_AT, leg["odds_captured_at_bjt"])
+            self.assertGreater(float(leg["odds"]), 1.0)
+            exact_product *= Decimal(leg["odds"])
+        self.assertEqual(exact_product, Decimal(str(parlay["odds"])))
+        self.assertEqual(exact_product, Decimal(str(parlay["locked_odds"])))
+
     def test_unsupported_play_never_enters_plan_and_is_audited(self):
         invalid = replace(candidate("bad"), play="SCORE")
         with self.strategy_context(value_config()):
@@ -589,8 +619,33 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
         self.assertLessEqual(len([row for row in selected if row["market_type"] != "parlay"]), 2)
         self.assertLessEqual(sum(int(row["stake"]) for row in selected if row["market_type"] == "parlay"), 30)
         self.assertTrue(all(check["passed"] for check in outputs.audit["risk_checks"]))
-        self.assertEqual(200, outputs.audit["risk_caps"]["max_match_exposure"])
-        self.assertEqual(5000, outputs.audit["risk_caps"]["monthly_budget_cap"])
+        self.assertEqual({
+            "bankroll": 5000.0,
+            "reference_bankroll": 5000.0,
+            "kelly_fraction": 0.25,
+            "stake_unit": 2,
+            "max_match_exposure": 200,
+            "max_single_stake": 200,
+            "single_budget_cap": 200,
+            "max_single_count": 2,
+            "max_parlay_count": 1,
+            "max_parlay_stake": 30,
+            "max_daily_combo_stake": 30,
+            "max_daily_stake": 500,
+            "monthly_budget_cap": 5000,
+            "monthly_stop_loss": 5000,
+            "settled_samples": 0,
+            "strict_until_samples": 100,
+            "strict_mode": True,
+        }, outputs.audit["risk_caps"])
+        checks = {check["name"]: check for check in outputs.audit["risk_checks"]}
+        self.assertEqual(len(checks), len(outputs.audit["risk_checks"]))
+        self.assertTrue(checks["kelly_fraction_cap"]["passed"])
+        self.assertLessEqual(checks["kelly_fraction_cap"]["value"], 0.25)
+        self.assertTrue(checks["stake_unit"]["passed"])
+        self.assertTrue(checks["max_single_count"]["passed"])
+        self.assertTrue(checks["max_parlay_count"]["passed"])
+        self.assertLessEqual(checks["max_parlay_count"]["value"], 1)
 
     def strategy_context(self, config):
         folder = tempfile.TemporaryDirectory()

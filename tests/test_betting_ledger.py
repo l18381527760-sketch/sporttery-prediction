@@ -5,7 +5,9 @@ import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
+import betting_ledger as ledger_module
 from betting_ledger import (
     ABNORMAL,
     LOST,
@@ -105,7 +107,74 @@ def finished(match_id, home, away, source_record_id=None):
     }
 
 
+def v4_leg(match_id, market_type, selection, odds):
+    return {
+        "match_id": match_id,
+        "market_type": market_type,
+        "selection": selection,
+        "line": "",
+        "odds": odds,
+        "odds_source": "sporttery",
+        "odds_source_record_id": f"odds-{match_id}-{market_type}",
+        "odds_captured_at_bjt": "2026-07-16T13:30:00+08:00",
+    }
+
+
 class IdentityAndIngestionTest(unittest.TestCase):
+    def test_value_v4_parlay_requires_leg_evidence_and_exact_decimal_product(self):
+        legs = [
+            v4_leg("1001", "had", "胜", "2.00"),
+            v4_leg("1002", "ttg", "2球", "3.00"),
+        ]
+        row = plan_row(
+            play="PARLAY",
+            market_type="parlay",
+            odds="6.00",
+            locked_odds="6.00",
+            legs_json=json.dumps(legs, ensure_ascii=False),
+        )
+
+        self.assertEqual(1, len(ingest_locked_plan([], [row], lock())))
+        identity_variant = copy.deepcopy(row)
+        identity_legs = json.loads(identity_variant["legs_json"])
+        identity_legs[1].update({
+            "odds": "9.99",
+            "odds_source": "zgzcw",
+            "odds_source_record_id": "changed-record",
+            "odds_captured_at_bjt": "2026-07-16T13:31:00+08:00",
+        })
+        identity_variant["legs_json"] = json.dumps(identity_legs, ensure_ascii=False)
+        identity_variant["odds"] = "19.98"
+        identity_variant["locked_odds"] = "19.98"
+        self.assertEqual(stable_bet_id(row), stable_bet_id(identity_variant))
+
+        invalid_rows = []
+        for name, field, value in (
+            ("inconsistent domestic source", "odds_source", "zgzcw"),
+            ("unsupported source", "odds_source", "external"),
+            ("missing record", "odds_source_record_id", ""),
+            ("naive capture", "odds_captured_at_bjt", "2026-07-16T13:30:00"),
+            ("tampered leg odds", "odds", "3.01"),
+            ("nonfinite leg odds", "odds", "NaN"),
+            ("invalid leg odds", "odds", "1.00"),
+        ):
+            changed = copy.deepcopy(row)
+            changed_legs = json.loads(changed["legs_json"])
+            changed_legs[1][field] = value
+            changed["legs_json"] = json.dumps(changed_legs, ensure_ascii=False)
+            invalid_rows.append((name, changed))
+        missing_odds = copy.deepcopy(row)
+        missing_legs = json.loads(missing_odds["legs_json"])
+        del missing_legs[1]["odds"]
+        missing_odds["legs_json"] = json.dumps(missing_legs, ensure_ascii=False)
+        invalid_rows.append(("missing leg odds", missing_odds))
+        combined = {**row, "odds": "6.01", "locked_odds": "6.01"}
+        invalid_rows.append(("tampered combined odds", combined))
+
+        for name, invalid in invalid_rows:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                ingest_locked_plan([], [invalid], lock())
+
     def test_value_v4_ingestion_rejects_invalid_portfolio_semantics(self):
         valid_legs = [
             {"match_id": "1001", "market_type": "had", "selection": "胜", "line": ""},
@@ -528,10 +597,10 @@ class SettlementTest(unittest.TestCase):
 
     def test_two_leg_parlay_requires_both_legs_and_handles_loss_and_refunds(self):
         legs = [
-            {"match_id": "1001", "market_type": "had", "selection": "胜", "line": "", "odds": "2.00"},
-            {"match_id": "1002", "market_type": "ttg", "selection": "2球", "line": "", "odds": "3.00"},
+            v4_leg("1001", "had", "胜", "2.00"),
+            v4_leg("1002", "ttg", "2球", "3.00"),
         ]
-        row = plan_row(play="胜负串", market_type=" PARLAY ", legs_json=json.dumps(legs, ensure_ascii=False), locked_odds="6.00", stake="10")
+        row = plan_row(play="胜负串", market_type=" PARLAY ", legs_json=json.dumps(legs, ensure_ascii=False), odds="6.00", locked_odds="6.00", stake="10")
         won = self.settle_one(row, {"1001": finished("1001", 1, 0), "1002": finished("1002", 2, 0)})
         self.assertEqual((WON, "60.00", "50.00"), (won["status"], won["return"], won["profit"]))
 
@@ -601,13 +670,14 @@ class SettlementTest(unittest.TestCase):
 
     def test_abnormal_parlay_reopens_by_offending_leg_then_requires_ordinary_settlement(self):
         legs = [
-            {"match_id": "1001", "market_type": "had", "selection": "胜", "line": "", "odds": "2.00"},
-            {"match_id": "1002", "market_type": "ttg", "selection": "2球", "line": "", "odds": "3.00"},
+            v4_leg("1001", "had", "胜", "2.00"),
+            v4_leg("1002", "ttg", "2球", "3.00"),
         ]
         pending = ingest_locked_plan([], [plan_row(
             play="2-leg parlay",
             market_type="parlay",
             legs_json=json.dumps(legs, ensure_ascii=False),
+            odds="6.00",
             locked_odds="6.00",
             stake="10",
         )], lock())
@@ -649,6 +719,77 @@ class SettlementTest(unittest.TestCase):
 
 
 class LockedIngestCommandTest(unittest.TestCase):
+    def _write_plan(self, path, row):
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(row))
+            writer.writeheader()
+            writer.writerow(row)
+
+    def _prepare_locked_plan(self, root, row):
+        output = root / "output"
+        data = root / "data"
+        output.mkdir()
+        data.mkdir()
+        plan_path = output / "betting_plan_2026-07-16.csv"
+        self._write_plan(plan_path, row)
+        odds_path = data / "sporttery_odds_2026-07-16.json"
+        odds_path.write_text("{}", encoding="utf-8")
+        lock_payload = {
+            "schema_version": 1,
+            "report_date": "2026-07-16",
+            "locked_at_bjt": LOCKED_AT.isoformat(),
+            "plan_path": "output/betting_plan_2026-07-16.csv",
+            "plan_sha256": sha256_file(plan_path),
+            "odds_path": "data/sporttery_odds_2026-07-16.json",
+            "odds_sha256": sha256_file(odds_path),
+            "odds_source": "sporttery",
+        }
+        (output / "plan_lock_2026-07-16.json").write_text(
+            json.dumps(lock_payload), encoding="utf-8"
+        )
+        return plan_path
+
+    def test_ingest_rejects_plan_bytes_changed_after_lock_validation(self):
+        target_date = date(2026, 7, 16)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self._prepare_locked_plan(root, plan_row())
+            tampered_path = root / "tampered.csv"
+            self._write_plan(tampered_path, plan_row(stake="99"))
+            with (
+                patch.object(
+                    ledger_module, "_read_plan_bytes", return_value=tampered_path.read_bytes()
+                ) as read_bytes,
+                self.assertRaises(ValueError),
+            ):
+                ingest_date(root, target_date)
+
+        read_bytes.assert_called_once()
+
+    def test_ingest_parses_verified_captured_bytes_if_file_changes_after_read(self):
+        target_date = date(2026, 7, 16)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            plan_path = self._prepare_locked_plan(root, plan_row())
+            tampered_path = root / "tampered.csv"
+            self._write_plan(tampered_path, plan_row(stake="99"))
+            tampered_bytes = tampered_path.read_bytes()
+
+            def capture_then_change(path):
+                captured = path.read_bytes()
+                path.write_bytes(tampered_bytes)
+                return captured
+
+            with patch.object(
+                ledger_module, "_read_plan_bytes", side_effect=capture_then_change
+            ) as read_bytes:
+                ledger_path = ingest_date(root, target_date)
+            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+
+        read_bytes.assert_called_once_with(plan_path)
+        self.assertEqual("20", rows[0]["stake"])
+
     def test_ingest_reads_only_the_matching_valid_locked_paid_plan(self):
         target_date = date(2026, 7, 16)
         row = plan_row()

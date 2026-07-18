@@ -1,6 +1,7 @@
 import argparse
 import csv
 import hashlib
+import io
 import json
 import os
 from datetime import date, datetime, timezone
@@ -54,7 +55,7 @@ def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: d
     lock_source = _validate_lock(lock)
     if not isinstance(existing_rows, list) or not isinstance(plan_rows, list):
         raise ValueError("ledger and plan rows must be lists")
-    _validate_value_v4_portfolio(plan_rows)
+    _validate_value_v4_portfolio(plan_rows, lock_source)
 
     ingested: list[dict] = []
     known_ids: set[str] = set()
@@ -79,7 +80,7 @@ def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: d
     return ingested
 
 
-def _validate_value_v4_portfolio(plan_rows: list[dict]) -> None:
+def _validate_value_v4_portfolio(plan_rows: list[dict], lock_source: str) -> None:
     parlays = 0
     for row in plan_rows:
         if not isinstance(row, dict) or row.get("strategy_version") != "value-v4":
@@ -90,6 +91,7 @@ def _validate_value_v4_portfolio(plan_rows: list[dict]) -> None:
         if market_type == "parlay":
             parlays += 1
             legs = _canonical_legs(row)
+            raw_legs = _raw_legs(row)
             if len({leg["match_id"] for leg in legs}) != 2:
                 raise ValueError("value-v4 parlay legs must use distinct matches")
             for leg in legs:
@@ -98,6 +100,26 @@ def _validate_value_v4_portfolio(plan_rows: list[dict]) -> None:
                 _validate_value_v4_market(
                     leg["market_type"], leg["selection"], leg["line"], "parlay leg"
                 )
+            combined_odds = Decimal("1")
+            for leg in raw_legs:
+                source = _required_text(
+                    leg.get("odds_source"), "parlay leg odds_source"
+                ).lower()
+                if source not in DOMESTIC_ODDS_SOURCES or source != lock_source:
+                    raise ValueError("value-v4 parlay leg source must match the lock")
+                _required_text(
+                    leg.get("odds_source_record_id"),
+                    "parlay leg odds_source_record_id",
+                )
+                _aware_iso(
+                    leg.get("odds_captured_at_bjt"),
+                    "parlay leg odds_captured_at_bjt",
+                )
+                combined_odds *= _decimal_odds(leg.get("odds"), "parlay leg odds")
+            locked_odds = _decimal_odds(row.get("locked_odds"), "locked_odds")
+            display_odds = _decimal_odds(row.get("odds"), "odds")
+            if combined_odds != locked_odds or locked_odds != display_odds:
+                raise ValueError("value-v4 parlay odds must equal the exact leg product")
             continue
         if market_type not in VALUE_V4_SINGLE_MARKETS:
             raise ValueError("value-v4 single market is unsupported")
@@ -129,6 +151,18 @@ def _validate_value_v4_market(
             ) from exc
     elif line:
         raise ValueError(f"value-v4 HAD/TTG {context} cannot have a line")
+
+
+def _decimal_odds(value: object, name: str) -> Decimal:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be finite decimal odds greater than one")
+    try:
+        odds = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{name} must be finite decimal odds greater than one") from exc
+    if not odds.is_finite() or odds <= Decimal("1"):
+        raise ValueError(f"{name} must be finite decimal odds greater than one")
+    return odds
 
 
 def settle_pending(
@@ -208,7 +242,10 @@ def ingest_date(root: Path, target_date: date) -> Path:
         raise ValueError("a valid matching plan lock is required before ingestion")
     plan_path = root / expected_plan
     ledger_path = root / "output" / "betting_ledger.csv"
-    plan_rows = _read_csv(plan_path)
+    plan_bytes = _read_plan_bytes(plan_path)
+    if hashlib.sha256(plan_bytes).hexdigest() != lock["plan_sha256"].lower():
+        raise ValueError("paid plan bytes changed after lock validation")
+    plan_rows = _parse_csv_bytes(plan_bytes)
     existing_rows = _read_csv(ledger_path)
     return write_ledger_atomic(ledger_path, ingest_locked_plan(existing_rows, plan_rows, lock))
 
@@ -223,6 +260,19 @@ def _read_csv(path: Path) -> list[dict]:
     if not path.exists():
         return []
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _read_plan_bytes(path: Path) -> bytes:
+    return path.read_bytes()
+
+
+def _parse_csv_bytes(payload: bytes) -> list[dict]:
+    try:
+        text = payload.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("paid plan must be UTF-8 CSV") from exc
+    with io.StringIO(text, newline="") as handle:
         return list(csv.DictReader(handle))
 
 
