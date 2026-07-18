@@ -80,14 +80,22 @@ def stable_bet_id(plan_row: dict) -> str:
     return _hash_identity(_identity_payload(plan_row))
 
 
-def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: dict) -> list[dict]:
+def ingest_locked_plan(
+    existing_rows: list[dict],
+    plan_rows: list[dict],
+    lock: dict,
+    *,
+    canonical_evidence: dict[tuple[str, str], str] | None = None,
+) -> list[dict]:
     """Migrate legacy rows and append only previously unseen locked plan identities."""
     lock_source = _validate_lock(lock)
     locked_at = _aware_datetime(lock["locked_at_bjt"], "lock locked_at_bjt")
     if not isinstance(existing_rows, list) or not isinstance(plan_rows, list):
         raise ValueError("ledger and plan rows must be lists")
 
-    ingested, known_keys = _normalize_existing_rows(existing_rows)
+    ingested, known_keys = _normalize_existing_rows(
+        existing_rows, canonical_evidence=canonical_evidence
+    )
 
     new_rows: list[tuple[dict, str]] = []
     plan_ids: set[str] = set()
@@ -714,14 +722,64 @@ def ingest_date(root: Path, target_date: date) -> Path:
         raise ValueError("paid plan bytes changed after lock validation")
     plan_rows = _parse_csv_bytes(plan_bytes)
     existing_rows = _read_csv(ledger_path)
-    return write_ledger_atomic(ledger_path, ingest_locked_plan(existing_rows, plan_rows, lock))
+    canonical_evidence = _load_locked_plan_evidence(root, existing_rows)
+    return write_ledger_atomic(
+        ledger_path,
+        ingest_locked_plan(
+            existing_rows,
+            plan_rows,
+            lock,
+            canonical_evidence=canonical_evidence,
+        ),
+    )
 
 
 def settle_ledger(root: Path, results: dict, settled_at: datetime) -> Path:
     """Settle existing canonical ledger rows without regenerating any plan."""
-    ledger_path = Path(root) / "output" / "betting_ledger.csv"
-    rows, _known_keys = _normalize_existing_rows(_read_csv(ledger_path))
+    root = Path(root)
+    ledger_path = root / "output" / "betting_ledger.csv"
+    source_rows = _read_csv(ledger_path)
+    canonical_evidence = _load_locked_plan_evidence(root, source_rows)
+    rows, _known_keys = _normalize_existing_rows(
+        source_rows, canonical_evidence=canonical_evidence
+    )
     return write_ledger_atomic(ledger_path, settle_pending(rows, results, settled_at))
+
+
+def _load_locked_plan_evidence(
+    root: Path, existing_rows: list[dict]
+) -> dict[tuple[str, str], str]:
+    locally_validated, _known_keys = _normalize_existing_rows(existing_rows)
+    report_dates = {
+        _strict_canonical_date(row.get("report_date"), "report_date")
+        for row in locally_validated
+        if isinstance(row, dict)
+        and row.get("strategy_version") in NEW_PAID_STRATEGY_VERSIONS
+    }
+    evidence: dict[tuple[str, str], str] = {}
+    for report_date in sorted(report_dates):
+        target_date = date.fromisoformat(report_date)
+        lock = read_valid_lock(root, target_date)
+        expected_plan = f"output/betting_plan_{report_date}.csv"
+        if lock is None or lock.get("plan_path") != expected_plan:
+            raise ValueError("canonical ledger row lacks valid locked plan evidence")
+        lock_source = _validate_lock(lock)
+        plan_path = Path(root) / expected_plan
+        plan_bytes = _read_plan_bytes(plan_path)
+        if hashlib.sha256(plan_bytes).hexdigest() != lock["plan_sha256"].lower():
+            raise ValueError("canonical ledger locked plan evidence hash differs")
+        plan_rows = _parse_csv_bytes(plan_bytes)
+        plan_ids: set[str] = set()
+        for plan_row in plan_rows:
+            if plan_row.get("date") != report_date:
+                raise ValueError("locked plan evidence date differs")
+            bet_id = stable_bet_id(plan_row)
+            if bet_id in plan_ids:
+                raise ValueError("duplicate canonical identity in locked plan evidence")
+            plan_ids.add(bet_id)
+            expected_row = _new_locked_row(plan_row, lock, lock_source, bet_id)
+            evidence[(report_date, bet_id)] = expected_row["row_payload_sha256"]
+    return evidence
 
 
 def _read_csv(path: Path) -> list[dict]:
@@ -854,6 +912,8 @@ def _existing_dedupe_key(row: dict) -> tuple[str, str]:
 
 def _normalize_existing_rows(
     existing_rows: list[dict],
+    *,
+    canonical_evidence: dict[tuple[str, str], str] | None = None,
 ) -> tuple[list[dict], set[tuple[str, str]]]:
     normalized: list[dict] = []
     known_keys: set[tuple[str, str]] = set()
@@ -868,6 +928,10 @@ def _normalize_existing_rows(
                 raise ValueError(f"invalid existing canonical paid row: {exc}") from exc
             row = dict(source_row)
         else:
+            if _looks_like_canonical_paid_row(source_row):
+                raise ValueError(
+                    "canonical-shaped row cannot use legacy migration after strategy downgrade"
+                )
             _validate_existing_legacy_economics(source_row)
             row = _migrate_existing_row(source_row)
         key_kind, identity_key = _existing_dedupe_key(row)
@@ -881,9 +945,35 @@ def _normalize_existing_rows(
             continue
         known_keys.add(dedupe_key)
         if key_kind == "canonical":
+            if canonical_evidence is not None:
+                evidence_key = (
+                    _strict_canonical_date(row.get("report_date"), "report_date"),
+                    identity_key,
+                )
+                if canonical_evidence.get(evidence_key) != row.get(
+                    "row_payload_sha256"
+                ):
+                    raise ValueError(
+                        "canonical row payload differs from locked plan evidence anchor"
+                    )
             canonical_states[identity_key] = _existing_canonical_state(row)
         normalized.append(row)
     return normalized, known_keys
+
+
+def _looks_like_canonical_paid_row(row: dict) -> bool:
+    if row.get("row_payload_sha256") not in (None, ""):
+        return True
+    if row.get("plan_sha256") not in (None, ""):
+        return True
+    evidence_fields = (
+        "report_date",
+        "locked_at_bjt",
+        "odds_source_record_id",
+        "odds_captured_at_bjt",
+        "locked_odds",
+    )
+    return all(row.get(field) not in (None, "") for field in evidence_fields)
 
 
 def _validate_existing_canonical_paid_row(row: dict) -> None:

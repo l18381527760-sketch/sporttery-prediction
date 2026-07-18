@@ -46,22 +46,126 @@ class ImportManifestTest(unittest.TestCase):
                 self.assertEqual(first_bytes, second.read_bytes())
                 self.assertEqual("sporttery", verified["source"])
                 self.assertEqual(TARGET_DATE.isoformat(), verified["target_date"])
-                self.assertEqual("data/fixtures.csv", verified["fixtures"]["path"])
                 self.assertEqual(
-                    "data/sporttery_odds_2026-07-16.json",
+                    "data/import_extracts/2026-07-16/fixtures.csv",
+                    verified["fixtures"]["path"],
+                )
+                self.assertEqual(
+                    "data/import_extracts/2026-07-16/odds.json",
                     verified["odds"]["path"],
                 )
 
-                odds.write_text("{}\n", encoding="utf-8")
+                immutable_odds = root / verified["odds"]["path"]
+                immutable_odds.write_text("{}\n", encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "hash mismatch"):
                     import_sporttery.read_valid_import_manifest(root, TARGET_DATE)
-                odds.write_text(
+                immutable_odds.write_text(
                     '{"001":{"had":{"h":"2.00"}}}\n', encoding="utf-8"
                 )
                 with self.assertRaisesRegex(ValueError, "conflicting import manifest"):
                     import_sporttery.write_import_manifest(
                         "zgzcw", TARGET_DATE, fixtures, odds, imported_at
                     )
+
+    def test_next_day_import_does_not_invalidate_prior_date_extracts(self):
+        day_two = TARGET_DATE + timedelta(days=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            data_dir.mkdir()
+            fixtures = data_dir / "fixtures.csv"
+            fixtures.write_text(
+                "date,match_id\n2026-07-16,day-one\n", encoding="utf-8"
+            )
+            day_one_odds = data_dir / "sporttery_odds_2026-07-16.json"
+            day_one_odds.write_text('{"day-one":{}}\n', encoding="utf-8")
+
+            with patch.object(import_sporttery, "DATA_DIR", data_dir):
+                import_sporttery.write_import_manifest(
+                    "sporttery", TARGET_DATE, fixtures, day_one_odds,
+                    datetime(2026, 7, 16, 13, tzinfo=BJT),
+                )
+                fixtures.write_text(
+                    "date,match_id\n2026-07-17,day-two\n", encoding="utf-8"
+                )
+                day_two_odds = data_dir / "sporttery_odds_2026-07-17.json"
+                day_two_odds.write_text('{"day-two":{}}\n', encoding="utf-8")
+                import_sporttery.write_import_manifest(
+                    "zgzcw", day_two, fixtures, day_two_odds,
+                    datetime(2026, 7, 17, 13, tzinfo=BJT),
+                )
+
+                day_one = import_sporttery.read_valid_import_manifest(
+                    root, TARGET_DATE
+                )
+                day_two_payload = import_sporttery.read_valid_import_manifest(
+                    root, day_two
+                )
+
+            self.assertNotEqual(
+                day_one["fixtures"]["path"], day_two_payload["fixtures"]["path"]
+            )
+            self.assertIn("2026-07-16", day_one["fixtures"]["path"])
+            self.assertIn("2026-07-17", day_two_payload["fixtures"]["path"])
+
+    def test_same_date_manifest_recovers_changed_shared_files_without_refetch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            data_dir.mkdir()
+            fixtures = data_dir / "fixtures.csv"
+            odds = data_dir / "sporttery_odds_2026-07-16.json"
+            fixtures.write_text(
+                "date,match_id\n2026-07-16,first\n", encoding="utf-8"
+            )
+            odds.write_text('{"first":{}}\n', encoding="utf-8")
+            with patch.object(import_sporttery, "DATA_DIR", data_dir):
+                manifest = import_sporttery.write_import_manifest(
+                    "sporttery", TARGET_DATE, fixtures, odds,
+                    datetime(2026, 7, 16, 13, tzinfo=BJT),
+                )
+                manifest_before = manifest.read_bytes()
+                fixtures_before = fixtures.read_bytes()
+                odds_before = odds.read_bytes()
+                fixtures.write_text(
+                    "date,match_id\n2026-07-16,partial-change\n", encoding="utf-8"
+                )
+                odds.write_text('{"partial-change":{}}\n', encoding="utf-8")
+                with (
+                    patch.object(sys, "argv", [
+                        "import_sporttery.py", "--date", "2026-07-16"
+                    ]),
+                    patch.object(
+                        import_sporttery,
+                        "fetch_selling_matches",
+                        side_effect=AssertionError("existing import was refetched"),
+                    ),
+                    patch.object(
+                        import_sporttery,
+                        "fetch_zgzcw_matches",
+                        side_effect=AssertionError("existing import used fallback"),
+                    ),
+                    patch.object(
+                        import_sporttery,
+                        "fetch_espn_matches",
+                        side_effect=AssertionError("existing import used ESPN"),
+                    ),
+                    patch.object(
+                        import_sporttery,
+                        "write_fixtures",
+                        side_effect=AssertionError("new fixture extract was generated"),
+                    ),
+                    patch.object(
+                        import_sporttery,
+                        "write_odds_data",
+                        side_effect=AssertionError("new odds extract was generated"),
+                    ),
+                ):
+                    self.assertEqual(0, import_sporttery.main())
+
+            self.assertEqual(manifest_before, manifest.read_bytes())
+            self.assertEqual(fixtures_before, fixtures.read_bytes())
+            self.assertEqual(odds_before, odds.read_bytes())
 
 
 class ImportSportteryResponseValidationTest(unittest.TestCase):

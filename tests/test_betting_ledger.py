@@ -97,6 +97,23 @@ def lock(**overrides):
     return payload
 
 
+def locked_plan_rows(root: Path, plan_rows: list[dict]) -> tuple[dict, list[dict]]:
+    output = root / "output"
+    output.mkdir(parents=True, exist_ok=True)
+    plan_path = output / "betting_plan_2026-07-16.csv"
+    fieldnames = list(dict.fromkeys(key for row in plan_rows for key in row))
+    with plan_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(plan_rows)
+    lock_payload = lock(
+        plan_path="output/betting_plan_2026-07-16.csv",
+        plan_sha256=sha256_file(plan_path),
+    )
+    canonical = ingest_locked_plan([], plan_rows, lock_payload)
+    return lock_payload, canonical
+
+
 def finished(
     match_id,
     home,
@@ -412,23 +429,27 @@ class IdentityAndIngestionTest(unittest.TestCase):
         plain = {**plus, "market_line": "1"}
         self.assertEqual(stable_bet_id(plus), stable_bet_id(plain))
 
-        first = ingest_locked_plan([], [plus], lock())[0]
-        equivalent = ingest_locked_plan([], [plain], lock())[0]
-        self.assertEqual(
-            [first], ingest_locked_plan([first, equivalent], [], lock())
-        )
-        with self.assertRaisesRegex(ValueError, "payload digest"):
-            ingest_locked_plan(
-                [first, {**equivalent, "stake": "22"}], [], lock()
-            )
-
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
+            lock_payload, canonical = locked_plan_rows(root, [plus])
+            first = canonical[0]
+            equivalent = ingest_locked_plan([], [plain], lock_payload)[0]
+            self.assertEqual(
+                [first],
+                ingest_locked_plan([first, equivalent], [], lock_payload),
+            )
+            with self.assertRaisesRegex(ValueError, "payload digest"):
+                ingest_locked_plan(
+                    [first, {**equivalent, "stake": "22"}], [], lock_payload
+                )
             ledger_path = root / "output" / "betting_ledger.csv"
             write_ledger_atomic(ledger_path, [first, equivalent])
-            ledger_module.settle_ledger(
-                root, {"1001": finished("1001", 1, 1)}, SETTLED_AT
-            )
+            with patch.object(
+                ledger_module, "read_valid_lock", return_value=lock_payload
+            ):
+                ledger_module.settle_ledger(
+                    root, {"1001": finished("1001", 1, 1)}, SETTLED_AT
+                )
             with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
                 rows = list(csv.DictReader(handle))
         self.assertEqual(1, len(rows))
@@ -449,25 +470,29 @@ class IdentityAndIngestionTest(unittest.TestCase):
         plain["legs_json"] = json.dumps(plain_legs, ensure_ascii=False)
         self.assertEqual(stable_bet_id(plus), stable_bet_id(plain))
 
-        first = ingest_locked_plan([], [plus], lock())[0]
-        equivalent = ingest_locked_plan([], [plain], lock())[0]
-        self.assertEqual(
-            [first], ingest_locked_plan([first, equivalent], [], lock())
-        )
-        with self.assertRaisesRegex(ValueError, "payload digest"):
-            ingest_locked_plan(
-                [first, {**equivalent, "stake": "12"}], [], lock()
-            )
-
         results = {
             "hhad-alias-1": finished("hhad-alias-1", 1, 1),
             "hhad-alias-2": finished("hhad-alias-2", 2, 0),
         }
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
+            lock_payload, canonical = locked_plan_rows(root, [plus])
+            first = canonical[0]
+            equivalent = ingest_locked_plan([], [plain], lock_payload)[0]
+            self.assertEqual(
+                [first],
+                ingest_locked_plan([first, equivalent], [], lock_payload),
+            )
+            with self.assertRaisesRegex(ValueError, "payload digest"):
+                ingest_locked_plan(
+                    [first, {**equivalent, "stake": "12"}], [], lock_payload
+                )
             ledger_path = root / "output" / "betting_ledger.csv"
             write_ledger_atomic(ledger_path, [first, equivalent])
-            ledger_module.settle_ledger(root, results, SETTLED_AT)
+            with patch.object(
+                ledger_module, "read_valid_lock", return_value=lock_payload
+            ):
+                ledger_module.settle_ledger(root, results, SETTLED_AT)
             with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
                 rows = list(csv.DictReader(handle))
         self.assertEqual(1, len(rows))
@@ -1200,18 +1225,21 @@ class SettlementTest(unittest.TestCase):
         return settle_pending(ingest_locked_plan([], [row], lock()), results, SETTLED_AT)[0]
 
     def test_settle_ledger_dedupes_equivalent_canonical_rows_before_profit(self):
-        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
-        first = canonical
-        duplicate = copy.deepcopy(canonical)
-
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
+            lock_payload, canonical_rows = locked_plan_rows(root, [plan_row()])
+            canonical = canonical_rows[0]
+            first = canonical
+            duplicate = copy.deepcopy(canonical)
             ledger_path = root / "output" / "betting_ledger.csv"
             write_ledger_atomic(ledger_path, [first, duplicate])
 
-            ledger_module.settle_ledger(
-                root, {"1001": finished("1001", 2, 1)}, SETTLED_AT
-            )
+            with patch.object(
+                ledger_module, "read_valid_lock", return_value=lock_payload
+            ):
+                ledger_module.settle_ledger(
+                    root, {"1001": finished("1001", 2, 1)}, SETTLED_AT
+                )
 
             with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
                 rows = list(csv.DictReader(handle))
@@ -1759,6 +1787,59 @@ class LockedIngestCommandTest(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
         self.assertEqual(1, len(rows))
         self.assertEqual("20", rows[0]["stake"])
+
+    def test_settlement_rejects_tamper_even_after_row_digest_is_recomputed(self):
+        attacks = {
+            "valid stake reduction": {"stake": "18"},
+            "coherent odds and economics": {
+                "odds": "1.90",
+                "locked_odds": "1.90",
+                "net_ev": "0.03",
+                "expected_return": "34.20",
+                "expected_profit": "16.20",
+            },
+            "arbitrary plan hash": {"plan_sha256": "b" * 64},
+        }
+        for name, changes in attacks.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                row = plan_row()
+                self._prepare_locked_plan(root, row)
+                canonical = ingest_locked_plan([], [row], self.lock_payload)[0]
+                tampered = {**canonical, **changes}
+                tampered["row_payload_sha256"] = ledger_module._row_payload_digest(
+                    tampered
+                )
+                write_ledger_atomic(
+                    root / "output" / "betting_ledger.csv", [tampered]
+                )
+
+                with (
+                    patch.object(
+                        ledger_module,
+                        "read_valid_lock",
+                        return_value=self.lock_payload,
+                    ),
+                    self.assertRaisesRegex(ValueError, "locked plan|evidence|anchor"),
+                ):
+                    ledger_module.settle_ledger(root, {}, SETTLED_AT)
+
+    def test_strategy_downgrade_cannot_migrate_a_canonical_shaped_row(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            row = plan_row()
+            self._prepare_locked_plan(root, row)
+            canonical = ingest_locked_plan([], [row], self.lock_payload)[0]
+            downgraded = {**canonical, "strategy_version": "legacy-v1"}
+            downgraded["row_payload_sha256"] = ledger_module._row_payload_digest(
+                downgraded
+            )
+            write_ledger_atomic(
+                root / "output" / "betting_ledger.csv", [downgraded]
+            )
+
+            with self.assertRaisesRegex(ValueError, "canonical.*legacy|downgrade"):
+                ledger_module.settle_ledger(root, {}, SETTLED_AT)
 
 
 class AtomicWriteTest(unittest.TestCase):

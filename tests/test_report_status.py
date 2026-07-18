@@ -177,6 +177,18 @@ class ReportStatusTest(unittest.TestCase):
         manifest_path = (
             root / "data" / "import_manifests" / f"{REPORT_DATE.isoformat()}.json"
         )
+        extracts = root / "data" / "import_extracts" / REPORT_DATE.isoformat()
+        extracts.mkdir(parents=True, exist_ok=True)
+        extract_fixtures = extracts / "fixtures.csv"
+        extract_odds = extracts / "odds.json"
+        extract_fixtures.write_bytes((root / "data" / "fixtures.csv").read_bytes())
+        extract_odds.write_bytes(
+            (
+                root
+                / "data"
+                / f"sporttery_odds_{REPORT_DATE.isoformat()}.json"
+            ).read_bytes()
+        )
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(
             json.dumps({
@@ -184,10 +196,8 @@ class ReportStatusTest(unittest.TestCase):
                 "target_date": REPORT_DATE.isoformat(),
                 "source": "sporttery",
                 "imported_at_bjt": "2026-07-16T13:29:00+08:00",
-                "fixtures": record(root / "data" / "fixtures.csv"),
-                "odds": record(
-                    root / "data" / f"sporttery_odds_{REPORT_DATE.isoformat()}.json"
-                ),
+                "fixtures": record(extract_fixtures),
+                "odds": record(extract_odds),
             }),
             encoding="utf-8",
         )

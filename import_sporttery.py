@@ -60,6 +60,11 @@ def import_manifest_path(root: Path, target_date: date) -> Path:
     return Path(root) / "data" / "import_manifests" / f"{target_date.isoformat()}.json"
 
 
+def import_extract_paths(root: Path, target_date: date) -> tuple[Path, Path]:
+    directory = Path(root) / "data" / "import_extracts" / target_date.isoformat()
+    return directory / "fixtures.csv", directory / "odds.json"
+
+
 def write_import_manifest(
     source: str,
     target_date: date,
@@ -74,10 +79,47 @@ def write_import_manifest(
     root = DATA_DIR.resolve().parent
     fixtures = Path(fixtures_path).resolve()
     odds = Path(odds_path).resolve()
-    if fixtures != (DATA_DIR / "fixtures.csv").resolve():
-        raise ValueError("import manifest fixtures path is invalid")
-    if odds != (DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json").resolve():
-        raise ValueError("import manifest odds path is invalid")
+    for input_path in (fixtures, odds):
+        try:
+            input_path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("import manifest input path is invalid") from exc
+        if not input_path.is_file():
+            raise ValueError("import manifest input is missing")
+    return publish_import_manifest(
+        canonical_source,
+        target_date,
+        fixtures.read_bytes(),
+        odds.read_bytes(),
+        imported,
+    )
+
+
+def publish_import_manifest(
+    source: str,
+    target_date: date,
+    fixture_bytes: bytes,
+    odds_bytes: bytes,
+    imported_at: datetime | None = None,
+) -> Path:
+    canonical_source = str(source).strip().lower()
+    if canonical_source not in APPROVED_IMPORT_SOURCES:
+        raise ValueError("import manifest source is not approved")
+    if not isinstance(fixture_bytes, bytes) or not isinstance(odds_bytes, bytes):
+        raise ValueError("import manifest extracts must be bytes")
+    imported = _aware_import_datetime(imported_at or datetime.now(BEIJING))
+    root = DATA_DIR.resolve().parent
+    path = import_manifest_path(root, target_date)
+    if path.exists():
+        existing = read_valid_import_manifest(root, target_date)
+        _require_matching_import(
+            existing, canonical_source, fixture_bytes, odds_bytes
+        )
+        return path
+
+    fixtures, odds = import_extract_paths(root, target_date)
+    _publish_immutable_bytes(fixtures, fixture_bytes)
+    _publish_immutable_bytes(odds, odds_bytes)
     payload = {
         "schema_version": IMPORT_MANIFEST_SCHEMA_VERSION,
         "target_date": target_date.isoformat(),
@@ -86,13 +128,31 @@ def write_import_manifest(
         "fixtures": _manifest_file_record(root, fixtures),
         "odds": _manifest_file_record(root, odds),
     }
-    path = import_manifest_path(root, target_date)
     if path.exists() or not _atomic_publish_manifest(path, payload):
         existing = read_valid_import_manifest(root, target_date)
-        immutable_keys = ("schema_version", "target_date", "source", "fixtures", "odds")
-        if any(existing.get(key) != payload.get(key) for key in immutable_keys):
-            raise ValueError("existing conflicting import manifest")
+        _require_matching_import(existing, canonical_source, fixture_bytes, odds_bytes)
     return path
+
+
+def _require_matching_import(
+    existing: dict,
+    source: str,
+    fixture_bytes: bytes,
+    odds_bytes: bytes,
+) -> None:
+    expected = {
+        "fixtures": fixture_bytes,
+        "odds": odds_bytes,
+    }
+    if existing.get("source") != source:
+        raise ValueError("existing conflicting import manifest")
+    for key, content in expected.items():
+        record = existing.get(key, {})
+        if (
+            record.get("bytes") != len(content)
+            or record.get("sha256") != hashlib.sha256(content).hexdigest()
+        ):
+            raise ValueError("existing conflicting import manifest")
 
 
 def read_valid_import_manifest(root: Path, target_date: date) -> dict:
@@ -115,8 +175,8 @@ def read_valid_import_manifest(root: Path, target_date: date) -> dict:
         raise ValueError("import manifest contract is invalid")
     _aware_import_datetime(payload.get("imported_at_bjt"))
     expected = {
-        "fixtures": f"data/fixtures.csv",
-        "odds": f"data/sporttery_odds_{target_date.isoformat()}.json",
+        "fixtures": f"data/import_extracts/{target_date.isoformat()}/fixtures.csv",
+        "odds": f"data/import_extracts/{target_date.isoformat()}/odds.json",
     }
     for key, relative in expected.items():
         record = payload.get(key)
@@ -182,6 +242,30 @@ def _atomic_publish_manifest(path: Path, payload: dict) -> bool:
         except FileExistsError:
             return False
         return True
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _publish_immutable_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if path.read_bytes() != payload:
+            raise ValueError(f"existing conflicting import extract: {path.name}")
+        return
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.read_bytes() != payload:
+                raise ValueError(f"existing conflicting import extract: {path.name}")
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -598,8 +682,10 @@ def attach_professional_market(matches: list[dict], market_matches: list[dict]) 
     return enriched
 
 
-def write_fixtures(matches: list[dict], target_date: date) -> Path:
-    path = DATA_DIR / "fixtures.csv"
+def write_fixtures(
+    matches: list[dict], target_date: date, *, path: Path | None = None
+) -> Path:
+    path = path or DATA_DIR / "fixtures.csv"
     fields = [
         "date",
         "kickoff_local",
@@ -742,10 +828,28 @@ def collect_odds(matches: list[dict]) -> dict[str, dict]:
     return odds
 
 
-def write_odds_data(odds: dict[str, dict], target_date: date) -> Path:
-    path = DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json"
+def write_odds_data(
+    odds: dict[str, dict], target_date: date, *, path: Path | None = None
+) -> Path:
+    path = path or DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json"
     path.write_text(json.dumps(odds, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+def _atomic_replace_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def write_source_status(
@@ -782,6 +886,20 @@ def main() -> int:
     args = parser.parse_args()
 
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+    root = DATA_DIR.resolve().parent
+    existing_manifest = import_manifest_path(root, target_date)
+    if existing_manifest.exists():
+        manifest = read_valid_import_manifest(root, target_date)
+        _atomic_replace_bytes(
+            DATA_DIR / "fixtures.csv",
+            (root / manifest["fixtures"]["path"]).read_bytes(),
+        )
+        _atomic_replace_bytes(
+            DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json",
+            (root / manifest["odds"]["path"]).read_bytes(),
+        )
+        print(f"Reusing immutable import: {existing_manifest}")
+        return 0
     source = "竞彩网"
     manifest_source = "sporttery"
     source_message = ""
@@ -822,17 +940,27 @@ def main() -> int:
         print(f"WARNING: 专业欧赔市场暂不可用（{type(exc).__name__}），本次使用竞彩足球市场概率。")
         selected = attach_professional_market(selected, [])
     analysis_source = "中国足彩网专业欧赔市场" if any(item.get("analysis_source") == "中国足彩网专业欧赔市场" for item in selected) else "竞彩足球市场（专业欧赔暂缺）"
-    fixtures_path = write_fixtures(selected, target_date)
-    fixture_count = count_written_fixtures(fixtures_path, target_date)
+    with tempfile.TemporaryDirectory(prefix="import-stage-", dir=DATA_DIR) as tmp:
+        staging = Path(tmp)
+        staged_fixtures = write_fixtures(
+            selected, target_date, path=staging / "fixtures.csv"
+        )
+        staged_odds = write_odds_data(
+            odds_data, target_date, path=staging / "odds.json"
+        )
+        fixture_count = count_written_fixtures(staged_fixtures, target_date)
+        manifest_path = write_import_manifest(
+            manifest_source,
+            target_date,
+            staged_fixtures,
+            staged_odds,
+            datetime.now(BEIJING),
+        )
+        fixtures_path = DATA_DIR / "fixtures.csv"
+        odds_path = DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json"
+        _atomic_replace_bytes(fixtures_path, staged_fixtures.read_bytes())
+        _atomic_replace_bytes(odds_path, staged_odds.read_bytes())
     ratings_path = write_ratings(selected)
-    odds_path = write_odds_data(odds_data, target_date)
-    manifest_path = write_import_manifest(
-        manifest_source,
-        target_date,
-        fixtures_path,
-        odds_path,
-        datetime.now(BEIJING),
-    )
     status_path = write_source_status(
         source,
         target_date,

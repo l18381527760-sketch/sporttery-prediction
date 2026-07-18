@@ -87,6 +87,15 @@ class DecisionBundleTest(unittest.TestCase):
             "data/sporttery_odds_2026-07-16.json",
             {"1001": {"had": {"h": "2.10", "d": "3.20", "a": "3.40"}}},
         )
+        extract_fixtures = (
+            self.root / "data" / "import_extracts" / "2026-07-16" / "fixtures.csv"
+        )
+        extract_odds = extract_fixtures.with_name("odds.json")
+        extract_fixtures.parent.mkdir(parents=True)
+        extract_fixtures.write_bytes((self.root / "data" / "fixtures.csv").read_bytes())
+        extract_odds.write_bytes(
+            (self.root / "data" / "sporttery_odds_2026-07-16.json").read_bytes()
+        )
         self.import_manifest_path = (
             self.root / "data" / "import_manifests" / "2026-07-16.json"
         )
@@ -97,10 +106,8 @@ class DecisionBundleTest(unittest.TestCase):
                 "target_date": "2026-07-16",
                 "source": "zgzcw",
                 "imported_at_bjt": "2026-07-16T13:00:00+08:00",
-                "fixtures": self._file_record(self.root / "data" / "fixtures.csv"),
-                "odds": self._file_record(
-                    self.root / "data" / "sporttery_odds_2026-07-16.json"
-                ),
+                "fixtures": self._file_record(extract_fixtures),
+                "odds": self._file_record(extract_odds),
             },
         )
         self._write_csv(
@@ -219,6 +226,22 @@ class DecisionBundleTest(unittest.TestCase):
         write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
 
         with self.assertRaises(ValueError):
+            create_decision_bundle(self.root, TARGET_DATE, LOCKED_AT)
+
+    def test_bundle_rejects_manifest_imported_after_snapshot_capture(self):
+        manifest = json.loads(self.import_manifest_path.read_text(encoding="utf-8"))
+        manifest["imported_at_bjt"] = "2026-07-16T13:30:01+08:00"
+        self.import_manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
+        snapshot = json.loads(self.snapshot_path.read_text(encoding="utf-8"))
+        snapshot["import_manifest"] = self._file_record(self.import_manifest_path)
+        self.snapshot_path.write_text(
+            json.dumps(snapshot, ensure_ascii=False), encoding="utf-8"
+        )
+        write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
+
+        with self.assertRaisesRegex(ValueError, "import.*capture|snapshot"):
             create_decision_bundle(self.root, TARGET_DATE, LOCKED_AT)
 
     def test_existing_conflicting_bundle_fails_closed(self):

@@ -425,6 +425,14 @@ def _validate_snapshot_import(
         raise ValueError("decision snapshot import manifest is invalid")
     if snapshot.get("source") != import_manifest.get("source"):
         raise ValueError("decision snapshot import manifest source differs")
+    imported_at = _aware_datetime(
+        import_manifest.get("imported_at_bjt"), "import manifest imported_at"
+    ).astimezone(BEIJING)
+    captured_at = _aware_datetime(
+        snapshot.get("captured_at"), "snapshot captured_at"
+    ).astimezone(BEIJING)
+    if imported_at > captured_at:
+        raise ValueError("import timestamp must not follow snapshot capture")
 
 
 def _validate_snapshot(

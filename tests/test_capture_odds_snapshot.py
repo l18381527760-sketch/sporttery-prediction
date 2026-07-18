@@ -261,6 +261,12 @@ class CaptureOddsSnapshotProductionTest(unittest.TestCase):
             json.dumps({"import-1": {"had": {"h": "2.00", "d": "3.00", "a": "4.00"}}}),
             encoding="utf-8",
         )
+        extracts = data / "import_extracts" / TARGET_DATE
+        extracts.mkdir(parents=True)
+        extract_fixtures = extracts / "fixtures.csv"
+        extract_odds = extracts / "odds.json"
+        extract_fixtures.write_bytes(fixtures.read_bytes())
+        extract_odds.write_bytes(odds.read_bytes())
 
         def record(path: Path) -> dict:
             payload = path.read_bytes()
@@ -277,8 +283,8 @@ class CaptureOddsSnapshotProductionTest(unittest.TestCase):
                 "target_date": TARGET_DATE,
                 "source": source,
                 "imported_at_bjt": "2026-07-16T13:00:00+08:00",
-                "fixtures": record(fixtures),
-                "odds": record(odds),
+                "fixtures": record(extract_fixtures),
+                "odds": record(extract_odds),
             }),
             encoding="utf-8",
         )

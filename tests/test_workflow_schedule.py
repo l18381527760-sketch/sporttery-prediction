@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import betting_ledger as ledger_module
 from betting_ledger import TERMINAL_STATUSES, settle_ledger, stable_bet_id
 
 
@@ -256,6 +257,12 @@ if name == "import_sporttery.py":
     odds_path.write_text(
         json.dumps({"writer": name}), encoding="utf-8"
     )
+    extracts = Path("data/import_extracts") / target_date
+    extracts.mkdir(parents=True, exist_ok=True)
+    extract_fixtures = extracts / "fixtures.csv"
+    extract_odds = extracts / "odds.json"
+    extract_fixtures.write_bytes(fixture_path.read_bytes())
+    extract_odds.write_bytes(odds_path.read_bytes())
     manifest_path = Path("data/import_manifests") / f"{target_date}.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     def file_record(path):
@@ -271,8 +278,8 @@ if name == "import_sporttery.py":
             "target_date": target_date,
             "source": "zgzcw",
             "imported_at_bjt": target_date + "T13:25:00+08:00",
-            "fixtures": file_record(fixture_path),
-            "odds": file_record(odds_path),
+            "fixtures": file_record(extract_fixtures),
+            "odds": file_record(extract_odds),
         }, sort_keys=True) + "\\n",
         encoding="utf-8",
     )
@@ -652,6 +659,7 @@ elif name == "generate_betting_plan.py":
                 )
             )
             manifest_path = root / "data" / "import_manifests" / "2026-07-16.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             snapshot = json.loads(
                 (
                     root
@@ -662,6 +670,14 @@ elif name == "generate_betting_plan.py":
             )
 
             self.assertEqual({"writer": "import_sporttery.py"}, odds)
+            self.assertEqual(
+                "data/import_extracts/2026-07-16/fixtures.csv",
+                manifest["fixtures"]["path"],
+            )
+            self.assertEqual(
+                "data/import_extracts/2026-07-16/odds.json",
+                manifest["odds"]["path"],
+            )
             self.assertEqual("zgzcw", snapshot["source"])
             self.assertEqual(
                 self.sha256_bytes(manifest_path.read_bytes()),
@@ -803,7 +819,15 @@ runpy.run_path(str(Path(__file__).with_name("betting_ledger_real.py")), run_name
                     "settlement_minutes": "90",
                 }
             }
-            settle_ledger(root, results, settled_at)
+            lock_payload = json.loads(
+                (
+                    root / "output" / "plan_lock_2026-07-16.json"
+                ).read_text(encoding="utf-8")
+            )
+            with patch.object(
+                ledger_module, "read_valid_lock", return_value=lock_payload
+            ):
+                settle_ledger(root, results, settled_at)
             settled_bytes = ledger_path.read_bytes()
             with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
                 settled_rows = list(csv.DictReader(handle))
@@ -817,11 +841,14 @@ runpy.run_path(str(Path(__file__).with_name("betting_ledger_real.py")), run_name
                     "captured_at_bjt": (settled_at + timedelta(minutes=5)).isoformat(),
                 }
             }
-            settle_ledger(
-                root,
-                conflicting_results,
-                settled_at + timedelta(minutes=5),
-            )
+            with patch.object(
+                ledger_module, "read_valid_lock", return_value=lock_payload
+            ):
+                settle_ledger(
+                    root,
+                    conflicting_results,
+                    settled_at + timedelta(minutes=5),
+                )
             self.assertEqual(settled_bytes, ledger_path.read_bytes())
 
     def test_valid_decision_lock_survives_delayed_forecast_rerun_without_writers(self):

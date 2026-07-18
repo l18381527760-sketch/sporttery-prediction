@@ -109,6 +109,13 @@ class PlanLockTest(unittest.TestCase):
             json.dumps({"1001": {"had": {"h": "2.00", "d": "3.20", "a": "3.50"}}}),
             encoding="utf-8",
         )
+        extract_fixtures = (
+            root / "data" / "import_extracts" / "2026-07-16" / "fixtures.csv"
+        )
+        extract_odds = extract_fixtures.with_name("odds.json")
+        extract_fixtures.parent.mkdir(parents=True)
+        extract_fixtures.write_bytes((root / "data" / "fixtures.csv").read_bytes())
+        extract_odds.write_bytes(odds_path.read_bytes())
         def record(path: Path) -> dict:
             content = path.read_bytes()
             return {
@@ -124,8 +131,8 @@ class PlanLockTest(unittest.TestCase):
                 "target_date": "2026-07-16",
                 "source": "sporttery",
                 "imported_at_bjt": "2026-07-16T13:29:00+08:00",
-                "fixtures": record(root / "data" / "fixtures.csv"),
-                "odds": record(odds_path),
+                "fixtures": record(extract_fixtures),
+                "odds": record(extract_odds),
             }),
             encoding="utf-8",
         )
@@ -217,6 +224,25 @@ class PlanLockTest(unittest.TestCase):
                 "changed", encoding="utf-8"
             )
             self.assertIsNone(read_valid_lock(root, date(2026, 7, 16)))
+
+    def test_next_day_shared_fixture_update_preserves_prior_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            self.make_lock(root)
+
+            self.write_csv(
+                root / "data" / "fixtures.csv",
+                [{
+                    "date": "2026-07-17",
+                    "team_a": "Next A",
+                    "team_b": "Next B",
+                    "match_id": "next-1",
+                    "kickoff_at": "2026-07-17T20:00:00+08:00",
+                }],
+            )
+
+            self.assertIsNotNone(read_valid_lock(root, TARGET_DATE))
 
     def test_lock_derives_zgzcw_source_from_the_validated_decision_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:

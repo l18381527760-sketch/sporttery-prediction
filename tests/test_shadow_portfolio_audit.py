@@ -426,6 +426,16 @@ class RepositoryAuditTest(unittest.TestCase):
         manifest_path = (
             self.root / "data" / "import_manifests" / f"{report_date}.json"
         )
+        extracts = self.root / "data" / "import_extracts" / report_date
+        extracts.mkdir(parents=True, exist_ok=True)
+        extract_fixtures = extracts / "fixtures.csv"
+        extract_odds = extracts / "odds.json"
+        extract_fixtures.write_bytes(
+            (self.root / "data" / "fixtures.csv").read_bytes()
+        )
+        extract_odds.write_bytes(
+            (self.root / "data" / f"sporttery_odds_{report_date}.json").read_bytes()
+        )
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(
             json.dumps({
@@ -433,10 +443,8 @@ class RepositoryAuditTest(unittest.TestCase):
                 "target_date": report_date,
                 "source": source,
                 "imported_at_bjt": f"{report_date}T11:58:00+08:00",
-                "fixtures": record(self.root / "data" / "fixtures.csv"),
-                "odds": record(
-                    self.root / "data" / f"sporttery_odds_{report_date}.json"
-                ),
+                "fixtures": record(extract_fixtures),
+                "odds": record(extract_odds),
             }),
             encoding="utf-8",
         )
