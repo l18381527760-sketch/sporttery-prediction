@@ -726,3 +726,130 @@ Result: exit 0 with no output.
   schema-2 evidence contract. Activation still requires a new honest
   pre-kickoff schema-2 import, schema-3 decision bundle/lock, and passing
   immutable audit. Readiness correctly remains unavailable until then.
+
+## Final Narrow Wave: Ledger Dates and Prediction Provenance
+
+This wave resolves the two Important findings assigned on top of
+`6f6e38b9d987b1a9cee82986a1d700565fba3b02`, including the fixture/history
+provenance addendum.
+
+### Resolution
+
+1. Every existing paid-ledger row now passes one strict effective-date
+   validator before lock discovery or canonical/legacy classification. At
+   least one of `date` and `report_date` must be nonblank, every populated
+   field must be canonical `YYYY-MM-DD`, and two populated fields must match.
+   The validated effective date alone determines the `2026-07-18` cutover.
+   Blank, malformed, conflicting, and pre/post-cutover alias attacks therefore
+   fail before lock lookup or legacy migration for singles and parlays, with
+   valid or missing locks. Genuine 2026-07-11 and 2026-07-12 legacy rows with
+   only `date` retain compatible migration.
+2. `predict_today.py` now requires a valid schema-2 import manifest for every
+   production CLI prediction, including `--no-files`. It reads and rechecks
+   the exact manifest-bound fixture and ratings bytes before parsing them.
+   Mutable `data/fixtures.csv` and `data/team_ratings.csv` are not prediction
+   inputs on that path.
+3. The optional mutable `data/team_history_features.csv` overlay is explicitly
+   omitted from the manifest-bound production path. Prediction-metadata schema
+   2 records both fixture and ratings manifest records, derives its canonical
+   fixture rows from the immutable extract, and verifies that the records
+   forwarded by the predictor still equal the validated manifest. No raw diff
+   package was created.
+
+### RED/GREEN Evidence
+
+All Python commands used
+`.superpowers\sdd\runtime\verify-venv\Scripts\python.exe`.
+
+Strict effective-date RED/GREEN:
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_plan_lock.PlanLockTest.test_effective_date_validation_precedes_classification_and_lock_lookup tests.test_plan_lock.PlanLockTest.test_pre_cutover_legacy_row_migrates_without_a_lock -v
+```
+
+RED: 2 test methods ran in 2.596 seconds. Eighteen of the twenty single/parlay,
+valid/missing-lock attack subtests failed under the old classification path;
+both genuine pre-cutover controls passed. GREEN: the identical command passed
+both methods, including all twenty attack subtests and both legacy controls,
+in 2.442 seconds. The complete ledger/plan-lock surface passed 90 tests in
+7.024 seconds.
+
+Manifest-bound prediction RED/GREEN:
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_decision_bundle.DecisionBundleTest.test_prediction_metadata_records_real_generation_and_model_inputs tests.test_decision_bundle.DecisionBundleTest.test_prediction_cli_consumes_manifest_inputs_without_mutable_history tests.test_decision_bundle.DecisionBundleTest.test_prediction_cli_requires_schema_two_manifest_even_without_files -v
+```
+
+RED: 3 test methods ran with 4 failures: fixture provenance was absent,
+prediction consumed the divergent shared fixture/rating inputs, and missing or
+schema-1 manifests did not stop `--no-files`. GREEN: the identical command
+passed all 3 methods in 0.139 seconds. The complete decision-bundle suite then
+passed 12 tests in 0.858 seconds.
+
+### Final Verification
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results tests.test_shadow_portfolio_audit tests.test_decision_bundle tests.test_plan_lock tests.test_import_sporttery tests.test_capture_odds_snapshot tests.test_official_market_import
+```
+
+Result: 183 focused Python tests passed in 10.353 seconds.
+
+The first full discovery ran 565 tests with one transient Windows
+`PermissionError` in the pre-existing concurrent same-date plan-lock test. The
+isolated reproduction passed 1 test in 0.428 seconds, and the required fresh
+full rerun completed cleanly:
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+
+Result: 565 tests passed in 23.932 seconds.
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_workflow_schedule -q
+```
+
+Result: 39 workflow shell/order tests passed in 7.936 seconds.
+
+```powershell
+C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe --test tests\apps_script_orchestrator.test.mjs
+```
+
+Result: 42 Node tests passed, 0 failed.
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile betting_ledger.py decision_bundle.py predict_today.py tests\test_betting_ledger.py tests\test_decision_bundle.py tests\test_plan_lock.py
+```
+
+Result: all 6 changed Python files compiled with exit 0 and no output.
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe audit_shadow_portfolio.py --from 2026-07-11 --through 2026-07-18
+```
+
+Result: expected exit 1 with `checked_dates: []`, all eight dates in
+`excluded_missing`, `passed: false`, and one violation.
+
+```powershell
+.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -c "from pathlib import Path; from activation_readiness import assert_activation_ready; assert_activation_ready(Path.cwd())"
+```
+
+Result: expected exit 1 with `ValueError: activation audit has not passed`.
+
+### Activation, Files, Commits, and Concerns
+
+- Activation remains `shadow`; simulation-only/no-real-money controls are
+  unchanged. No real import, prediction, snapshot, plan, or lock evidence was
+  captured or fabricated.
+- Production files changed: `betting_ledger.py`, `decision_bundle.py`, and
+  `predict_today.py`.
+- Test files changed: `tests/test_betting_ledger.py`,
+  `tests/test_decision_bundle.py`, and `tests/test_plan_lock.py`.
+- Production/tests commit:
+  `c46223fa3a6ed64a43f7ccbc052b5543342ec1c9`.
+- The cleanup/report commit SHA is supplied in the delivery response to avoid
+  a circular self-reference.
+- Remaining concern: old prediction-metadata schema 1 and old import-manifest
+  schema 1 cannot satisfy the prospective immutable fixture/ratings contract.
+  Activation still requires honest schema-2 import and prediction evidence, a
+  schema-3 decision bundle/lock, and a passing immutable audit.
