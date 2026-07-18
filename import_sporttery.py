@@ -753,17 +753,22 @@ def count_written_fixtures(path: Path, target_date: date) -> int:
         raise ValueError("could not verify written fixture count") from exc
 
 
-def load_ratings() -> dict[str, dict]:
-    path = DATA_DIR / "team_ratings.csv"
+def load_ratings(path: Path | None = None) -> dict[str, dict]:
+    path = path or DATA_DIR / "team_ratings.csv"
     if not path.exists():
         return {}
     with path.open("r", encoding="utf-8-sig", newline="") as fh:
         return {row["team"]: row for row in csv.DictReader(fh)}
 
 
-def write_ratings(matches: list[dict]) -> Path:
-    path = DATA_DIR / "team_ratings.csv"
-    ratings = load_ratings()
+def write_ratings(
+    matches: list[dict],
+    *,
+    path: Path | None = None,
+    existing_path: Path | None = None,
+) -> Path:
+    path = path or DATA_DIR / "team_ratings.csv"
+    ratings = load_ratings(existing_path or path)
     for item in matches:
         edge = implied_home_edge(item.get("market_h") or item.get("h", ""), item.get("market_a") or item.get("a", ""))
         home = team_home(item)
@@ -859,15 +864,18 @@ def write_source_status(
     analysis_source: str = "专业欧赔市场",
     *,
     fixture_count: int,
+    path: Path | None = None,
+    updated_at: datetime | None = None,
 ) -> Path:
     if type(fixture_count) is not int or fixture_count < 0:
         raise ValueError("fixture_count must be a non-negative integer")
-    path = DATA_DIR / "source_status.json"
+    path = path or DATA_DIR / "source_status.json"
+    updated = _aware_import_datetime(updated_at or datetime.now(timezone.utc))
     payload = {
         "source": source,
         "analysis_source": analysis_source,
         "target_date": target_date.isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": updated.astimezone(timezone.utc).isoformat(),
         "fallback": source != "竞彩网",
         "message": message,
         "fixture_count": fixture_count,
@@ -875,6 +883,69 @@ def write_source_status(
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+def restore_manifest_compatibility_outputs(
+    root: Path,
+    target_date: date,
+    manifest: dict,
+    *,
+    source: str | None = None,
+    message: str = "",
+    analysis_source: str | None = None,
+) -> tuple[Path, Path, int]:
+    """Atomically rebuild mutable compatibility outputs from immutable import data."""
+    root = Path(root)
+    fixtures_path = root / manifest["fixtures"]["path"]
+    with fixtures_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        fixture_rows = list(csv.DictReader(handle))
+    fixture_count = sum(
+        row.get("date") == target_date.isoformat() for row in fixture_rows
+    )
+    rating_inputs = [
+        {
+            "homeTeam": row.get("team_a", ""),
+            "awayTeam": row.get("team_b", ""),
+            "market_h": row.get("market_odds_a") or row.get("odds_a", ""),
+            "market_a": row.get("market_odds_b") or row.get("odds_b", ""),
+        }
+        for row in fixture_rows
+        if row.get("date") == target_date.isoformat()
+    ]
+    source_name = source or (
+        "竞彩网" if manifest["source"] == "sporttery" else "中国足彩网"
+    )
+    inferred_analysis = next(
+        (
+            row.get("analysis_source", "")
+            for row in fixture_rows
+            if row.get("date") == target_date.isoformat()
+            and row.get("analysis_source")
+        ),
+        "竞彩足球市场",
+    )
+    shared_ratings = DATA_DIR / "team_ratings.csv"
+    shared_status = DATA_DIR / "source_status.json"
+    imported_at = _aware_import_datetime(manifest["imported_at_bjt"])
+    with tempfile.TemporaryDirectory(prefix="compatibility-stage-", dir=DATA_DIR) as tmp:
+        staging = Path(tmp)
+        staged_ratings = write_ratings(
+            rating_inputs,
+            path=staging / "team_ratings.csv",
+            existing_path=shared_ratings,
+        )
+        staged_status = write_source_status(
+            source_name,
+            target_date,
+            message,
+            analysis_source or inferred_analysis,
+            fixture_count=fixture_count,
+            path=staging / "source_status.json",
+            updated_at=imported_at,
+        )
+        _atomic_replace_bytes(shared_ratings, staged_ratings.read_bytes())
+        _atomic_replace_bytes(shared_status, staged_status.read_bytes())
+    return shared_ratings, shared_status, fixture_count
 
 
 def main() -> int:
@@ -890,6 +961,7 @@ def main() -> int:
     existing_manifest = import_manifest_path(root, target_date)
     if existing_manifest.exists():
         manifest = read_valid_import_manifest(root, target_date)
+        restore_manifest_compatibility_outputs(root, target_date, manifest)
         _atomic_replace_bytes(
             DATA_DIR / "fixtures.csv",
             (root / manifest["fixtures"]["path"]).read_bytes(),
@@ -956,18 +1028,23 @@ def main() -> int:
             staged_odds,
             datetime.now(BEIJING),
         )
+        manifest = read_valid_import_manifest(root, target_date)
+        ratings_path, status_path, recovered_count = (
+            restore_manifest_compatibility_outputs(
+                root,
+                target_date,
+                manifest,
+                source=source,
+                message=source_message,
+                analysis_source=analysis_source,
+            )
+        )
+        if recovered_count != fixture_count:
+            raise ValueError("manifest compatibility fixture count differs")
         fixtures_path = DATA_DIR / "fixtures.csv"
         odds_path = DATA_DIR / f"sporttery_odds_{target_date.isoformat()}.json"
         _atomic_replace_bytes(fixtures_path, staged_fixtures.read_bytes())
         _atomic_replace_bytes(odds_path, staged_odds.read_bytes())
-    ratings_path = write_ratings(selected)
-    status_path = write_source_status(
-        source,
-        target_date,
-        source_message,
-        analysis_source,
-        fixture_count=fixture_count,
-    )
     print(f"竞彩网返回比赛: {len(matches)}")
     print(f"导入未开奖比赛: {len(selected)}")
     for item in selected:

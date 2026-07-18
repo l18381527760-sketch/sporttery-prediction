@@ -161,12 +161,64 @@ class WorkflowScheduleTest(unittest.TestCase):
         shutil.copy2(ROOT / "plan_lock.py", root / "plan_lock.py")
         shutil.copy2(ROOT / "betting_ledger.py", root / "betting_ledger.py")
         shutil.copy2(ROOT / "official_markets.py", root / "official_markets.py")
+        (root / "workflow_plan_fixture.py").write_text(
+            '''import csv
+import io
+
+def plan_row(target_date):
+    return {
+        "date": target_date,
+        "strategy_version": "value-v4",
+        "model_version": "workflow-test-model",
+        "match_id": "workflow-match",
+        "team_a": "Home",
+        "team_b": "Away",
+        "kickoff_local": target_date + "T14:00:00+08:00",
+        "play": "HAD",
+        "market_type": "had",
+        "market_line": "",
+        "selection": chr(0x80DC),
+        "odds": "2.00",
+        "locked_odds": "2.00",
+        "odds_source": "zgzcw",
+        "odds_source_record_id": "workflow-odds-1",
+        "odds_captured_at_bjt": target_date + "T13:30:00+08:00",
+        "raw_probability": "0.54",
+        "calibrated_probability": "0.53",
+        "official_market_probability": "0.50",
+        "conservative_probability": "0.51",
+        "edge": "0.01",
+        "net_ev": "0.02",
+        "full_kelly": "0.02",
+        "kelly_fraction": "0.25",
+        "data_quality_multiplier": "1.0",
+        "volatility_multiplier": "1.0",
+        "performance_multiplier": "1.0",
+        "portfolio_rank": "1",
+        "binding_limits": "daily",
+        "stake": "20",
+        "data_quality": "high",
+        "volatility_band": "low",
+    }
+
+def plan_bytes(rows):
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        stream, fieldnames=sorted(rows[0]), lineterminator="\\r\\n"
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+    return stream.getvalue().encode("utf-8")
+''',
+            encoding="utf-8",
+        )
         (root / "decision_bundle.py").write_text(
             '''import argparse
 import hashlib
 import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from workflow_plan_fixture import plan_bytes, plan_row
 
 def _sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -202,6 +254,8 @@ def main():
         handle.write("decision_bundle.py\\n")
     snapshot_path = Path("data/odds_snapshots") / f"{args.date}-133000-decision.json"
     manifest_path = Path("data/import_manifests") / f"{args.date}.json"
+    paid_rows = [plan_row(args.date)]
+    paid_bytes = plan_bytes(paid_rows)
     manifest_record = {
         "path": manifest_path.as_posix(),
         "sha256": _sha256(manifest_path),
@@ -217,6 +271,14 @@ def main():
             "sha256": _sha256(snapshot_path),
         },
         "import_manifest": manifest_record,
+        "paid_plan_evidence": {
+            "plan_sha256": hashlib.sha256(paid_bytes).hexdigest(),
+            "bytes": len(paid_bytes),
+            "rows_sha256": hashlib.sha256(
+                json.dumps(paid_rows, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+            "rows": paid_rows,
+        },
     }
     output = Path("output") / f"decision_bundle_{args.date}.json"
     output.write_text(json.dumps(payload, sort_keys=True) + "\\n", encoding="utf-8")
@@ -233,6 +295,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from workflow_plan_fixture import plan_bytes
 
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
@@ -309,46 +372,14 @@ elif name == "capture_odds_snapshot.py":
         encoding="utf-8",
     )
 elif name == "generate_betting_plan.py":
-    row = {
-        "date": target_date,
-        "strategy_version": "value-v4",
-        "model_version": "workflow-test-model",
-        "match_id": "workflow-match",
-        "team_a": "Home",
-        "team_b": "Away",
-        "kickoff_local": target_date + "T14:00:00+08:00",
-        "play": "HAD",
-        "market_type": "had",
-        "market_line": "",
-        "selection": chr(0x80DC),
-        "odds": "2.00",
-        "locked_odds": "2.00",
-        "odds_source": "zgzcw",
-        "odds_source_record_id": "workflow-odds-1",
-        "odds_captured_at_bjt": target_date + "T13:30:00+08:00",
-        "raw_probability": "0.54",
-        "calibrated_probability": "0.53",
-        "official_market_probability": "0.50",
-        "conservative_probability": "0.51",
-        "edge": "0.01",
-        "net_ev": "0.02",
-        "full_kelly": "0.02",
-        "kelly_fraction": "0.25",
-        "data_quality_multiplier": "1.0",
-        "volatility_multiplier": "1.0",
-        "performance_multiplier": "1.0",
-        "portfolio_rank": "1",
-        "binding_limits": "daily",
-        "stake": "20",
-        "data_quality": "high",
-        "volatility_band": "low",
-    }
-    with Path(f"output/betting_plan_{target_date}.csv").open(
-        "w", encoding="utf-8", newline=""
-    ) as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(row))
-        writer.writeheader()
-        writer.writerow(row)
+    bundle = json.loads(
+        Path(f"output/decision_bundle_{target_date}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    Path(f"output/betting_plan_{target_date}.csv").write_bytes(
+        plan_bytes(bundle["paid_plan_evidence"]["rows"])
+    )
 '''
         for name in (
             "import_sporttery.py",

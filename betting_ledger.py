@@ -85,7 +85,7 @@ def ingest_locked_plan(
     plan_rows: list[dict],
     lock: dict,
     *,
-    canonical_evidence: dict[tuple[str, str], str] | None = None,
+    canonical_evidence: dict[tuple[str, str], str],
 ) -> list[dict]:
     """Migrate legacy rows and append only previously unseen locked plan identities."""
     lock_source = _validate_lock(lock)
@@ -749,13 +749,21 @@ def settle_ledger(root: Path, results: dict, settled_at: datetime) -> Path:
 def _load_locked_plan_evidence(
     root: Path, existing_rows: list[dict]
 ) -> dict[tuple[str, str], str]:
-    locally_validated, _known_keys = _normalize_existing_rows(existing_rows)
-    report_dates = {
-        _strict_canonical_date(row.get("report_date"), "report_date")
-        for row in locally_validated
-        if isinstance(row, dict)
-        and row.get("strategy_version") in NEW_PAID_STRATEGY_VERSIONS
-    }
+    report_dates: set[str] = set()
+    for row in existing_rows:
+        if not isinstance(row, dict):
+            raise ValueError("existing row must be a mapping")
+        if _claims_canonical_identity(row):
+            if row.get("strategy_version") in NEW_PAID_STRATEGY_VERSIONS:
+                try:
+                    _validate_existing_canonical_paid_row(row)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"invalid existing canonical paid row: {exc}"
+                    ) from exc
+            report_dates.add(
+                _strict_canonical_date(row.get("report_date"), "report_date")
+            )
     evidence: dict[tuple[str, str], str] = {}
     for report_date in sorted(report_dates):
         target_date = date.fromisoformat(report_date)
@@ -913,25 +921,31 @@ def _existing_dedupe_key(row: dict) -> tuple[str, str]:
 def _normalize_existing_rows(
     existing_rows: list[dict],
     *,
-    canonical_evidence: dict[tuple[str, str], str] | None = None,
+    canonical_evidence: dict[tuple[str, str], str],
 ) -> tuple[list[dict], set[tuple[str, str]]]:
+    if not isinstance(canonical_evidence, dict):
+        raise ValueError("canonical locked-plan evidence is required")
     normalized: list[dict] = []
     known_keys: set[tuple[str, str]] = set()
     canonical_states: dict[str, str] = {}
     for source_row in existing_rows:
         if not isinstance(source_row, dict):
             raise ValueError("existing row must be a mapping")
-        if source_row.get("strategy_version") in NEW_PAID_STRATEGY_VERSIONS:
+        canonical_key = _canonical_evidence_key(source_row, canonical_evidence)
+        anchored_canonical = (
+            canonical_key is not None or _claims_canonical_identity(source_row)
+        )
+        if anchored_canonical:
             try:
                 _validate_existing_canonical_paid_row(source_row)
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"invalid existing canonical paid row: {exc}") from exc
+            if canonical_key is None:
+                raise ValueError(
+                    "canonical ledger row lacks locked plan evidence anchor"
+                )
             row = dict(source_row)
         else:
-            if _looks_like_canonical_paid_row(source_row):
-                raise ValueError(
-                    "canonical-shaped row cannot use legacy migration after strategy downgrade"
-                )
             _validate_existing_legacy_economics(source_row)
             row = _migrate_existing_row(source_row)
         key_kind, identity_key = _existing_dedupe_key(row)
@@ -945,14 +959,22 @@ def _normalize_existing_rows(
             continue
         known_keys.add(dedupe_key)
         if key_kind == "canonical":
-            if canonical_evidence is not None:
+            if anchored_canonical:
                 evidence_key = (
                     _strict_canonical_date(row.get("report_date"), "report_date"),
                     identity_key,
                 )
-                if canonical_evidence.get(evidence_key) != row.get(
-                    "row_payload_sha256"
-                ):
+                if evidence_key not in canonical_evidence:
+                    raise ValueError(
+                        "canonical ledger row lacks locked plan evidence anchor"
+                    )
+                expected_digest = canonical_evidence[evidence_key]
+                actual_digest = row.get("row_payload_sha256")
+                if not _is_sha256(expected_digest) or not _is_sha256(actual_digest):
+                    raise ValueError(
+                        "canonical row payload digest is missing from locked plan evidence"
+                    )
+                if expected_digest != actual_digest:
                     raise ValueError(
                         "canonical row payload differs from locked plan evidence anchor"
                     )
@@ -961,19 +983,58 @@ def _normalize_existing_rows(
     return normalized, known_keys
 
 
-def _looks_like_canonical_paid_row(row: dict) -> bool:
-    if row.get("row_payload_sha256") not in (None, ""):
+def _claims_canonical_identity(row: dict) -> bool:
+    provided_id = row.get("bet_id")
+    if isinstance(provided_id, str) and provided_id in _canonical_identity_candidates(
+        row
+    ):
         return True
-    if row.get("plan_sha256") not in (None, ""):
-        return True
-    evidence_fields = (
-        "report_date",
-        "locked_at_bjt",
-        "odds_source_record_id",
-        "odds_captured_at_bjt",
-        "locked_odds",
+    if row.get("strategy_version") not in NEW_PAID_STRATEGY_VERSIONS:
+        return False
+    return any(
+        row.get(field) not in (None, "")
+        for field in ("row_payload_sha256", "plan_sha256", "locked_at_bjt")
     )
-    return all(row.get(field) not in (None, "") for field in evidence_fields)
+
+
+def _canonical_evidence_key(
+    row: dict, canonical_evidence: dict[tuple[str, str], str]
+) -> tuple[str, str] | None:
+    try:
+        report_date = _strict_canonical_date(
+            row.get("report_date"), "report_date"
+        )
+    except ValueError:
+        return None
+    provided_id = row.get("bet_id")
+    if not isinstance(provided_id, str) or not provided_id:
+        return None
+    key = (report_date, provided_id)
+    if key not in canonical_evidence:
+        return None
+    if provided_id not in _canonical_identity_candidates(row):
+        return None
+    return key
+
+
+def _canonical_identity_candidates(row: dict) -> set[str]:
+    candidates: set[str] = set()
+    for strategy_version in NEW_PAID_STRATEGY_VERSIONS:
+        candidate = dict(row)
+        candidate["strategy_version"] = strategy_version
+        try:
+            candidates.add(stable_bet_id(candidate))
+        except (TypeError, ValueError):
+            continue
+    return candidates
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _validate_existing_canonical_paid_row(row: dict) -> None:

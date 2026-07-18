@@ -146,6 +146,15 @@ def read_valid_lock(root: Path, target_date: date) -> dict | None:
             target_date,
             expected_locked_at=_parse_aware_datetime(payload["locked_at_bjt"]),
         )
+        plan_evidence = bundle.get("paid_plan_evidence")
+        if (
+            not isinstance(plan_evidence, dict)
+            or payload.get("paid_plan_evidence_sha256")
+            != plan_evidence.get("rows_sha256")
+            or plan_hash != plan_evidence.get("plan_sha256")
+            or plan_path.stat().st_size != plan_evidence.get("bytes")
+        ):
+            return None
         snapshot = bundle["decision_snapshot"]
         if (
             payload.get("odds_path") != snapshot.get("path")
@@ -176,6 +185,13 @@ def lock_plan(root: Path, target_date: date, locked_at: datetime) -> dict:
     snapshot = bundle["decision_snapshot"]
     source = snapshot["source"]
     plan_path, bundle_path = _artifact_paths(root, target_date)
+    plan_evidence = bundle.get("paid_plan_evidence")
+    if (
+        not isinstance(plan_evidence, dict)
+        or sha256_file(plan_path) != plan_evidence.get("plan_sha256")
+        or plan_path.stat().st_size != plan_evidence.get("bytes")
+    ):
+        raise ValueError("paid plan differs from immutable decision evidence")
     payload = {
         "schema_version": SCHEMA_VERSION,
         "report_date": target_date.isoformat(),
@@ -184,6 +200,7 @@ def lock_plan(root: Path, target_date: date, locked_at: datetime) -> dict:
         "plan_sha256": sha256_file(plan_path),
         "decision_bundle_path": f"output/decision_bundle_{target_date.isoformat()}.json",
         "decision_bundle_sha256": sha256_file(bundle_path),
+        "paid_plan_evidence_sha256": plan_evidence["rows_sha256"],
         "odds_path": snapshot["path"],
         "odds_sha256": snapshot["sha256"],
         "odds_source": source,

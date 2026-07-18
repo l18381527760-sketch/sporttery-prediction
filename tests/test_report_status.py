@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import import_sporttery
 from decision_bundle import create_decision_bundle, write_prediction_metadata
+from generate_betting_plan import plan_csv_bytes
 from plan_lock import lock_plan
 from report_status import (
     OFFICIAL_FIXTURE_SOURCES,
@@ -24,6 +25,7 @@ from report_status import (
 
 
 BJT = timezone(timedelta(hours=8))
+REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_DATE = date(2026, 7, 16)
 GENERATED_AT = datetime(2026, 7, 16, 13, 35, tzinfo=BJT)
 FIXTURE_FIELDS = [
@@ -121,16 +123,12 @@ class ReportStatusTest(unittest.TestCase):
         ) as handle:
             csv.DictWriter(handle, fieldnames=PLAN_FIELDS).writeheader()
         (root / "config.json").write_text("{}\n", encoding="utf-8")
+        betting_config = json.loads(
+            (REPO_ROOT / "betting_config.json").read_text(encoding="utf-8")
+        )
+        betting_config["value_strategy"]["activation_mode"] = "shadow"
         (root / "betting_config.json").write_text(
-            json.dumps({
-                "strategy_version": "value-v4",
-                "value_strategy": {"activation_mode": "shadow"},
-                "simulation_account": {
-                    "mode": "simulation",
-                    "real_money_automation": False,
-                },
-            }),
-            encoding="utf-8",
+            json.dumps(betting_config), encoding="utf-8"
         )
         for name in (
             "predict_today.py",
@@ -242,7 +240,10 @@ class ReportStatusTest(unittest.TestCase):
             REPORT_DATE,
             datetime(2026, 7, 16, 13, 30, 30, tzinfo=BJT),
         )
-        create_decision_bundle(root, REPORT_DATE, locked_at)
+        bundle = create_decision_bundle(root, REPORT_DATE, locked_at)
+        (root / "output" / f"betting_plan_{REPORT_DATE.isoformat()}.csv").write_bytes(
+            plan_csv_bytes(bundle["paid_plan_evidence"]["rows"])
+        )
         lock_plan(
             root,
             REPORT_DATE,
@@ -788,11 +789,11 @@ class ReportStatusTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_artifacts(root)
+            self.make_lock(root)
             with (root / "output" / "betting_plan_2026-07-16.csv").open(
                 "w", encoding="utf-8", newline=""
             ) as handle:
                 csv.DictWriter(handle, fieldnames=["date", "stake"]).writeheader()
-            self.make_lock(root)
 
             status = self.publish(root, "decision")
 

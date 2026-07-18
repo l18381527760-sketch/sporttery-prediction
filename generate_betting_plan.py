@@ -1,4 +1,5 @@
 import csv
+import io
 import itertools
 import json
 import math
@@ -385,8 +386,13 @@ def build_legacy_value_plan(
     predictions: list[dict] | None = None,
     odds_by_match: dict | None = None,
     odds_source: str | None = None,
+    config: dict | None = None,
+    paid_history: list[dict] | None = None,
+    observation_history: list[dict] | None = None,
+    training_samples: list[dict] | None = None,
+    account_metrics: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    config = read_json(ROOT / "betting_config.json")
+    config = read_json(ROOT / "betting_config.json") if config is None else config
     strategy_version = str(config.get("legacy_strategy_version") or "legacy-v3")
     value = config.get("value_strategy", {})
     predictions = load_predictions(target_date) if predictions is None else predictions
@@ -396,39 +402,37 @@ def build_legacy_value_plan(
     if odds_source == "竞彩网" and status_path.exists():
         odds_source = str(read_json(status_path).get("source") or odds_source)
 
-    history = []
-    observation_history = []
-    ledger_path = OUTPUT_DIR / "betting_ledger.csv"
-    if ledger_path.exists():
-        with ledger_path.open("r", encoding="utf-8-sig", newline="") as handle:
-            history = list(csv.DictReader(handle))
-    observation_ledger_path = OUTPUT_DIR / "observation_ledger.csv"
-    if observation_ledger_path.exists():
-        with observation_ledger_path.open("r", encoding="utf-8-sig", newline="") as handle:
-            observation_history = list(csv.DictReader(handle))
-    metrics_payload = {}
-    metrics_path = OUTPUT_DIR / "model_metrics.json"
-    if metrics_path.exists():
-        try:
-            metrics_payload = read_json(metrics_path)
-        except (OSError, json.JSONDecodeError):
-            metrics_payload = {}
+    if paid_history is None:
+        paid_history = load_csv(OUTPUT_DIR / "betting_ledger.csv")
+    if observation_history is None:
+        observation_history = load_csv(OUTPUT_DIR / "observation_ledger.csv")
+    if account_metrics is None:
+        metrics_path = OUTPUT_DIR / "model_metrics.json"
+        if metrics_path.exists():
+            try:
+                account_metrics = read_json(metrics_path)
+            except (OSError, json.JSONDecodeError):
+                account_metrics = {}
+        else:
+            account_metrics = {}
+    if training_samples is None:
+        training_samples = load_draw_training_samples()
     account_state = simulation_account_state(
-        history,
+        paid_history,
         observation_history,
         target_date,
         config.get("simulation_account", {}),
-        metrics_payload,
+        account_metrics,
     )
     calibration_config = config.get("league_calibration", {})
     league_calibrations = fit_league_draw_calibrations(
-        load_draw_training_samples(),
+        training_samples,
         min_samples=int(calibration_config.get("min_samples", 30)),
         prior_samples=int(calibration_config.get("prior_samples", 60)),
         max_adjustment=float(calibration_config.get("max_adjustment", 0.05)),
         validation_fraction=float(calibration_config.get("validation_fraction", 0.25)),
     )
-    bet_metrics = summarize(history, strategy_version)
+    bet_metrics = summarize(paid_history, strategy_version)
     observation_metrics = summarize(observation_history, strategy_version)
     by_play = bet_metrics.get("by_play", {})
     paused_leagues = {league for league, item in bet_metrics.get("by_league", {}).items() if item.get("paused")}
@@ -1378,15 +1382,17 @@ def build_value_v4_plan(
     *,
     locked_at: datetime,
     decision_bundle: dict | None = None,
+    root: Path | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Build a value-v4 portfolio from locked decision-market inputs only."""
     global _LAST_VALUE_V4_AUDIT
     locked_time = _aware_locked_at(locked_at)
+    bundle_root = Path(root) if root is not None else ROOT
     if decision_bundle is not None:
         snapshot = dict(decision_bundle["decision_snapshot"]["payload"])
         snapshot["_snapshot_record_id"] = decision_bundle["decision_snapshot"]["path"]
         bundle_config = decision_bundle["configuration"]["betting"]["payload"]
-        predictions = load_csv(ROOT / decision_bundle["predictions"]["path"])
+        predictions = load_csv(bundle_root / decision_bundle["predictions"]["path"])
         histories = decision_bundle["history_inputs"]
         paid_history = histories["paid_history"]["rows"]
         observation_history = histories["observation_history"]["rows"]
@@ -1412,6 +1418,49 @@ def build_value_v4_plan(
     return result.plan, result.observations
 
 
+def build_paid_plan_from_bundle(
+    target_date: date,
+    *,
+    locked_at: datetime,
+    decision_bundle: dict,
+    root: Path | None = None,
+) -> list[dict]:
+    """Rebuild the paid plan using only immutable bundle-owned inputs."""
+    if not isinstance(decision_bundle, dict):
+        raise ValueError("decision_bundle must be a mapping")
+    bundle_root = Path(root) if root is not None else ROOT
+    config = decision_bundle["configuration"]["betting"]["payload"]
+    mode = config.get("value_strategy", {}).get("activation_mode")
+    if mode not in {"shadow", "active"}:
+        raise ValueError("activation_mode must be shadow or active")
+    if mode == "active":
+        plan, _observations = build_value_v4_plan(
+            target_date,
+            locked_at=locked_at,
+            decision_bundle=decision_bundle,
+            root=bundle_root,
+        )
+        return plan
+
+    snapshot = dict(decision_bundle["decision_snapshot"]["payload"])
+    snapshot["_snapshot_record_id"] = decision_bundle["decision_snapshot"]["path"]
+    predictions = load_csv(bundle_root / decision_bundle["predictions"]["path"])
+    histories = decision_bundle["history_inputs"]
+    legacy_plan, _observations = build_legacy_value_plan(
+        target_date,
+        predictions=predictions,
+        odds_by_match=_snapshot_odds(snapshot),
+        odds_source=str(snapshot.get("source") or ""),
+        config=config,
+        paid_history=histories["paid_history"]["rows"],
+        observation_history=histories["observation_history"]["rows"],
+        training_samples=histories["training_samples"]["rows"],
+        account_metrics=histories["account_metrics"]["payload"],
+    )
+    markets = load_official_decision_markets(target_date, snapshot=snapshot)
+    return _finalize_legacy_plan(legacy_plan, markets, _aware_locked_at(locked_at))
+
+
 def build_strategy_outputs(
     target_date: date,
     *,
@@ -1433,20 +1482,22 @@ def build_strategy_outputs(
     legacy_plan = []
     if mode == "shadow":
         if decision_bundle is not None:
-            snapshot = dict(decision_bundle["decision_snapshot"]["payload"])
-            snapshot["_snapshot_record_id"] = decision_bundle["decision_snapshot"]["path"]
-            predictions = load_csv(ROOT / decision_bundle["predictions"]["path"])
+            legacy_plan = build_paid_plan_from_bundle(
+                target_date,
+                locked_at=locked_time,
+                decision_bundle=decision_bundle,
+            )
         else:
             snapshot = load_value_snapshot(target_date, locked_at=locked_time)
             predictions = load_predictions(target_date)
-        markets = load_official_decision_markets(target_date, snapshot=snapshot)
-        legacy_plan, _ = build_legacy_value_plan(
-            target_date,
-            predictions=predictions,
-            odds_by_match=_snapshot_odds(snapshot),
-            odds_source=str(snapshot.get("source") or ""),
-        )
-        legacy_plan = _finalize_legacy_plan(legacy_plan, markets, locked_time)
+            markets = load_official_decision_markets(target_date, snapshot=snapshot)
+            legacy_plan, _ = build_legacy_value_plan(
+                target_date,
+                predictions=predictions,
+                odds_by_match=_snapshot_odds(snapshot),
+                odds_source=str(snapshot.get("source") or ""),
+            )
+            legacy_plan = _finalize_legacy_plan(legacy_plan, markets, locked_time)
     v4_plan, observations = build_value_v4_plan(
         target_date,
         locked_at=locked_time,
@@ -1494,12 +1545,17 @@ def load_results() -> dict[str, dict]:
 def write_plan(plan: list[dict], target_date: date) -> Path:
     OUTPUT_DIR.mkdir(exist_ok=True)
     path = OUTPUT_DIR / f"betting_plan_{target_date.isoformat()}.csv"
+    path.write_bytes(plan_csv_bytes(plan))
+    return path
+
+
+def plan_csv_bytes(plan: list[dict]) -> bytes:
     fields = _plan_fields(plan, list(PLAN_FIELD_ORDER))
-    with path.open("w", encoding="utf-8-sig", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields, lineterminator="\n")
+    with io.StringIO(newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(plan)
-    return path
+        return b"\xef\xbb\xbf" + handle.getvalue().encode("utf-8")
 
 
 def write_shadow_plan(plan: list[dict], target_date: date) -> Path:

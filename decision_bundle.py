@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -15,7 +16,7 @@ from import_sporttery import import_manifest_path, read_valid_import_manifest
 
 
 BEIJING = timezone(timedelta(hours=8))
-BUNDLE_SCHEMA_VERSION = 2
+BUNDLE_SCHEMA_VERSION = 3
 PREDICTION_METADATA_SCHEMA_VERSION = 1
 DOMESTIC_DECISION_SOURCES = frozenset({"sporttery", "zgzcw"})
 MODEL_CODE_PATHS = (
@@ -153,6 +154,9 @@ def create_decision_bundle(
         "training_samples": _inline_rows(
             _read_csv(root / "data" / "draw_training_samples.csv", required=False)
         ),
+        "account_metrics": _inline_payload(
+            _read_optional_json(root / "output" / "model_metrics.json")
+        ),
     }
     model_code = {
         path: _file_record(root, root / path) for path in MODEL_CODE_PATHS
@@ -199,9 +203,13 @@ def create_decision_bundle(
         "history_inputs": history_inputs,
         "roles": {
             "paid_odds": "decision_snapshot",
+            "paid_plan": "deterministic_bundle_evidence",
             "model_reference_inputs": list(MODEL_REFERENCE_INPUTS),
         },
     }
+    payload["paid_plan_evidence"] = _build_paid_plan_evidence(
+        root, target_date, locked, payload
+    )
     path = _bundle_path(root, target_date)
     if path.exists() or not _atomic_publish_json(path, payload):
         _require_matching_existing_bundle(path, payload)
@@ -325,6 +333,15 @@ def read_valid_decision_bundle(
             raise ValueError(f"decision bundle {key} is invalid")
         if record.get("sha256") != canonical_json_sha256(record["rows"]):
             raise ValueError(f"decision bundle {key} digest mismatch")
+    account_metrics = histories.get("account_metrics")
+    if (
+        not isinstance(account_metrics, dict)
+        or account_metrics.get("sha256")
+        != canonical_json_sha256(account_metrics.get("payload"))
+    ):
+        raise ValueError("decision bundle account metrics are invalid")
+
+    _validate_paid_plan_evidence(payload.get("paid_plan_evidence"), target_date)
 
     ratings = payload.get("ratings")
     model_code = payload.get("model_code")
@@ -344,6 +361,7 @@ def read_valid_decision_bundle(
     roles = payload.get("roles")
     if roles != {
         "paid_odds": "decision_snapshot",
+        "paid_plan": "deterministic_bundle_evidence",
         "model_reference_inputs": list(MODEL_REFERENCE_INPUTS),
     }:
         raise ValueError("decision bundle odds role is invalid")
@@ -520,6 +538,67 @@ def _inline_rows(rows: list[dict]) -> dict:
         for row in rows
     ]
     return {"rows": normalized, "sha256": canonical_json_sha256(normalized)}
+
+
+def _inline_payload(payload: object) -> dict:
+    return {"payload": payload, "sha256": canonical_json_sha256(payload)}
+
+
+def _read_optional_json(path: Path) -> object:
+    if not path.is_file():
+        return {}
+    try:
+        payload = _read_json(path)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _build_paid_plan_evidence(
+    root: Path,
+    target_date: date,
+    locked_at: datetime,
+    bundle: dict,
+) -> dict:
+    from generate_betting_plan import build_paid_plan_from_bundle, plan_csv_bytes
+
+    plan = build_paid_plan_from_bundle(
+        target_date,
+        locked_at=locked_at,
+        decision_bundle=bundle,
+        root=root,
+    )
+    serialized = plan_csv_bytes(plan)
+    with io.StringIO(serialized.decode("utf-8-sig"), newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    return {
+        "schema_version": 1,
+        "plan_sha256": hashlib.sha256(serialized).hexdigest(),
+        "bytes": len(serialized),
+        "row_count": len(rows),
+        "rows": rows,
+        "rows_sha256": canonical_json_sha256(rows),
+    }
+
+
+def _validate_paid_plan_evidence(record: object, target_date: date) -> None:
+    from generate_betting_plan import plan_csv_bytes
+
+    if not isinstance(record, dict) or record.get("schema_version") != 1:
+        raise ValueError("decision bundle paid plan evidence is invalid")
+    rows = record.get("rows")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("decision bundle paid plan evidence rows are invalid")
+    if any(row.get("date") != target_date.isoformat() for row in rows):
+        raise ValueError("decision bundle paid plan evidence date differs")
+    serialized = plan_csv_bytes(rows)
+    if (
+        record.get("row_count") != len(rows)
+        or record.get("rows_sha256") != canonical_json_sha256(rows)
+        or record.get("bytes") != len(serialized)
+        or record.get("plan_sha256") != hashlib.sha256(serialized).hexdigest()
+    ):
+        raise ValueError("decision bundle paid plan evidence digest mismatch")
 
 
 def _snapshot_match_identities(snapshot: dict) -> list[dict]:

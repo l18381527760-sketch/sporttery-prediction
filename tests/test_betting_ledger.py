@@ -16,7 +16,7 @@ from betting_ledger import (
     REFUNDED,
     WON,
     ingest_date,
-    ingest_locked_plan,
+    ingest_locked_plan as _ingest_locked_plan,
     settle_pending,
     stable_bet_id,
     write_ledger_atomic,
@@ -95,6 +95,27 @@ def lock(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def ingest_locked_plan(existing_rows, plan_rows, lock_payload):
+    """Give unit-level canonical rows the explicit evidence production requires."""
+    evidence = {}
+    for row in existing_rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("strategy_version") not in ledger_module.NEW_PAID_STRATEGY_VERSIONS:
+            continue
+        report_date = row.get("report_date")
+        bet_id = row.get("bet_id")
+        digest = row.get("row_payload_sha256")
+        if all(isinstance(value, str) and value for value in (report_date, bet_id, digest)):
+            evidence[(report_date, bet_id)] = digest
+    return _ingest_locked_plan(
+        existing_rows,
+        plan_rows,
+        lock_payload,
+        canonical_evidence=evidence,
+    )
 
 
 def locked_plan_rows(root: Path, plan_rows: list[dict]) -> tuple[dict, list[dict]]:
@@ -1838,8 +1859,77 @@ class LockedIngestCommandTest(unittest.TestCase):
                 root / "output" / "betting_ledger.csv", [downgraded]
             )
 
-            with self.assertRaisesRegex(ValueError, "canonical.*legacy|downgrade"):
+            with (
+                patch.object(
+                    ledger_module,
+                    "read_valid_lock",
+                    return_value=self.lock_payload,
+                ),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "canonical.*(legacy|bet_id)|downgrade|strategy_version",
+                ),
+            ):
                 ledger_module.settle_ledger(root, {}, SETTLED_AT)
+
+    def test_locked_identity_rejects_a_single_with_all_new_markers_stripped(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            row = plan_row()
+            self._prepare_locked_plan(root, row)
+            canonical = ingest_locked_plan([], [row], self.lock_payload)[0]
+            stripped = self._strip_canonical_markers(canonical)
+            write_ledger_atomic(root / "output" / "betting_ledger.csv", [stripped])
+
+            with (
+                patch.object(
+                    ledger_module, "read_valid_lock", return_value=self.lock_payload
+                ),
+                self.assertRaisesRegex(ValueError, "canonical|digest|downgrade"),
+            ):
+                ledger_module.settle_ledger(root, {}, SETTLED_AT)
+
+    def test_locked_identity_rejects_a_parlay_strategy_downgrade(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            row = v4_parlay_row("stripped-parlay")
+            self._prepare_locked_plan(root, row)
+            canonical = ingest_locked_plan([], [row], self.lock_payload)[0]
+            stripped = self._strip_canonical_markers(canonical)
+            write_ledger_atomic(root / "output" / "betting_ledger.csv", [stripped])
+
+            with (
+                patch.object(
+                    ledger_module, "read_valid_lock", return_value=self.lock_payload
+                ),
+                self.assertRaisesRegex(ValueError, "canonical|digest|downgrade"),
+            ):
+                ledger_module.settle_ledger(root, {}, SETTLED_AT)
+
+    def test_stripped_canonical_identity_fails_closed_when_lock_is_missing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            row = plan_row()
+            self._prepare_locked_plan(root, row)
+            canonical = ingest_locked_plan([], [row], self.lock_payload)[0]
+            stripped = self._strip_canonical_markers(canonical)
+            write_ledger_atomic(root / "output" / "betting_ledger.csv", [stripped])
+            (root / "output" / "plan_lock_2026-07-16.json").unlink()
+
+            with self.assertRaisesRegex(ValueError, "lock|canonical|evidence"):
+                ledger_module.settle_ledger(root, {}, SETTLED_AT)
+
+    @staticmethod
+    def _strip_canonical_markers(row):
+        stripped = dict(row)
+        for field in (
+            "strategy_version",
+            "row_payload_sha256",
+            "plan_sha256",
+            "locked_at_bjt",
+        ):
+            stripped[field] = ""
+        return stripped
 
 
 class AtomicWriteTest(unittest.TestCase):

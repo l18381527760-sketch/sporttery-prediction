@@ -10,12 +10,91 @@ from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import betting_ledger as ledger_module
+from betting_ledger import ingest_locked_plan, write_ledger_atomic
 from decision_bundle import create_decision_bundle, write_prediction_metadata
+from generate_betting_plan import plan_csv_bytes
+from official_markets import THREE_WAY_SELECTIONS, TOTAL_GOALS_SELECTIONS
 from plan_lock import lock_plan, main, read_valid_lock, sha256_file as plan_lock_sha
 
 
 BJT = timezone(timedelta(hours=8))
 TARGET_DATE = date(2026, 7, 16)
+SETTLED_AT = datetime(2026, 7, 17, 12, 0, tzinfo=BJT)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def canonical_paid_row(*, parlay: bool) -> dict:
+    row = {
+        "date": TARGET_DATE.isoformat(),
+        "strategy_version": "value-v4",
+        "model_version": "model-3",
+        "match_id": "1001",
+        "team_a": "A",
+        "team_b": "B",
+        "kickoff_local": "2026-07-16T20:00:00+08:00",
+        "play": "HAD",
+        "market_type": "had",
+        "market_line": "",
+        "selection": THREE_WAY_SELECTIONS["h"],
+        "odds": "2.00",
+        "locked_odds": "2.00",
+        "odds_source": "sporttery",
+        "odds_source_record_id": "odds-1001",
+        "odds_captured_at_bjt": "2026-07-16T13:30:00+08:00",
+        "raw_probability": "0.54",
+        "calibrated_probability": "0.53",
+        "official_market_probability": "0.50",
+        "conservative_probability": "0.51",
+        "edge": "0.01",
+        "net_ev": "0.02",
+        "full_kelly": "0.02",
+        "kelly_fraction": "0.25",
+        "data_quality_multiplier": "1.0",
+        "volatility_multiplier": "1.0",
+        "performance_multiplier": "1.0",
+        "portfolio_rank": "1",
+        "binding_limits": "daily",
+        "stake": "20",
+        "data_quality": "high",
+        "volatility_band": "low",
+        "legs_json": "[]",
+    }
+    if not parlay:
+        return row
+    legs = [
+        {
+            "match_id": "parlay-1",
+            "market_type": "had",
+            "selection": THREE_WAY_SELECTIONS["h"],
+            "line": "",
+            "odds": "2.00",
+            "odds_source": "sporttery",
+            "odds_source_record_id": "odds-parlay-1",
+            "odds_captured_at_bjt": "2026-07-16T13:30:00+08:00",
+        },
+        {
+            "match_id": "parlay-2",
+            "market_type": "ttg",
+            "selection": TOTAL_GOALS_SELECTIONS["s2"],
+            "line": "",
+            "odds": "3.00",
+            "odds_source": "sporttery",
+            "odds_source_record_id": "odds-parlay-2",
+            "odds_captured_at_bjt": "2026-07-16T13:30:00+08:00",
+        },
+    ]
+    return {
+        **row,
+        "match_id": "",
+        "play": "PARLAY",
+        "market_type": "parlay",
+        "selection": "combo",
+        "odds": "6.00",
+        "locked_odds": "6.00",
+        "stake": "10",
+        "legs_json": json.dumps(legs, ensure_ascii=False),
+    }
 
 
 def _concurrent_lock_worker(
@@ -69,16 +148,8 @@ class PlanLockTest(unittest.TestCase):
         (root / "output").mkdir()
         (root / "data" / "odds_snapshots").mkdir(parents=True)
         (root / "config.json").write_text("{}\n", encoding="utf-8")
-        (root / "betting_config.json").write_text(
-            json.dumps({
-                "strategy_version": "value-v4",
-                "value_strategy": {"activation_mode": "shadow"},
-                "simulation_account": {
-                    "mode": "simulation",
-                    "real_money_automation": False,
-                },
-            }),
-            encoding="utf-8",
+        (root / "betting_config.json").write_bytes(
+            (REPO_ROOT / "betting_config.json").read_bytes()
         )
         for name in (
             "predict_today.py",
@@ -172,21 +243,18 @@ class PlanLockTest(unittest.TestCase):
             }),
             encoding="utf-8",
         )
-        with (root / "output" / "betting_plan_2026-07-16.csv").open(
-            "w", encoding="utf-8-sig", newline=""
-        ) as handle:
-            writer = csv.DictWriter(handle, fieldnames=["date", "match", "stake"])
-            writer.writeheader()
-            writer.writerow({"date": "2026-07-16", "match": "A vs B", "stake": 20})
         write_prediction_metadata(
             root,
             TARGET_DATE,
             datetime(2026, 7, 16, 13, 30, 30, tzinfo=BJT),
         )
-        create_decision_bundle(
+        bundle = create_decision_bundle(
             root,
             TARGET_DATE,
             datetime(2026, 7, 16, 13, 31, tzinfo=BJT),
+        )
+        (root / "output" / "betting_plan_2026-07-16.csv").write_bytes(
+            plan_csv_bytes(bundle["paid_plan_evidence"]["rows"])
         )
 
     @staticmethod
@@ -225,6 +293,32 @@ class PlanLockTest(unittest.TestCase):
             )
             self.assertIsNone(read_valid_lock(root, date(2026, 7, 16)))
 
+    def test_real_lock_rejects_joint_plan_and_lock_tamper_for_single_and_parlay(self):
+        for parlay in (False, True):
+            with self.subTest(parlay=parlay), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.make_artifacts(root)
+                lock = self.make_lock(root)
+                plan_row = canonical_paid_row(parlay=parlay)
+                plan_path = root / lock["plan_path"]
+                self.write_csv(plan_path, [plan_row])
+                lock["plan_sha256"] = plan_lock_sha(plan_path)
+                self.write_lock_payload(root, lock)
+
+                canonical = ingest_locked_plan(
+                    [], [plan_row], lock, canonical_evidence={}
+                )[0]
+                canonical["row_payload_sha256"] = ledger_module._row_payload_digest(
+                    canonical
+                )
+                write_ledger_atomic(
+                    root / "output" / "betting_ledger.csv", [canonical]
+                )
+
+                self.assertIsNone(read_valid_lock(root, TARGET_DATE))
+                with self.assertRaisesRegex(ValueError, "lock|evidence|anchor"):
+                    ledger_module.settle_ledger(root, {}, SETTLED_AT)
+
     def test_next_day_shared_fixture_update_preserves_prior_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -250,8 +344,14 @@ class PlanLockTest(unittest.TestCase):
             self.make_artifacts(root)
             bundle_path = root / "output" / "decision_bundle_2026-07-16.json"
             bundle_path.write_text("{}\n", encoding="utf-8")
+            plan_path = root / "output" / "betting_plan_2026-07-16.csv"
             bundle = {
                 "locked_at_bjt": "2026-07-16T13:31:00+08:00",
+                "paid_plan_evidence": {
+                    "plan_sha256": plan_lock_sha(plan_path),
+                    "bytes": plan_path.stat().st_size,
+                    "rows_sha256": "c" * 64,
+                },
                 "decision_snapshot": {
                     "source": "zgzcw",
                     "path": "data/odds_snapshots/2026-07-16-133000-decision.json",
@@ -283,8 +383,14 @@ class PlanLockTest(unittest.TestCase):
             self.make_artifacts(root)
             bundle_path = root / "output" / "decision_bundle_2026-07-16.json"
             bundle_path.write_text("{}\n", encoding="utf-8")
+            plan_path = root / "output" / "betting_plan_2026-07-16.csv"
             bundle = {
                 "locked_at_bjt": "2026-07-16T13:31:00+08:00",
+                "paid_plan_evidence": {
+                    "plan_sha256": plan_lock_sha(plan_path),
+                    "bytes": plan_path.stat().st_size,
+                    "rows_sha256": "c" * 64,
+                },
                 "decision_snapshot": {
                     "source": "zgzcw",
                     "path": "data/odds_snapshots/2026-07-16-133000-decision.json",

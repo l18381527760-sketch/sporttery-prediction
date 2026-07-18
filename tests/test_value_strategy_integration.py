@@ -33,12 +33,19 @@ def synthetic_decision_bundle(root: Path, source: str = "sporttery") -> dict:
     bundle_path = root / "output" / f"decision_bundle_{TARGET_DATE}.json"
     bundle_path.write_text("{}\n", encoding="utf-8")
     odds_path = root / "data" / f"sporttery_odds_{TARGET_DATE}.json"
+    plan_path = root / "output" / f"betting_plan_{TARGET_DATE}.csv"
+    plan_bytes = plan_path.read_bytes()
     return {
         "locked_at_bjt": LOCKED_AT.isoformat(),
         "decision_snapshot": {
             "source": source,
             "path": odds_path.relative_to(root).as_posix(),
             "sha256": plan_lock_sha(odds_path),
+        },
+        "paid_plan_evidence": {
+            "plan_sha256": plan_lock_sha(plan_path),
+            "bytes": len(plan_bytes),
+            "rows_sha256": "e" * 64,
         },
     }
 
@@ -215,7 +222,7 @@ def settled_value_single(
             "locked_at_bjt": row["locked_at_bjt"],
             "plan_sha256": "a" * 64,
             "odds_source": "sporttery",
-        })[0]
+        }, canonical_evidence={})[0]
     else:
         row["bet_id"] = ledger_module.stable_bet_id(row)
     result = {
@@ -285,7 +292,7 @@ def settled_value_parlay(report_date: str = "2026-07-17") -> dict:
         "locked_at_bjt": row["locked_at_bjt"],
         "plan_sha256": "b" * 64,
         "odds_source": "sporttery",
-    })[0]
+    }, canonical_evidence={})[0]
     results = {
         "maturity-parlay-a": {
             "match_id": "maturity-parlay-a",

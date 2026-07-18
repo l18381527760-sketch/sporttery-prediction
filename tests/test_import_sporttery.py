@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -469,6 +470,90 @@ class ImportSportterySourceStatusTest(unittest.TestCase):
             payload = json.loads((data_dir / "source_status.json").read_text(encoding="utf-8"))
             self.assertEqual(0, payload["fixture_count"])
             self.assertTrue(payload["no_fixtures"])
+
+    def test_manifest_crash_recovery_preserves_ratings_and_source_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            data_dir.mkdir()
+            fixture = {
+                "matchId": "recovery-1",
+                "homeTeam": "甲队",
+                "awayTeam": "乙队",
+                "h": "2.00",
+                "d": "3.20",
+                "a": "3.80",
+                "market_h": "2.00",
+                "market_d": "3.20",
+                "market_a": "3.80",
+            }
+            common = (
+                patch.object(import_sporttery, "DATA_DIR", data_dir),
+                patch.object(
+                    import_sporttery,
+                    "fetch_selling_matches",
+                    return_value=[fixture],
+                ),
+                patch.object(
+                    import_sporttery,
+                    "collect_odds",
+                    return_value={"recovery-1": {"had": {}}},
+                ),
+                patch.object(import_sporttery, "fetch_zgzcw_matches", return_value=[]),
+                patch.object(
+                    import_sporttery,
+                    "attach_had_odds",
+                    side_effect=lambda matches, _: matches,
+                ),
+                patch.object(
+                    import_sporttery,
+                    "attach_professional_market",
+                    side_effect=lambda matches, _: matches,
+                ),
+            )
+            with ExitStack() as stack:
+                for context in common:
+                    stack.enter_context(context)
+                stack.enter_context(
+                    patch.object(
+                        sys,
+                        "argv",
+                        ["import_sporttery.py", "--date", "2026-07-16"],
+                    )
+                )
+                stack.enter_context(
+                    patch.object(
+                        import_sporttery,
+                        "_atomic_replace_bytes",
+                        side_effect=RuntimeError("crash after manifest"),
+                    )
+                )
+                with self.assertRaisesRegex(RuntimeError, "crash after manifest"):
+                    import_sporttery.main()
+
+            manifest = data_dir / "import_manifests" / "2026-07-16.json"
+            self.assertTrue(manifest.is_file())
+            with (
+                patch.object(import_sporttery, "DATA_DIR", data_dir),
+                patch.object(
+                    sys, "argv", ["import_sporttery.py", "--date", "2026-07-16"]
+                ),
+                patch.object(
+                    import_sporttery,
+                    "fetch_selling_matches",
+                    side_effect=AssertionError("recovery refetched import"),
+                ),
+            ):
+                self.assertEqual(0, import_sporttery.main())
+
+            ratings = data_dir / "team_ratings.csv"
+            status = data_dir / "source_status.json"
+            self.assertTrue(ratings.is_file())
+            self.assertIn("team,elo", ratings.read_text(encoding="utf-8-sig"))
+            self.assertIn("甲队", ratings.read_text(encoding="utf-8-sig"))
+            self.assertIn("乙队", ratings.read_text(encoding="utf-8-sig"))
+            payload = json.loads(status.read_text(encoding="utf-8"))
+            self.assertEqual(TARGET_DATE.isoformat(), payload["target_date"])
+            self.assertEqual(1, payload["fixture_count"])
 
     def test_main_publishes_the_count_from_the_written_nonzero_fixture_set(self):
         with tempfile.TemporaryDirectory() as tmp:

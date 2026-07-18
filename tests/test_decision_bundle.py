@@ -24,6 +24,7 @@ BJT = timezone(timedelta(hours=8))
 TARGET_DATE = date(2026, 7, 16)
 GENERATED_AT = datetime(2026, 7, 16, 13, 31, tzinfo=BJT)
 LOCKED_AT = datetime(2026, 7, 16, 13, 32, tzinfo=BJT)
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class DecisionBundleTest(unittest.TestCase):
@@ -36,17 +37,11 @@ class DecisionBundleTest(unittest.TestCase):
             "config.json",
             {"market_blend_weight": 0.2, "confidence_thresholds": {}},
         )
-        self._write_json(
-            "betting_config.json",
-            {
-                "strategy_version": "value-v4",
-                "value_strategy": {"activation_mode": "shadow"},
-                "simulation_account": {
-                    "mode": "simulation",
-                    "real_money_automation": False,
-                },
-            },
+        self.betting_config = json.loads(
+            (REPO_ROOT / "betting_config.json").read_text(encoding="utf-8")
         )
+        self.betting_config["value_strategy"]["activation_mode"] = "shadow"
+        self._write_json("betting_config.json", self.betting_config)
         (self.root / "predict_today.py").write_text("MODEL = 'test'\n", encoding="utf-8")
         for name in (
             "generate_betting_plan.py",
@@ -129,10 +124,7 @@ class DecisionBundleTest(unittest.TestCase):
         )
         self._write_csv("output/betting_ledger.csv", [])
         self._write_csv("output/observation_ledger.csv", [])
-        self._write_csv(
-            "data/draw_training_samples.csv",
-            [{"date": "2026-07-15", "match_id": "old", "settled_at_bjt": "2026-07-16T10:00:00+08:00"}],
-        )
+        self._write_csv("data/draw_training_samples.csv", [])
         self.snapshot_path = self.root / "data" / "odds_snapshots" / "2026-07-16-133000-decision.json"
         self.snapshot_path.write_text(
             json.dumps(
@@ -211,6 +203,11 @@ class DecisionBundleTest(unittest.TestCase):
         self.assertEqual("decision_snapshot", verified["roles"]["paid_odds"])
         self.assertIn("fixture_extract", verified["roles"]["model_reference_inputs"])
         self.assertEqual([], verified["history_inputs"]["paid_history"]["rows"])
+        self.assertEqual({}, verified["history_inputs"]["account_metrics"]["payload"])
+        self.assertEqual(
+            verified["paid_plan_evidence"]["row_count"],
+            len(verified["paid_plan_evidence"]["rows"]),
+        )
 
     def test_bundle_rejects_snapshot_source_divergent_from_import_manifest(self):
         manifest = json.loads(self.import_manifest_path.read_text(encoding="utf-8"))
@@ -247,17 +244,9 @@ class DecisionBundleTest(unittest.TestCase):
     def test_existing_conflicting_bundle_fails_closed(self):
         write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
         create_decision_bundle(self.root, TARGET_DATE, LOCKED_AT)
-        self._write_json(
-            "betting_config.json",
-            {
-                "strategy_version": "value-v4",
-                "value_strategy": {"activation_mode": "active"},
-                "simulation_account": {
-                    "mode": "simulation",
-                    "real_money_automation": False,
-                },
-            },
-        )
+        changed = json.loads(json.dumps(self.betting_config))
+        changed["value_strategy"]["activation_mode"] = "active"
+        self._write_json("betting_config.json", changed)
 
         with self.assertRaisesRegex(ValueError, "conflicting decision bundle"):
             create_decision_bundle(self.root, TARGET_DATE, LOCKED_AT)
