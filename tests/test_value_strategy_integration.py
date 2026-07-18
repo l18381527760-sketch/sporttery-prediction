@@ -164,6 +164,119 @@ def candidate(match_id: str, *, market_type: str = "had", play: str | None = Non
     )
 
 
+def settled_value_single(
+    match_id: str,
+    market_type: str,
+    selection: str,
+    *,
+    line: str = "",
+    report_date: str = "2026-07-17",
+    home_goals: int = 2,
+    away_goals: int = 0,
+) -> dict:
+    row = {
+        "date": report_date,
+        "report_date": report_date,
+        "strategy_version": "value-v4",
+        "model_version": "maturity-model",
+        "match_id": match_id,
+        "play": market_type.upper(),
+        "market_type": market_type,
+        "market_line": line,
+        "selection": selection,
+        "odds": "2.00",
+        "locked_odds": "2.00",
+        "odds_source": "sporttery",
+        "odds_source_record_id": f"odds-{match_id}-{market_type}",
+        "odds_captured_at_bjt": "2026-07-17T13:00:00+08:00",
+        "stake": "0",
+        "status": ledger_module.PENDING,
+    }
+    row["bet_id"] = ledger_module.stable_bet_id(row)
+    result = {
+        "match_id": match_id,
+        "result_status": "finished",
+        "result_source": "sporttery",
+        "source_record_id": f"result-{match_id}",
+        "captured_at_bjt": "2026-07-17T22:00:00+08:00",
+        "home_goals": str(home_goals),
+        "away_goals": str(away_goals),
+    }
+    return ledger_module.settle_pending(
+        [row],
+        {match_id: result},
+        datetime(2026, 7, 17, 22, 5, tzinfo=BEIJING),
+    )[0]
+
+
+def settled_value_parlay(report_date: str = "2026-07-17") -> dict:
+    legs = [
+        {
+            "match_id": "maturity-parlay-a",
+            "market_type": "had",
+            "selection": THREE_WAY_SELECTIONS["h"],
+            "line": "",
+            "odds": "2.00",
+            "odds_source": "sporttery",
+            "odds_source_record_id": "odds-maturity-parlay-a",
+            "odds_captured_at_bjt": "2026-07-17T13:00:00+08:00",
+        },
+        {
+            "match_id": "maturity-parlay-b",
+            "market_type": "ttg",
+            "selection": TOTAL_GOALS_SELECTIONS["s2"],
+            "line": "",
+            "odds": "3.00",
+            "odds_source": "sporttery",
+            "odds_source_record_id": "odds-maturity-parlay-b",
+            "odds_captured_at_bjt": "2026-07-17T13:00:00+08:00",
+        },
+    ]
+    row = {
+        "date": report_date,
+        "report_date": report_date,
+        "strategy_version": "value-v4",
+        "model_version": "maturity-model",
+        "match_id": "",
+        "play": "PARLAY",
+        "market_type": "parlay",
+        "market_line": "",
+        "selection": "two legs",
+        "legs_json": json.dumps(legs, ensure_ascii=False),
+        "odds": "6.00",
+        "locked_odds": "6.00",
+        "odds_source": "sporttery",
+        "odds_source_record_id": "odds-maturity-parlay",
+        "odds_captured_at_bjt": "2026-07-17T13:00:00+08:00",
+        "stake": "0",
+        "status": ledger_module.PENDING,
+    }
+    row["bet_id"] = ledger_module.stable_bet_id(row)
+    results = {
+        "maturity-parlay-a": {
+            "match_id": "maturity-parlay-a",
+            "result_status": "finished",
+            "result_source": "sporttery",
+            "source_record_id": "result-maturity-parlay-a",
+            "captured_at_bjt": "2026-07-17T22:00:00+08:00",
+            "home_goals": "2",
+            "away_goals": "0",
+        },
+        "maturity-parlay-b": {
+            "match_id": "maturity-parlay-b",
+            "result_status": "finished",
+            "result_source": "sporttery",
+            "source_record_id": "result-maturity-parlay-b",
+            "captured_at_bjt": "2026-07-17T22:00:00+08:00",
+            "home_goals": "2",
+            "away_goals": "0",
+        },
+    }
+    return ledger_module.settle_pending(
+        [row], results, datetime(2026, 7, 17, 22, 5, tzinfo=BEIJING)
+    )[0]
+
+
 class ValueV4PlanIntegrationTest(unittest.TestCase):
     def test_generator_exposes_no_public_paid_ledger_rebuild_writer(self):
         self.assertFalse(hasattr(strategy, "write_ledger"))
@@ -175,23 +288,23 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
         )
         captured = {}
         settled = [
-            {
-                "date": "2026-07-17",
-                "strategy_version": "value-v4",
-                "bet_id": f"settled-{index}",
-                "match_id": f"match-{index}",
-                "market_type": "had",
-                "status": "命中",
-                "stake": "0",
-            }
+            settled_value_single(
+                f"match-{index}", "had", THREE_WAY_SELECTIONS["h"]
+            )
             for index in range(100)
         ]
+        future = settled_value_single(
+            "future-match",
+            "had",
+            THREE_WAY_SELECTIONS["h"],
+            report_date=TARGET_DATE.isoformat(),
+        )
         observations = [
             *settled,
             dict(settled[0]),
             {**settled[0], "bet_id": "pending", "status": "未结算"},
             {**settled[0], "bet_id": "legacy", "strategy_version": "legacy-v3"},
-            {**settled[0], "bet_id": "future", "date": TARGET_DATE.isoformat()},
+            future,
             {
                 **settled[0],
                 "bet_id": "malformed-parlay",
@@ -235,16 +348,13 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
         settled_date = (TARGET_DATE - timedelta(days=1)).isoformat()
 
         def settled(match_id, market_type, line, selection, suffix):
-            return {
-                "date": settled_date,
-                "strategy_version": "value-v4",
-                "bet_id": f"{match_id}:{market_type}:{line}:{suffix}",
-                "match_id": match_id,
-                "market_type": market_type,
-                "market_line": line,
-                "selection": selection,
-                "status": ledger_module.WON,
-            }
+            return settled_value_single(
+                match_id,
+                market_type,
+                selection,
+                line=line,
+                report_date=settled_date,
+            )
 
         had_vector = [
             settled("vector-match", "had", "", selection, code)
@@ -262,9 +372,10 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
             strategy._settled_sample_count(paid, observations, TARGET_DATE),
         )
 
-        different_report_date = deepcopy(had_vector[0])
-        different_report_date.update(
-            bet_id="vector-match:had:other-report-date",
+        different_report_date = settled_value_single(
+            "vector-match",
+            "had",
+            THREE_WAY_SELECTIONS["h"],
             report_date=(TARGET_DATE - timedelta(days=2)).isoformat(),
         )
         self.assertEqual(
@@ -296,6 +407,106 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
                 TARGET_DATE,
             ),
         )
+
+    def test_settled_maturity_rejects_noncanonical_or_unproven_singles(self):
+        valid = settled_value_single(
+            "maturity-single", "had", THREE_WAY_SELECTIONS["h"]
+        )
+        self.assertEqual(
+            1, strategy._settled_sample_count([], [valid], TARGET_DATE)
+        )
+
+        unsupported_selection = {**valid, "selection": "unsupported"}
+        unsupported_selection["bet_id"] = ledger_module.stable_bet_id(
+            unsupported_selection
+        )
+        cases = (
+            ("spoofed identity", {**valid, "bet_id": "spoofed"}),
+            ("unsupported selection", unsupported_selection),
+            ("missing result status", {**valid, "result_status": ""}),
+            ("missing result source", {**valid, "result_source": ""}),
+            ("missing result record", {**valid, "source_record_id": ""}),
+            ("naive result capture", {
+                **valid, "captured_at_bjt": "2026-07-17T22:00:00"
+            }),
+            ("missing settlement time", {**valid, "settled_at_bjt": ""}),
+            ("inconsistent refund", {
+                **valid, "result_status": "refunded", "status": ledger_module.WON
+            }),
+            ("pending", {**valid, "status": ledger_module.PENDING}),
+            ("future", settled_value_single(
+                "future-single",
+                "had",
+                THREE_WAY_SELECTIONS["h"],
+                report_date=TARGET_DATE.isoformat(),
+            )),
+            ("malformed date", {
+                **valid, "date": "not-a-date", "report_date": "not-a-date"
+            }),
+        )
+        for name, row in cases:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    0, strategy._settled_sample_count([], [row], TARGET_DATE)
+                )
+
+    def test_settled_maturity_requires_canonical_parlay_leg_evidence(self):
+        valid = settled_value_parlay()
+        self.assertIn("|", valid["captured_at_bjt"])
+        self.assertEqual(
+            2, strategy._settled_sample_count([], [valid], TARGET_DATE)
+        )
+
+        malformed_result_json = {**valid, "result_legs_json": "not-json"}
+        missing_result_leg = deepcopy(valid)
+        result_legs = json.loads(missing_result_leg["result_legs_json"])
+        missing_result_leg["result_legs_json"] = json.dumps(
+            result_legs[:1], ensure_ascii=False
+        )
+        missing_result_record = deepcopy(valid)
+        result_legs = json.loads(missing_result_record["result_legs_json"])
+        result_legs[0]["source_record_id"] = ""
+        missing_result_record["result_legs_json"] = json.dumps(
+            result_legs, ensure_ascii=False
+        )
+        naive_result_capture = deepcopy(valid)
+        result_legs = json.loads(naive_result_capture["result_legs_json"])
+        result_legs[0]["captured_at_bjt"] = "2026-07-17T22:00:00"
+        naive_result_capture["result_legs_json"] = json.dumps(
+            result_legs, ensure_ascii=False
+        )
+        mismatched_result_identity = deepcopy(valid)
+        result_legs = json.loads(mismatched_result_identity["result_legs_json"])
+        result_legs[0]["match_id"] = "different-match"
+        mismatched_result_identity["result_legs_json"] = json.dumps(
+            result_legs, ensure_ascii=False
+        )
+        unsupported_leg = deepcopy(valid)
+        plan_legs = json.loads(unsupported_leg["legs_json"])
+        plan_legs[0]["selection"] = "unsupported"
+        unsupported_leg["legs_json"] = json.dumps(plan_legs, ensure_ascii=False)
+        unsupported_leg["bet_id"] = ledger_module.stable_bet_id(unsupported_leg)
+        same_match = deepcopy(valid)
+        plan_legs = json.loads(same_match["legs_json"])
+        plan_legs[1]["match_id"] = plan_legs[0]["match_id"]
+        same_match["legs_json"] = json.dumps(plan_legs, ensure_ascii=False)
+        same_match["bet_id"] = ledger_module.stable_bet_id(same_match)
+
+        cases = (
+            ("missing result legs", {**valid, "result_legs_json": ""}),
+            ("malformed result JSON", malformed_result_json),
+            ("missing result leg", missing_result_leg),
+            ("missing result record", missing_result_record),
+            ("naive result capture", naive_result_capture),
+            ("mismatched result identity", mismatched_result_identity),
+            ("unsupported plan leg", unsupported_leg),
+            ("same-match plan legs", same_match),
+        )
+        for name, row in cases:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    0, strategy._settled_sample_count([], [row], TARGET_DATE)
+                )
 
     def test_active_mode_audit_has_no_selected_shadow_rows(self):
         with self.strategy_context(value_config("active")):

@@ -282,6 +282,30 @@ class IdentityAndIngestionTest(unittest.TestCase):
         rerun = ingest_locked_plan([first, equivalent], [plan_row()], lock())
         self.assertEqual([first], rerun)
 
+    def test_existing_canonical_empty_date_uses_report_date_for_dedupe(self):
+        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+        first = {**canonical, "date": "", "bet_id": "spoofed-first"}
+        equivalent = {**canonical, "date": "", "bet_id": "spoofed-second"}
+
+        deduplicated = ingest_locked_plan([first, equivalent], [], lock())
+        self.assertEqual([first], deduplicated)
+
+        rerun = ingest_locked_plan([first, equivalent], [plan_row()], lock())
+        self.assertEqual([first], rerun)
+
+    def test_existing_canonical_empty_date_conflict_fails_closed(self):
+        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+        first = {**canonical, "date": "", "bet_id": "spoofed-first"}
+        conflict = {
+            **canonical,
+            "date": "",
+            "bet_id": "spoofed-second",
+            "stake": "22",
+        }
+
+        with self.assertRaisesRegex(ValueError, "conflicting existing canonical"):
+            ingest_locked_plan([first, conflict], [], lock())
+
     def test_existing_canonical_duplicate_conflicts_fail_closed(self):
         canonical = ingest_locked_plan([], [plan_row()], lock())[0]
         first = {**canonical, "bet_id": "spoofed-first"}
@@ -942,6 +966,47 @@ class IdentityAndIngestionTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     ingest_locked_plan([], [plan_row()], payload)
 
+    def test_new_paid_odds_capture_cannot_be_after_lock_in_any_allowed_version(self):
+        for strategy_version in ("legacy-v3", "value-v4"):
+            with self.subTest(strategy_version=strategy_version, row="single"):
+                single = plan_row(
+                    strategy_version=strategy_version,
+                    play=("legacy display" if strategy_version == "legacy-v3" else "HAD"),
+                    kelly_fraction=("" if strategy_version == "legacy-v3" else "0.25"),
+                    odds_captured_at_bjt="2026-07-16T05:31:00.000001+00:00",
+                )
+                with self.assertRaisesRegex(ValueError, "after lock"):
+                    ingest_locked_plan([], [single], lock())
+
+            with self.subTest(strategy_version=strategy_version, row="parlay leg"):
+                parlay = v4_parlay_row(f"post-lock-{strategy_version}")
+                if strategy_version == "legacy-v3":
+                    parlay.update(
+                        strategy_version="legacy-v3",
+                        play="legacy combo display",
+                        kelly_fraction="",
+                    )
+                legs = json.loads(parlay["legs_json"])
+                legs[1]["odds_captured_at_bjt"] = (
+                    "2026-07-16T05:31:00.000001+00:00"
+                )
+                parlay["legs_json"] = json.dumps(legs, ensure_ascii=False)
+                with self.assertRaisesRegex(ValueError, "after lock"):
+                    ingest_locked_plan([], [parlay], lock())
+
+    def test_new_paid_odds_capture_accepts_lock_boundary_across_offsets(self):
+        boundary = "2026-07-16T05:31:00+00:00"
+        single = plan_row(odds_captured_at_bjt=boundary)
+        self.assertEqual(1, len(ingest_locked_plan([], [single], lock())))
+
+        parlay = v4_parlay_row("boundary")
+        parlay["odds_captured_at_bjt"] = boundary
+        legs = json.loads(parlay["legs_json"])
+        for leg in legs:
+            leg["odds_captured_at_bjt"] = boundary
+        parlay["legs_json"] = json.dumps(legs, ensure_ascii=False)
+        self.assertEqual(1, len(ingest_locked_plan([], [parlay], lock())))
+
     def test_new_locked_row_clears_plan_settlement_fields_and_uses_authoritative_lock_metadata(self):
         polluted = plan_row(**{
             "odds_source": "SPORTTERY",
@@ -978,6 +1043,68 @@ class IdentityAndIngestionTest(unittest.TestCase):
 class SettlementTest(unittest.TestCase):
     def settle_one(self, row, results):
         return settle_pending(ingest_locked_plan([], [row], lock()), results, SETTLED_AT)[0]
+
+    def test_settle_ledger_dedupes_equivalent_canonical_rows_before_profit(self):
+        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+        first = {**canonical, "bet_id": "spoofed-first"}
+        duplicate = {**canonical, "bet_id": "spoofed-second"}
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            ledger_path = root / "output" / "betting_ledger.csv"
+            write_ledger_atomic(ledger_path, [first, duplicate])
+
+            ledger_module.settle_ledger(
+                root, {"1001": finished("1001", 2, 1)}, SETTLED_AT
+            )
+
+            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        self.assertEqual(1, len(rows))
+        self.assertEqual("spoofed-first", rows[0]["bet_id"])
+        self.assertEqual(WON, rows[0]["status"])
+        self.assertEqual("20.00", rows[0]["profit"])
+
+    def test_settle_ledger_rejects_conflicting_canonical_duplicates(self):
+        canonical = ingest_locked_plan([], [plan_row()], lock())[0]
+        first = {**canonical, "bet_id": "spoofed-first"}
+        conflict = {**canonical, "bet_id": "spoofed-second", "stake": "22"}
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            ledger_path = root / "output" / "betting_ledger.csv"
+            write_ledger_atomic(ledger_path, [first, conflict])
+            before = ledger_path.read_bytes()
+
+            with self.assertRaisesRegex(
+                ValueError, "conflicting existing canonical"
+            ):
+                ledger_module.settle_ledger(
+                    root, {"1001": finished("1001", 2, 1)}, SETTLED_AT
+                )
+
+            self.assertEqual(before, ledger_path.read_bytes())
+
+    def test_settle_ledger_preserves_unparseable_legacy_migration(self):
+        legacy = legacy_parlay_row(
+            bet_id="legacy-existing-id",
+            legs_json="not-json",
+            status=PENDING,
+        )
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            ledger_path = root / "output" / "betting_ledger.csv"
+            write_ledger_atomic(ledger_path, [legacy])
+
+            ledger_module.settle_ledger(root, {}, SETTLED_AT)
+
+            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        self.assertEqual(1, len(rows))
+        self.assertEqual("legacy-existing-id", rows[0]["bet_id"])
+        self.assertEqual("not-json", rows[0]["legs_json"])
+        self.assertEqual(PENDING, rows[0]["status"])
 
     def test_had_each_three_way_selection_settles_from_matching_90_minute_score(self):
         for selection, score in (("胜", (2, 1)), ("平", (1, 1)), ("负", (0, 1))):

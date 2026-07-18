@@ -10,6 +10,7 @@ from pathlib import Path
 from betting_ledger import (
     TERMINAL_STATUSES,
     settle_ledger,
+    settled_market_identities,
     stable_bet_id,
     update_observation_ledger,
     write_ledger_atomic,
@@ -950,48 +951,18 @@ def _settled_sample_count(
             continue
         if row_date >= target_date:
             continue
-        bet_id = str(row.get("bet_id") or "").strip()
-        market_type = str(row.get("market_type") or "").strip().lower()
-        if not bet_id or market_type not in {"had", "hhad", "ttg", "parlay"}:
-            continue
-        if market_type == "parlay":
-            try:
-                legs = json.loads(row.get("canonical_legs_json") or row.get("legs_json") or "[]")
-            except json.JSONDecodeError:
-                continue
-            if (
-                not isinstance(legs, list)
-                or len(legs) != 2
-                or any(
-                    not isinstance(leg, dict)
-                    or not str(leg.get("match_id") or "").strip()
-                    or str(leg.get("market_type") or "").lower() not in {"had", "hhad", "ttg"}
-                    for leg in legs
-                )
-                or len({str(leg["match_id"]).strip() for leg in legs}) != 2
-            ):
-                continue
-            leg_units = [
-                _market_sample_key(
-                    row_date,
-                    leg.get("match_id"),
-                    leg.get("market_type"),
-                    leg.get("line", leg.get("market_line", "")),
-                )
-                for leg in legs
-            ]
-            if any(unit is None for unit in leg_units):
-                continue
-            market_units.update(unit for unit in leg_units if unit is not None)
-            continue
-        unit = _market_sample_key(
-            row_date,
-            row.get("match_id"),
-            market_type,
-            row.get("market_line", row.get("line", "")),
-        )
-        if unit is not None:
-            market_units.add(unit)
+        identities = settled_market_identities(row)
+        units = [
+            _market_sample_key(
+                row_date,
+                identity.get("match_id"),
+                identity.get("market_type"),
+                identity.get("line", ""),
+            )
+            for identity in identities
+        ]
+        if identities and all(unit is not None for unit in units):
+            market_units.update(unit for unit in units if unit is not None)
     return len(market_units)
 
 

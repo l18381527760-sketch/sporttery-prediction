@@ -65,27 +65,11 @@ def stable_bet_id(plan_row: dict) -> str:
 def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: dict) -> list[dict]:
     """Migrate legacy rows and append only previously unseen locked plan identities."""
     lock_source = _validate_lock(lock)
+    locked_at = _aware_datetime(lock["locked_at_bjt"], "lock locked_at_bjt")
     if not isinstance(existing_rows, list) or not isinstance(plan_rows, list):
         raise ValueError("ledger and plan rows must be lists")
 
-    ingested: list[dict] = []
-    known_keys: set[tuple[str, str]] = set()
-    canonical_states: dict[str, str] = {}
-    for source_row in existing_rows:
-        row = _migrate_existing_row(source_row)
-        key_kind, identity_key = _existing_dedupe_key(row)
-        dedupe_key = (key_kind, identity_key)
-        if dedupe_key in known_keys:
-            if (
-                key_kind == "canonical"
-                and canonical_states[identity_key] != _existing_canonical_state(row)
-            ):
-                raise ValueError("conflicting existing canonical ledger rows")
-            continue
-        known_keys.add(dedupe_key)
-        if key_kind == "canonical":
-            canonical_states[identity_key] = _existing_canonical_state(row)
-        ingested.append(row)
+    ingested, known_keys = _normalize_existing_rows(existing_rows)
 
     new_rows: list[tuple[dict, str]] = []
     plan_ids: set[str] = set()
@@ -110,6 +94,7 @@ def ingest_locked_plan(existing_rows: list[dict], plan_rows: list[dict], lock: d
         [row for row, _bet_id in new_rows],
         lock_source,
         lock["report_date"],
+        locked_at,
     )
     for source_row, bet_id in new_rows:
         ingested.append(_new_locked_row(source_row, lock, lock_source, bet_id))
@@ -121,6 +106,7 @@ def _validate_new_paid_rows(
     new_rows: list[dict],
     lock_source: str,
     report_date: str,
+    locked_at: datetime,
 ) -> None:
     new_stakes: dict[int, Decimal] = {}
     for row in new_rows:
@@ -135,7 +121,9 @@ def _validate_new_paid_rows(
         if source not in DOMESTIC_ODDS_SOURCES or source != lock_source:
             raise ValueError("paid row odds source must match the domestic lock source")
         _required_text(row.get("odds_source_record_id"), "odds_source_record_id")
-        _aware_iso(row.get("odds_captured_at_bjt"), "odds_captured_at_bjt")
+        _capture_not_after_lock(
+            row.get("odds_captured_at_bjt"), "odds_captured_at_bjt", locked_at
+        )
         display_odds = _decimal_odds(row.get("odds"), "odds")
         locked_odds = _decimal_odds(row.get("locked_odds"), "locked_odds")
         if not _is_parlay(row) and display_odds != locked_odds:
@@ -143,7 +131,7 @@ def _validate_new_paid_rows(
         if strategy_version == "value-v4":
             _value_v4_kelly(row.get("kelly_fraction"))
 
-    _validate_paid_portfolio(new_rows, lock_source)
+    _validate_paid_portfolio(new_rows, lock_source, locked_at)
     _validate_paid_account_caps(
         existing_rows, new_rows, new_stakes, report_date
     )
@@ -280,7 +268,9 @@ def _account_match_ids(row: dict) -> list[str]:
         return []
 
 
-def _validate_paid_portfolio(plan_rows: list[dict], lock_source: str) -> None:
+def _validate_paid_portfolio(
+    plan_rows: list[dict], lock_source: str, locked_at: datetime
+) -> None:
     parlays = 0
     for row in plan_rows:
         if not isinstance(row, dict):
@@ -323,9 +313,10 @@ def _validate_paid_portfolio(plan_rows: list[dict], lock_source: str) -> None:
                     leg.get("odds_source_record_id"),
                     "parlay leg odds_source_record_id",
                 )
-                _aware_iso(
+                _capture_not_after_lock(
                     leg.get("odds_captured_at_bjt"),
                     "parlay leg odds_captured_at_bjt",
+                    locked_at,
                 )
                 combined_odds *= _decimal_odds(leg.get("odds"), "parlay leg odds")
             locked_odds = _decimal_odds(row.get("locked_odds"), "locked_odds")
@@ -520,6 +511,126 @@ def settle_pending(
     return updated
 
 
+def settled_market_identities(row: dict) -> list[dict]:
+    """Return canonical market identities only for proven terminal value-v4 rows."""
+    if (
+        not isinstance(row, dict)
+        or row.get("strategy_version") != "value-v4"
+        or row.get("status") not in TERMINAL_STATUSES
+    ):
+        return []
+    try:
+        if _required_text(row.get("bet_id"), "bet_id") != stable_bet_id(row):
+            return []
+        _aware_iso(row.get("settled_at_bjt"), "settled_at_bjt")
+        market_type = _required_text(row.get("market_type"), "market_type").lower()
+        if market_type == "parlay":
+            return _settled_parlay_identities(row)
+        if market_type not in VALUE_V4_SINGLE_MARKETS:
+            return []
+        if _required_text(row.get("play"), "play") != VALUE_V4_PLAY_BY_MARKET[market_type]:
+            return []
+        identity = {
+            "match_id": _canonical_match_id(row.get("match_id")),
+            "market_type": market_type,
+            "selection": _required_text(row.get("selection"), "selection"),
+            "line": _line_value(row.get("market_line", row.get("line", ""))),
+        }
+        _validate_paid_market(
+            identity["market_type"], identity["selection"], identity["line"],
+            "settled single", "value-v4",
+        )
+        if not _is_proven_result(row):
+            return []
+        expected_status = _single_terminal_status(identity, row)
+        return [identity] if row.get("status") == expected_status else []
+    except (TypeError, ValueError):
+        return []
+
+
+def _settled_parlay_identities(row: dict) -> list[dict]:
+    legs = _canonical_legs(row)
+    if len({leg["match_id"] for leg in legs}) != 2:
+        return []
+    for leg in legs:
+        if leg["market_type"] not in VALUE_V4_SINGLE_MARKETS:
+            return []
+        _validate_paid_market(
+            leg["market_type"], leg["selection"], leg["line"],
+            "settled parlay leg", "value-v4",
+        )
+
+    raw_result_legs = row.get("result_legs_json")
+    if not isinstance(raw_result_legs, str) or not raw_result_legs:
+        return []
+    try:
+        result_legs = json.loads(raw_result_legs)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(result_legs, list) or len(result_legs) != 2:
+        return []
+    if _canonical_legs({"legs": result_legs}) != legs:
+        return []
+
+    all_refunded = True
+    any_loss = False
+    for leg, result in zip(legs, _sorted_result_legs(result_legs)):
+        if not _is_proven_result(result):
+            return []
+        if result.get("result_status") == "refunded":
+            continue
+        all_refunded = False
+        outcome = _outcome(
+            leg["market_type"], leg["selection"], leg["line"], result
+        )
+        if outcome is None:
+            return []
+        any_loss = any_loss or not outcome
+
+    aggregate = _parlay_provenance(result_legs)
+    if any(
+        row.get(field) != aggregate[field]
+        for field in (
+            "result_status", "result_source", "source_record_id", "captured_at_bjt"
+        )
+    ):
+        return []
+    expected_status = REFUNDED if all_refunded else LOST if any_loss else WON
+    return legs if row.get("status") == expected_status else []
+
+
+def _single_terminal_status(identity: dict, result: dict) -> str | None:
+    if result.get("result_status") == "refunded":
+        return REFUNDED
+    outcome = _outcome(
+        identity["market_type"], identity["selection"], identity["line"], result
+    )
+    if outcome is None:
+        return None
+    return WON if outcome else LOST
+
+
+def _sorted_result_legs(result_legs: list[dict]) -> list[dict]:
+    return sorted(
+        result_legs,
+        key=lambda result: json.dumps(
+            {
+                "match_id": _canonical_match_id(result.get("match_id")),
+                "market_type": _required_text(
+                    result.get("market_type"), "leg market_type"
+                ).lower(),
+                "selection": _required_text(result.get("selection"), "leg selection"),
+                "line": _line_value(
+                    result.get("line", result.get("market_line", ""))
+                ),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+
+
 def write_ledger_atomic(path: Path, rows: list[dict]) -> Path:
     """Persist a deterministic UTF-8-SIG ledger without exposing partial files."""
     path = Path(path)
@@ -566,7 +677,8 @@ def ingest_date(root: Path, target_date: date) -> Path:
 def settle_ledger(root: Path, results: dict, settled_at: datetime) -> Path:
     """Settle existing canonical ledger rows without regenerating any plan."""
     ledger_path = Path(root) / "output" / "betting_ledger.csv"
-    return write_ledger_atomic(ledger_path, settle_pending(_read_csv(ledger_path), results, settled_at))
+    rows, _known_keys = _normalize_existing_rows(_read_csv(ledger_path))
+    return write_ledger_atomic(ledger_path, settle_pending(rows, results, settled_at))
 
 
 def _read_csv(path: Path) -> list[dict]:
@@ -629,7 +741,7 @@ def _validate_lock(lock: dict) -> str:
 
 
 def _identity_payload(row: dict, *, allow_legacy_match: bool = False) -> dict:
-    report_date = _required_date(row.get("date", row.get("report_date")))
+    report_date = _required_date(row.get("date") or row.get("report_date"))
     strategy_version = _required_text(row.get("strategy_version"), "strategy_version")
     play = _required_text(row.get("play"), "play")
     market_type = _required_text(row.get("market_type"), "market_type").lower()
@@ -688,6 +800,30 @@ def _existing_dedupe_key(row: dict) -> tuple[str, str]:
         return "canonical", stable_bet_id(row)
     except ValueError:
         return "legacy", _required_text(row.get("bet_id"), "bet_id")
+
+
+def _normalize_existing_rows(
+    existing_rows: list[dict],
+) -> tuple[list[dict], set[tuple[str, str]]]:
+    normalized: list[dict] = []
+    known_keys: set[tuple[str, str]] = set()
+    canonical_states: dict[str, str] = {}
+    for source_row in existing_rows:
+        row = _migrate_existing_row(source_row)
+        key_kind, identity_key = _existing_dedupe_key(row)
+        dedupe_key = (key_kind, identity_key)
+        if dedupe_key in known_keys:
+            if (
+                key_kind == "canonical"
+                and canonical_states[identity_key] != _existing_canonical_state(row)
+            ):
+                raise ValueError("conflicting existing canonical ledger rows")
+            continue
+        known_keys.add(dedupe_key)
+        if key_kind == "canonical":
+            canonical_states[identity_key] = _existing_canonical_state(row)
+        normalized.append(row)
+    return normalized, known_keys
 
 
 def _existing_canonical_state(row: dict) -> str:
@@ -1140,20 +1276,32 @@ def _line_value(value: object) -> str:
 
 
 def _aware_iso(value: object, name: str) -> str:
+    _aware_datetime(value, name)
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
+def _aware_datetime(value: object, name: str) -> datetime:
     if isinstance(value, datetime):
         parsed = value
-        text = value.isoformat()
     elif isinstance(value, str):
         try:
             parsed = datetime.fromisoformat(value)
         except ValueError as exc:
             raise ValueError(f"{name} must be ISO-8601") from exc
-        text = value
     else:
         raise ValueError(f"{name} must be ISO-8601")
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError(f"{name} must include a timezone")
-    return text
+    return parsed
+
+
+def _capture_not_after_lock(
+    value: object, name: str, locked_at: datetime
+) -> datetime:
+    captured_at = _aware_datetime(value, name)
+    if captured_at > locked_at:
+        raise ValueError(f"{name} cannot be after lock")
+    return captured_at
 
 
 def _goal(value: object) -> int | None:
