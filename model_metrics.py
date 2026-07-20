@@ -4,6 +4,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from betting_ledger import resolve_ledger_path
 from strategy_controls import fit_league_draw_calibrations
 
 
@@ -222,8 +223,10 @@ def snapshot_coverage(snapshot_dir: Path = SNAPSHOT_DIR) -> dict:
 
 
 def write_metrics() -> Path:
-    ledger = OUTPUT_DIR / "betting_ledger.csv"
-    observation_ledger = OUTPUT_DIR / "observation_ledger.csv"
+    ledger = resolve_ledger_path(OUTPUT_DIR / "betting_ledger.csv")
+    observation_ledger = resolve_ledger_path(
+        OUTPUT_DIR / "observation_ledger.csv"
+    )
     rows = []
     observation_rows = []
     if ledger.exists():

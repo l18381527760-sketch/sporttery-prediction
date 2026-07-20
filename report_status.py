@@ -7,12 +7,17 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from PIL import Image, UnidentifiedImageError
+
+from betting_ledger import resolve_ledger_path
+from decision_bundle import read_valid_decision_bundle
 from plan_lock import read_valid_lock
+from provisional_plan import read_valid_provisional_state
 
 
 BEIJING = timezone(timedelta(hours=8))
-SCHEMA_VERSION = 1
-PHASES = ("forecast", "decision", "settlement")
+SCHEMA_VERSION = 2
+PHASES = ("forecast", "decision", "provisional", "settlement")
 FIXTURE_REQUIRED_FIELDS = frozenset(
     {
         "date", "kickoff_local", "stage", "team_a", "team_b", "neutral", "venue",
@@ -51,6 +56,12 @@ def base_status(report_date: date) -> dict:
         "settled_through": "",
         "decision_odds_at_bjt": "",
         "plan_locked_at_bjt": "",
+        "report_stage": "forecast",
+        "initial_report_ready": False,
+        "provisional_plan_sha256": "",
+        "confirmed_stake": 0,
+        "provisional_stake": 0,
+        "revalidation_ready": False,
     }
 
 
@@ -181,12 +192,13 @@ def _official_fixture_rows(
 
 def _csv_with_header(path: Path, required_fields: frozenset[str]) -> tuple[bool, int]:
     try:
+        path = resolve_ledger_path(path)
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
             if not reader.fieldnames or not required_fields.issubset(reader.fieldnames):
                 return False, 0
             return True, sum(1 for _ in reader)
-    except OSError:
+    except (OSError, ValueError):
         return False, 0
 
 
@@ -227,7 +239,35 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def artifact_state(root: Path, report_date: date) -> dict:
+def _verified_report_image(
+    path: Path,
+    report_date: date,
+    expected_report_stage: str | None,
+    expected_build_id: str | None,
+) -> bool:
+    if not path.is_file() or path.stat().st_size <= 0:
+        return False
+    if expected_report_stage is None and expected_build_id is None:
+        return True
+    try:
+        with Image.open(path) as image:
+            return (
+                image.format == "PNG"
+                and image.info.get("report_date") == report_date.isoformat()
+                and image.info.get("report_stage") == expected_report_stage
+                and image.info.get("build_id") == expected_build_id
+            )
+    except (OSError, UnidentifiedImageError):
+        return False
+
+
+def artifact_state(
+    root: Path,
+    report_date: date,
+    *,
+    expected_report_stage: str | None = None,
+    expected_build_id: str | None = None,
+) -> dict:
     date_text = report_date.isoformat()
     data = root / "data"
     output = root / "output"
@@ -293,9 +333,30 @@ def artifact_state(root: Path, report_date: date) -> dict:
     ledger_ready, ledger_count = _csv_with_header(
         output / "betting_ledger.csv", LEDGER_REQUIRED_FIELDS
     )
+    try:
+        read_valid_decision_bundle(root, report_date)
+        decision_bundle_ready = True
+    except ValueError:
+        decision_bundle_ready = False
+    try:
+        provisional_state = read_valid_provisional_state(root, report_date)
+        provisional_state_ready = True
+        provisional_plan_ready = True
+        provisional_shadow_ready = True
+        provisional_plan_count = provisional_state["active_candidate_count"]
+        provisional_shadow_count = provisional_state["shadow_candidate_count"]
+    except ValueError:
+        provisional_state = {}
+        provisional_state_ready = False
+        provisional_plan_ready = False
+        provisional_shadow_ready = False
+        provisional_plan_count = 0
+        provisional_shadow_count = 0
     site_ready = (web / "index.html").is_file()
     image_path = web / "daily-report.png"
-    image_ready = image_path.is_file() and image_path.stat().st_size > 0
+    image_ready = _verified_report_image(
+        image_path, report_date, expected_report_stage, expected_build_id
+    )
 
     return {
         "source_ready": source_ready,
@@ -319,6 +380,16 @@ def artifact_state(root: Path, report_date: date) -> dict:
         "decision_odds_at_bjt": decision_odds_at_bjt,
         "ledger_ready": ledger_ready,
         "ledger_count": ledger_count,
+        "decision_bundle_ready": decision_bundle_ready,
+        "provisional_plan_ready": provisional_plan_ready,
+        "provisional_plan_count": provisional_plan_count,
+        "provisional_shadow_ready": provisional_shadow_ready,
+        "provisional_shadow_count": provisional_shadow_count,
+        "provisional_state_ready": provisional_state_ready,
+        "provisional_plan_sha256": provisional_state.get("provisional_plan_sha256", ""),
+        "provisional_stake": provisional_state.get(
+            "active_provisional_stake", 0
+        ),
         "site_ready": site_ready,
         "image_ready": image_ready,
         "image_sha256": _sha256_file(image_path) if image_ready else "",
@@ -329,7 +400,7 @@ def artifact_state(root: Path, report_date: date) -> dict:
 def _previous_status(root: Path, report_date: date) -> dict:
     previous = _read_json(root / "web" / "report-status.json")
     if isinstance(previous, dict) and (
-        previous.get("schema_version") == SCHEMA_VERSION
+        previous.get("schema_version") in {1, SCHEMA_VERSION}
         and previous.get("report_date") == report_date.isoformat()
     ):
         return {**base_status(report_date), **previous}
@@ -348,6 +419,10 @@ def _data_quality(state: dict) -> dict:
             "plan_csv_ready",
             "decision_ready",
             "plan_lock_ready",
+            "decision_bundle_ready",
+            "provisional_plan_ready",
+            "provisional_shadow_ready",
+            "provisional_state_ready",
             "decision_snapshot_ready",
             "ledger_ready",
             "site_ready",
@@ -397,7 +472,12 @@ def publish_status(
     if phase != "settlement" and settled_through is not None:
         raise ValueError("settled_through is only valid for settlement")
 
-    state = artifact_state(root, report_date)
+    state = artifact_state(
+        root,
+        report_date,
+        expected_report_stage=phase,
+        expected_build_id=build_id,
+    )
     status = _previous_status(root, report_date)
     forecast_ready = all(
         state[key]
@@ -408,6 +488,29 @@ def publish_status(
     )
     snapshot_ready = state["decision_snapshot_ready"]
     plan_ready = state["plan_lock_ready"] and state["plan_csv_ready"]
+    initial_report_ready = all(
+        state[key]
+        for key in (
+            "decision_bundle_ready", "provisional_plan_ready", "provisional_shadow_ready",
+            "provisional_state_ready", "site_ready", "image_ready",
+        )
+    )
+    if phase == "provisional" and initial_report_ready:
+        from revalidation_reporting import publish_revalidation_report
+
+        revalidation_status = publish_revalidation_report(
+            root,
+            report_date,
+            [],
+            generated_at,
+            source_commit_sha,
+        )
+        status["revalidation_ready"] = (
+            revalidation_status.get("report_date") == report_date.isoformat()
+            and type(revalidation_status.get("revision")) is int
+            and revalidation_status["revision"] >= 0
+            and bool(revalidation_status.get("status_sha256"))
+        )
     if phase == "forecast":
         status["forecast_ready"] = forecast_ready
     elif phase == "decision":
@@ -419,6 +522,13 @@ def publish_status(
         status["plan_locked_at_bjt"] = _latest_bjt_timestamp(
             status.get("plan_locked_at_bjt"), state["plan_locked_at_bjt"]
         )
+    elif phase == "provisional":
+        status["initial_report_ready"] = initial_report_ready
+        if not initial_report_ready:
+            status["revalidation_ready"] = False
+        status["provisional_plan_sha256"] = state["provisional_plan_sha256"] if initial_report_ready else ""
+        status["confirmed_stake"] = 0
+        status["provisional_stake"] = state["provisional_stake"] if initial_report_ready else 0
     else:
         prior_settled_through = _prior_settlement_date(status)
         effective_settled_through = max(
@@ -455,6 +565,8 @@ def publish_status(
 
     status.update(
         {
+            "schema_version": SCHEMA_VERSION,
+            "report_stage": "provisional" if phase == "provisional" else phase,
             "build_id": build_id,
             "generated_at_bjt": generated_at.astimezone(BEIJING).isoformat(),
             "image_sha256": state["image_sha256"],
@@ -486,9 +598,12 @@ def publish_status(
 
 def _parse_date(value: str) -> date:
     try:
-        return date.fromisoformat(value)
+        parsed = date.fromisoformat(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("date must be YYYY-MM-DD") from exc
+    if value != parsed.isoformat():
+        raise argparse.ArgumentTypeError("date must be YYYY-MM-DD")
+    return parsed
 
 
 def _parse_aware_datetime(value: str) -> datetime:

@@ -1,10 +1,14 @@
+import argparse
 import csv
 import html
 import json
 import math
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+from betting_ledger import resolve_ledger_path
+from provisional_plan import read_valid_provisional_state
 
 
 ROOT = Path(__file__).resolve().parent
@@ -12,6 +16,8 @@ OUTPUT_DIR = ROOT / "output"
 WEB_DIR = ROOT / "web"
 ASSET_PATH = "assets/stadium-dashboard.png"
 BUILD_ID = os.environ.get("REPORT_BUILD_ID", "local")
+BEIJING = timezone(timedelta(hours=8))
+REPORT_STAGES = ("daily", "forecast", "provisional", "settlement")
 
 SUBTYPE_LABELS = {"cold_draw": "冷门平局", "balanced_draw": "均势平局"}
 SETTLEMENT_LABELS = {
@@ -51,12 +57,13 @@ def read_predictions() -> list[dict]:
 
 
 def read_csv_file(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
     try:
+        path = resolve_ledger_path(path)
+        if not path.exists():
+            return []
         with path.open("r", encoding="utf-8-sig", newline="") as fh:
             return list(csv.DictReader(fh))
-    except (OSError, UnicodeError, csv.Error):
+    except (OSError, UnicodeError, csv.Error, ValueError):
         return []
 
 
@@ -119,6 +126,75 @@ def read_daily_decision(display_date: date | None) -> dict:
     return read_json_file(
         OUTPUT_DIR / f"daily_decision_{display_date.isoformat()}.json"
     )
+
+
+def read_provisional_candidates() -> tuple[list[dict], dict[str, dict]]:
+    """Read current provisional candidates and their revalidation states."""
+    candidates_by_id: dict[str, dict] = {}
+    states: dict[str, dict] = {}
+    for pattern in ("provisional_betting_plan_*.csv", "provisional_shadow_plan_*.csv"):
+        for path in sorted(OUTPUT_DIR.glob(pattern)):
+            for row in read_csv_file(path):
+                payload = row.get("candidate_payload_json")
+                try:
+                    candidate = json.loads(payload) if payload else {}
+                except (TypeError, json.JSONDecodeError):
+                    candidate = {}
+                if not isinstance(candidate, dict):
+                    candidate = {}
+                candidate = {**candidate, **row}
+                candidate_id = external_text(candidate.get("candidate_id")).strip()
+                if candidate_id:
+                    candidates_by_id[candidate_id] = candidate
+    for path in sorted(OUTPUT_DIR.glob("revalidation_state_*.json")):
+        payload = read_json_file(path)
+        for entry in payload.get("candidates", []) if isinstance(payload, dict) else []:
+            if not isinstance(entry, dict):
+                continue
+            candidate = entry.get("candidate") if isinstance(entry.get("candidate"), dict) else entry
+            candidate_id = external_text(candidate.get("candidate_id")).strip()
+            if not candidate_id:
+                continue
+            candidates_by_id[candidate_id] = {**candidate, **candidates_by_id.get(candidate_id, {})}
+            states[candidate_id] = entry
+    return list(candidates_by_id.values()), states
+
+
+def read_validated_provisional_candidates(
+    report_date: date,
+) -> tuple[list[dict], list[dict], list[dict], dict[str, dict]]:
+    """Load only the immutable provisional generation selected for one date."""
+    state = read_valid_provisional_state(ROOT, report_date)
+    candidates = []
+    active = []
+    shadow = []
+    for candidate in state["candidates"]:
+        source = candidate.get("source_plan_row")
+        if not isinstance(source, dict):
+            raise ValueError("validated provisional candidate source row is invalid")
+        rendered = {
+            **source,
+            **candidate,
+            "date": report_date.isoformat(),
+            "stake": candidate["provisional_stake"],
+        }
+        candidates.append(rendered)
+        if candidate["route"] == "active":
+            active.append(rendered)
+        else:
+            shadow.append(rendered)
+
+    runtime = read_json_file(
+        OUTPUT_DIR / f"revalidation_state_{report_date.isoformat()}.json"
+    )
+    states = {
+        entry["candidate"]["candidate_id"]: entry
+        for entry in runtime.get("candidates", [])
+        if isinstance(entry, dict)
+        and isinstance(entry.get("candidate"), dict)
+        and isinstance(entry["candidate"].get("candidate_id"), str)
+    }
+    return active, shadow, candidates, states
 
 
 def draw_alert_key(row: dict) -> tuple[str, str, str]:
@@ -445,6 +521,62 @@ def render_betting_plan(
             <tbody>{"".join(rows)}</tbody>
           </table>
         </div>
+      </section>
+    """
+
+
+def revalidation_state_label(candidate: dict, runtime: dict) -> str:
+    state = external_text(runtime.get("state", candidate.get("state"))).strip()
+    if state == "cancelled":
+        return "已撤销"
+    if state == "confirmed":
+        final_stake = as_float(runtime, "confirmed_stake")
+        if final_stake is None:
+            final_stake = as_float(candidate, "final_stake")
+        provisional_stake = as_float(candidate, "provisional_stake")
+        if final_stake is not None and provisional_stake is not None and final_stake < provisional_stake:
+            return "临场降额"
+        return "临场确认"
+    if state == "screened":
+        return "90分钟筛查通过"
+    return "初选待复核"
+
+
+def render_revalidation_candidates(candidates: list[dict], states: dict[str, dict]) -> str:
+    if not candidates:
+        return ""
+    provisional_total = sum(
+        as_float(candidate, "provisional_stake") or 0
+        for candidate in candidates
+        if revalidation_state_label(candidate, states.get(external_text(candidate.get("candidate_id")).strip(), {}))
+        in {"初选待复核", "90分钟筛查通过"}
+    )
+    rows = []
+    for candidate in candidates:
+        candidate_id = external_text(candidate.get("candidate_id")).strip()
+        runtime = states.get(candidate_id, {})
+        label = revalidation_state_label(candidate, runtime)
+        final_stake = runtime.get("confirmed_stake", candidate.get("final_stake", "-"))
+        rows.append(
+            f"""
+            <tr>
+              <td>{escaped(candidate.get("match", candidate.get("match_id", "")))}</td>
+              <td>{escaped(candidate.get("market", candidate.get("selection", "")))}</td>
+              <td><strong>{label}</strong></td>
+              <td>{escaped(candidate.get("odds", candidate.get("initial_odds", candidate.get("provisional_odds", "-"))))}</td>
+              <td>{escaped(runtime.get("current_odds", candidate.get("current_odds", "-")))}</td>
+              <td>暂定 {escaped(candidate.get("provisional_stake", "-"))}元</td>
+              <td>{escaped(final_stake)}元</td>
+            </tr>
+            """
+        )
+    return f"""
+      <section class="betting-section">
+        <div class="section-title"><h2>赛前复核状态</h2><span>暂定金额（未计入盈亏） {yuan(provisional_total)}元</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>比赛</th><th>玩法</th><th>状态</th><th>初选赔率</th><th>当前赔率</th><th>暂定金额</th><th>最终金额</th></tr></thead>
+          <tbody>{"".join(rows)}</tbody>
+        </table></div>
       </section>
     """
 
@@ -864,15 +996,32 @@ def render_ledger(ledger: list[dict], model_metrics: dict) -> str:
     """
 
 
-def render_site(rows: list[dict]) -> str:
+def render_site(
+    rows: list[dict],
+    report_date: date | None = None,
+    report_stage: str = "daily",
+) -> str:
+    if report_stage not in REPORT_STAGES:
+        raise ValueError("report_stage is invalid")
     grouped = group_by_date(rows)
-    display_date = choose_display_date(rows)
+    display_date = report_date if report_date is not None else choose_display_date(rows)
     display_rows = grouped.get(display_date.isoformat(), []) if display_date else []
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    generated_at = datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M")
     total_matches = len(rows)
     high_confidence = sum(1 for row in rows if row.get("confidence") in {"高", "High"})
-    betting_plan = read_betting_plan(display_date)
-    observation_plan = read_observation_plan(display_date)
+    if report_stage == "provisional":
+        if display_date is None:
+            raise ValueError("report_date is required for provisional rendering")
+        (
+            betting_plan,
+            observation_plan,
+            provisional_candidates,
+            revalidation_states,
+        ) = read_validated_provisional_candidates(display_date)
+    else:
+        betting_plan = read_betting_plan(display_date)
+        observation_plan = read_observation_plan(display_date)
+        provisional_candidates, revalidation_states = read_provisional_candidates()
     betting_ledger = read_betting_ledger()
     model_metrics = read_model_metrics()
     draw_alerts = read_draw_alert(display_date)
@@ -901,6 +1050,8 @@ def render_site(rows: list[dict]) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="report-build-id" content="{html.escape(BUILD_ID, quote=True)}">
+  <meta name="report-date" content="{html.escape(display_date.isoformat() if display_date else '', quote=True)}">
+  <meta name="report-stage" content="{html.escape(report_stage, quote=True)}">
   <title>博弈预测看板</title>
   <style>
     :root {{
@@ -1503,6 +1654,7 @@ def render_site(rows: list[dict]) -> str:
     {render_play_metrics(model_metrics)}
     {render_league_calibrations(model_metrics)}
     {render_betting_plan(betting_plan, draw_alerts, daily_decision)}
+    {render_revalidation_candidates(provisional_candidates, revalidation_states)}
     {render_draw_alert(draw_alerts, draw_alert_metrics, draw_model_registry)}
     {render_observations(observation_plan)}
 
@@ -1517,10 +1669,29 @@ def render_site(rows: list[dict]) -> str:
     return "\n".join(line.rstrip() for line in page.splitlines()) + "\n"
 
 
+def _parse_date(value: str) -> date:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("date must be exact YYYY-MM-DD") from exc
+    if value != parsed.isoformat():
+        raise argparse.ArgumentTypeError("date must be exact YYYY-MM-DD")
+    return parsed
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Build the forecast website.")
+    parser.add_argument("--date", type=_parse_date)
+    parser.add_argument("--stage", choices=REPORT_STAGES, default="daily")
+    args = parser.parse_args()
+    if args.stage == "provisional" and args.date is None:
+        parser.error("--date is required for provisional rendering")
     WEB_DIR.mkdir(exist_ok=True)
     rows = read_predictions()
-    html_text = render_site(rows)
+    try:
+        html_text = render_site(rows, args.date, args.stage)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        parser.error(str(exc))
     output = WEB_DIR / "index.html"
     output.write_text(html_text, encoding="utf-8")
     print(f"Generated website: {output}")

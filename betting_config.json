@@ -69,6 +69,17 @@
     "monthly_stop_loss": 5000,
     "real_money_automation": false
   },
+  "pre_kickoff_revalidation": {
+    "mode": "shadow",
+    "minimum_initial_minutes": 60,
+    "t90_open_minutes": 105,
+    "t90_close_minutes": 40,
+    "t30_open_minutes": 40,
+    "t30_close_minutes": 10,
+    "scan_business_days": 2,
+    "stake_unit": 2,
+    "max_notification_days": 30
+  },
   "learning_policy": {
     "case_study_policy": "regression_only",
     "minimum_rule_samples": 30

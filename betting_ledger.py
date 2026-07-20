@@ -4,6 +4,8 @@ import hashlib
 import io
 import json
 import os
+import tempfile
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
@@ -40,7 +42,7 @@ MAX_VALUE_V4_KELLY = Decimal("0.25")
 NEW_PAID_STRATEGY_VERSIONS = frozenset({"legacy-v3", "value-v4"})
 CANONICAL_PAID_CUTOVER_DATE = date(2026, 7, 18)
 
-REQUIRED_FIELD_ORDER = (
+LEDGER_FIELD_ORDER = (
     "bet_id", "date", "report_date", "strategy_version", "model_version",
     "locked_at_bjt", "plan_sha256", "row_payload_sha256", "match_id", "team_a", "team_b", "kickoff_local",
     "play", "market_type", "market_line", "selection", "legs_json",
@@ -54,9 +56,26 @@ REQUIRED_FIELD_ORDER = (
     "source_record_id", "captured_at_bjt", "score_scope", "settlement_minutes",
     "home_goals", "away_goals",
     "settled_at_bjt", "return", "profit", "result_legs_json", "clv",
+    "evidence_type", "candidate_id", "candidate_payload_sha256",
+    "t90_receipt_path", "t90_receipt_sha256",
+    "t30_receipt_path", "t30_receipt_sha256",
+    "live_odds_snapshot_path", "live_odds_snapshot_sha256",
+    "final_confirmed_at_bjt",
 )
+REQUIRED_FIELD_ORDER = LEDGER_FIELD_ORDER
 
-ROW_PAYLOAD_SCHEMA_VERSION = 1
+LEDGER_TRANSACTION_SCHEMA_VERSION = 1
+LEDGER_TRANSACTION_NAMES = (
+    "betting_ledger.csv",
+    "observation_ledger.csv",
+)
+LEDGER_TRANSACTION_MANIFEST = "ledger_transaction_manifest.json"
+LEDGER_GENERATION_DIRECTORY = "ledger_generations"
+LEDGER_FIXED_TRANSACTION_NAMES = ("revalidation_rehearsal_ledger.csv",)
+_UNSPECIFIED_GENERATION = object()
+
+ROW_PAYLOAD_SCHEMA_VERSION = 2
+LEGACY_ROW_PAYLOAD_SCHEMA_VERSION = 1
 IMMUTABLE_ROW_PAYLOAD_FIELDS = (
     "bet_id", "date", "report_date", "strategy_version", "model_version",
     "locked_at_bjt", "plan_sha256", "stage", "match", "match_id", "team_a",
@@ -71,6 +90,11 @@ IMMUTABLE_ROW_PAYLOAD_FIELDS = (
     "full_kelly", "kelly_fraction", "data_quality_multiplier",
     "volatility_multiplier", "performance_multiplier", "portfolio_rank",
     "binding_limits", "data_quality", "volatility_band", "reason",
+    "evidence_type", "candidate_id", "candidate_payload_sha256",
+    "t90_receipt_path", "t90_receipt_sha256",
+    "t30_receipt_path", "t30_receipt_sha256",
+    "live_odds_snapshot_path", "live_odds_snapshot_sha256",
+    "final_confirmed_at_bjt",
 )
 
 
@@ -686,27 +710,367 @@ def _sorted_result_legs(result_legs: list[dict]) -> list[dict]:
 def write_ledger_atomic(path: Path, rows: list[dict]) -> Path:
     """Persist a deterministic UTF-8-SIG ledger without exposing partial files."""
     path = Path(path)
+    if _is_physical_generation_path(path):
+        raise ValueError("public writes to physical ledger generations are forbidden")
+    payload = _ledger_csv_bytes(rows)
+    if path.name in LEDGER_TRANSACTION_NAMES:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _ledger_commit_lock(path.parent):
+            if (path.parent / LEDGER_TRANSACTION_MANIFEST).exists():
+                raise ValueError(
+                    "manifest-backed ledger writes require a generation transaction"
+                )
+            _write_bytes_atomic(path, payload)
+        return path
+    _write_bytes_atomic(path, payload)
+    return path
+
+
+def update_observation_ledger_atomic(
+    path: Path,
+    plan_rows: list[dict],
+    results: dict,
+    settled_at: datetime,
+) -> Path:
+    """Append and settle observations against one locked ledger generation."""
+    logical = Path(path)
+    if logical.name != "observation_ledger.csv":
+        raise ValueError("observation ledger path is invalid")
+
+    def mutate(_generation_id: str | None, current: dict[str, list[dict]]):
+        return {
+            logical.name: update_observation_ledger(
+                current[logical.name], plan_rows, results, settled_at
+            )
+        }
+
+    return _mutate_ledger_rows(logical.parent, (logical.name,), mutate)[logical.name]
+
+
+def _mutate_ledger_rows(output: Path, names: tuple[str, ...], mutate) -> dict[str, Path]:
+    """Read, validate, mutate, and commit ledger rows under one generation lock."""
+    output = Path(output)
+    destinations = tuple(dict.fromkeys(names))
+    allowed = set(LEDGER_TRANSACTION_NAMES) | set(LEDGER_FIXED_TRANSACTION_NAMES)
+    if not destinations or any(name not in allowed for name in destinations):
+        raise ValueError("ledger transaction destinations are invalid")
+
+    with _ledger_commit_lock(output):
+        manifest = _read_ledger_manifest(output)
+        generation_id = None if manifest is None else manifest["generation_id"]
+        current = {
+            name: _read_ledger_rows_locked(output, manifest, name)
+            for name in destinations
+        }
+        updates = mutate(generation_id, current)
+        if not isinstance(updates, dict) or not updates:
+            raise ValueError("ledger transaction produced no updates")
+        if any(name not in destinations for name in updates):
+            raise ValueError("ledger transaction updated an unread destination")
+
+        generation_updates = {
+            name: _ledger_csv_bytes(rows)
+            for name, rows in updates.items()
+            if name in LEDGER_TRANSACTION_NAMES
+        }
+        fixed_updates = {
+            name: _ledger_csv_bytes(rows)
+            for name, rows in updates.items()
+            if name in LEDGER_FIXED_TRANSACTION_NAMES
+        }
+        if generation_updates and fixed_updates:
+            raise ValueError("fixed and generated ledgers cannot share a transaction")
+        if generation_updates:
+            _commit_ledger_generation_locked(
+                output,
+                generation_updates,
+                expected_generation_id=generation_id,
+            )
+        else:
+            for name, payload in fixed_updates.items():
+                _write_bytes_atomic(output / name, payload)
+    return {name: output / name for name in updates}
+
+
+def _read_ledger_rows_locked(
+    output: Path, manifest: dict | None, name: str
+) -> list[dict]:
+    if name in LEDGER_TRANSACTION_NAMES and manifest is not None:
+        path = _manifest_destination_path(output, manifest, name)
+    else:
+        path = output / name
+    return _read_csv_file(path)
+
+
+def _is_physical_generation_path(path: Path) -> bool:
+    marker = LEDGER_GENERATION_DIRECTORY.casefold()
+    supplied_parts = {part.casefold() for part in Path(path).parts}
+    resolved_parts = {
+        part.casefold() for part in Path(path).resolve(strict=False).parts
+    }
+    return marker in supplied_parts or marker in resolved_parts
+
+
+def resolve_ledger_path(path: Path) -> Path:
+    """Resolve a logical ledger path through the one committed generation."""
+    logical = Path(path)
+    if logical.name not in LEDGER_TRANSACTION_NAMES:
+        return logical
+    manifest = _read_ledger_manifest(logical.parent)
+    if manifest is None:
+        return logical
+    return _manifest_destination_path(logical.parent, manifest, logical.name)
+
+
+def _ledger_csv_bytes(rows: list[dict]) -> bytes:
     if not isinstance(rows, list):
         raise ValueError("rows must be a list")
-    path.parent.mkdir(parents=True, exist_ok=True)
     unknown_fields = sorted({key for row in rows if isinstance(row, dict) for key in row} - set(REQUIRED_FIELD_ORDER))
     fieldnames = [*REQUIRED_FIELD_ORDER, *unknown_fields]
-    temporary = path.with_name(path.name + ".tmp")
+    with io.StringIO(newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=fieldnames,
+            extrasaction="ignore",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for source_row in rows:
+            if not isinstance(source_row, dict):
+                raise ValueError("ledger row must be a mapping")
+            writer.writerow(
+                {
+                    field: _csv_value(source_row.get(field, ""))
+                    for field in fieldnames
+                }
+            )
+        return b"\xef\xbb\xbf" + handle.getvalue().encode("utf-8")
+
+
+def _commit_ledger_generation(
+    output: Path, rows_by_name: dict[str, list[dict]]
+) -> dict[str, Path]:
+    payloads = {
+        name: _ledger_csv_bytes(rows) for name, rows in rows_by_name.items()
+    }
+    with _ledger_commit_lock(output):
+        return _commit_ledger_generation_locked(output, payloads)
+
+
+def _commit_ledger_generation_locked(
+    output: Path,
+    updates: dict[str, bytes],
+    *,
+    expected_generation_id: str | None | object = _UNSPECIFIED_GENERATION,
+) -> dict[str, Path]:
+    output = Path(output)
+    if not updates or any(name not in LEDGER_TRANSACTION_NAMES for name in updates):
+        raise ValueError("ledger transaction destinations are invalid")
+    current_manifest = _read_ledger_manifest(output)
+    current_generation_id = (
+        None if current_manifest is None else current_manifest["generation_id"]
+    )
+    if (
+        expected_generation_id is not _UNSPECIFIED_GENERATION
+        and expected_generation_id != current_generation_id
+    ):
+        raise ValueError("ledger generation changed before commit")
+    payloads: dict[str, bytes] = {}
+    for name in LEDGER_TRANSACTION_NAMES:
+        if name in updates:
+            payloads[name] = updates[name]
+            continue
+        if current_manifest is not None:
+            payloads[name] = _manifest_destination_path(
+                output, current_manifest, name
+            ).read_bytes()
+            continue
+        historical = output / name
+        payloads[name] = (
+            historical.read_bytes()
+            if historical.exists()
+            else _ledger_csv_bytes([])
+        )
+
+    digests = {
+        name: hashlib.sha256(payload).hexdigest()
+        for name, payload in payloads.items()
+    }
+    generation_id = _ledger_generation_id(digests)
+    generation_dir = output / LEDGER_GENERATION_DIRECTORY / generation_id
+    generation_dir.mkdir(parents=True, exist_ok=True)
+    committed: dict[str, Path] = {}
+    destinations = {}
+    for name in LEDGER_TRANSACTION_NAMES:
+        destination = generation_dir / name
+        if destination.exists():
+            if destination.read_bytes() != payloads[name]:
+                raise ValueError("prepared ledger generation conflicts with its digest")
+        else:
+            _write_bytes_atomic(destination, payloads[name])
+        committed[name] = destination
+        destinations[name] = {
+            "path": destination.relative_to(output).as_posix(),
+            "sha256": digests[name],
+        }
+    _fsync_directory(generation_dir)
+
+    manifest = {
+        "schema_version": LEDGER_TRANSACTION_SCHEMA_VERSION,
+        "generation_id": generation_id,
+        "destinations": destinations,
+    }
+    manifest_path = output / LEDGER_TRANSACTION_MANIFEST
+    serialized = _canonical_json_bytes(manifest)
+    if not manifest_path.exists() or manifest_path.read_bytes() != serialized:
+        _write_bytes_atomic(manifest_path, serialized)
+    return committed
+
+
+def _read_ledger_manifest(output: Path) -> dict | None:
+    output = Path(output)
+    path = output / LEDGER_TRANSACTION_MANIFEST
+    if not path.exists():
+        return None
     try:
-        with temporary.open("w", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore", lineterminator="\n")
-            writer.writeheader()
-            for source_row in rows:
-                if not isinstance(source_row, dict):
-                    raise ValueError("ledger row must be a mapping")
-                writer.writerow({field: _csv_value(source_row.get(field, "")) for field in fieldnames})
+        raw = path.read_bytes()
+        manifest = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("ledger transaction manifest is invalid") from exc
+    destinations = manifest.get("destinations")
+    if (
+        raw != _canonical_json_bytes(manifest)
+        or manifest.get("schema_version") != LEDGER_TRANSACTION_SCHEMA_VERSION
+        or not _is_sha256(manifest.get("generation_id"))
+        or not isinstance(destinations, dict)
+        or set(destinations) != set(LEDGER_TRANSACTION_NAMES)
+    ):
+        raise ValueError("ledger transaction manifest is invalid")
+    digests = {}
+    for name in LEDGER_TRANSACTION_NAMES:
+        record = destinations.get(name)
+        if not isinstance(record, dict) or not _is_sha256(record.get("sha256")):
+            raise ValueError("ledger transaction manifest is invalid")
+        destination = _manifest_destination_path(output, manifest, name)
+        try:
+            payload = destination.read_bytes()
+        except OSError as exc:
+            raise ValueError("committed ledger generation is missing") from exc
+        if hashlib.sha256(payload).hexdigest() != record["sha256"]:
+            raise ValueError("committed ledger generation digest is invalid")
+        digests[name] = record["sha256"]
+    if manifest["generation_id"] != _ledger_generation_id(digests):
+        raise ValueError("ledger transaction generation identity is invalid")
+    return manifest
+
+
+def _manifest_destination_path(output: Path, manifest: dict, name: str) -> Path:
+    if name not in LEDGER_TRANSACTION_NAMES:
+        raise ValueError("ledger destination is invalid")
+    record = manifest.get("destinations", {}).get(name)
+    relative = record.get("path") if isinstance(record, dict) else None
+    expected = (
+        Path(LEDGER_GENERATION_DIRECTORY)
+        / str(manifest.get("generation_id") or "")
+        / name
+    ).as_posix()
+    if relative != expected:
+        raise ValueError("ledger transaction destination path is invalid")
+    root = Path(output).resolve()
+    destination = (root / relative).resolve()
+    try:
+        destination.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("ledger transaction destination escapes output") from exc
+    return destination
+
+
+def _ledger_generation_id(digests: dict[str, str]) -> str:
+    payload = {
+        "schema_version": LEDGER_TRANSACTION_SCHEMA_VERSION,
+        "destinations": {
+            name: digests[name] for name in LEDGER_TRANSACTION_NAMES
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _canonical_json_bytes(payload: object) -> bytes:
+    return (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _write_bytes_atomic(path: Path, payload: bytes) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-    except BaseException:
+        _fsync_directory(path.parent)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
         temporary.unlink(missing_ok=True)
-        raise
-    return path
+
+
+@contextmanager
+def _ledger_commit_lock(output: Path):
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    path = output / ".ledger_transaction.lock"
+    with path.open("a+b") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
 
 
 def ingest_date(root: Path, target_date: date) -> Path:
@@ -722,39 +1086,576 @@ def ingest_date(root: Path, target_date: date) -> Path:
     if hashlib.sha256(plan_bytes).hexdigest() != lock["plan_sha256"].lower():
         raise ValueError("paid plan bytes changed after lock validation")
     plan_rows = _parse_csv_bytes(plan_bytes)
-    existing_rows = _read_csv(ledger_path)
-    canonical_evidence = _load_locked_plan_evidence(root, existing_rows)
-    return write_ledger_atomic(
-        ledger_path,
-        ingest_locked_plan(
-            existing_rows,
-            plan_rows,
-            lock,
-            canonical_evidence=canonical_evidence,
-        ),
+
+    def mutate(_generation_id: str | None, current: dict[str, list[dict]]):
+        existing_rows = current[ledger_path.name]
+        canonical_evidence = _load_locked_plan_evidence(root, existing_rows)
+        return {
+            ledger_path.name: ingest_locked_plan(
+                existing_rows,
+                plan_rows,
+                lock,
+                canonical_evidence=canonical_evidence,
+            )
+        }
+
+    return _mutate_ledger_rows(
+        ledger_path.parent, (ledger_path.name,), mutate
+    )[ledger_path.name]
+
+
+def ingest_revalidated_receipts(
+    root: Path, target_date: date, receipt_paths: list[Path]
+) -> Path:
+    """Route fully validated final confirmations into simulated ledgers."""
+    from revalidation import read_valid_revalidation_receipt
+
+    root = Path(root).resolve()
+    if type(target_date) is not date or not isinstance(receipt_paths, list):
+        raise ValueError("target date and receipt paths are invalid")
+    settings = _read_revalidation_settings(root)
+    prepared = []
+    seen_paths = set()
+    for supplied in receipt_paths:
+        path = Path(supplied).resolve()
+        if path in seen_paths:
+            raise ValueError("duplicate final receipt path")
+        seen_paths.add(path)
+        evidence = read_valid_revalidation_receipt(
+            root,
+            path,
+            target_date,
+            expected_stage="t30",
+            _capture_evidence=True,
+        )
+        candidate = _mutable_json(evidence.candidate)
+        prepared.append((candidate, evidence))
+
+    prepared.sort(
+        key=lambda item: (
+            _receipt_kickoff(item[0]),
+            item[0]["provisional_rank"],
+            item[0]["candidate_id"],
+        )
     )
+    rows = [
+        _revalidation_ledger_row(target_date, candidate, evidence)
+        for candidate, evidence in prepared
+    ]
+
+    paid_path = root / "output" / "betting_ledger.csv"
+    observation_path = root / "output" / "observation_ledger.csv"
+    rehearsal_path = root / "output" / "revalidation_rehearsal_ledger.csv"
+    if settings["mode"] == "shadow":
+        def mutate_rehearsal(
+            _generation_id: str | None, current: dict[str, list[dict]]
+        ):
+            existing = _normalize_receipt_destination(
+                root,
+                current[rehearsal_path.name],
+                destination="rehearsal",
+            )
+            merged, accepted = _append_receipt_rows(existing, rows)
+            _validate_receipt_paid_caps(existing, accepted, target_date)
+            return {rehearsal_path.name: merged}
+
+        return _mutate_ledger_rows(
+            rehearsal_path.parent, (rehearsal_path.name,), mutate_rehearsal
+        )[rehearsal_path.name]
+
+    active_rows = [
+        row for row, (candidate, _evidence) in zip(rows, prepared)
+        if candidate["route"] == "active"
+    ]
+    shadow_rows = [
+        row for row, (candidate, _evidence) in zip(rows, prepared)
+        if candidate["route"] == "shadow"
+    ]
+    observation_rows = []
+    for source_row in shadow_rows:
+        row = dict(source_row)
+        row["stake"] = "0.00"
+        row["row_payload_sha256"] = _row_payload_digest(row)
+        observation_rows.append(row)
+
+    transaction_names = tuple(
+        name
+        for name, selected in (
+            (paid_path.name, active_rows),
+            (observation_path.name, shadow_rows),
+        )
+        if selected
+    )
+    if transaction_names:
+        def mutate_active(
+            _generation_id: str | None, current: dict[str, list[dict]]
+        ):
+            updates = {}
+            if active_rows:
+                existing_paid = _normalize_receipt_destination(
+                    root, current[paid_path.name], destination="paid"
+                )
+                paid, accepted_paid = _append_receipt_rows(
+                    existing_paid, active_rows
+                )
+                _validate_receipt_paid_caps(
+                    existing_paid, accepted_paid, target_date
+                )
+                updates[paid_path.name] = paid
+            if shadow_rows:
+                existing_observations = _normalize_receipt_destination(
+                    root,
+                    current[observation_path.name],
+                    destination="observation",
+                )
+                observations, _accepted_observations = _append_receipt_rows(
+                    existing_observations, observation_rows
+                )
+                updates[observation_path.name] = observations
+            return updates
+
+        committed = _mutate_ledger_rows(
+            paid_path.parent, transaction_names, mutate_active
+        )
+        return committed[
+            paid_path.name if active_rows else observation_path.name
+        ]
+    return paid_path
+
+
+def _read_revalidation_settings(root: Path) -> dict:
+    try:
+        payload = json.loads((root / "betting_config.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("betting config is missing or invalid") from exc
+    settings = payload.get("pre_kickoff_revalidation")
+    if not isinstance(settings, dict) or settings.get("mode") not in {"shadow", "active"}:
+        raise ValueError("pre-kickoff revalidation mode is invalid")
+    if settings.get("stake_unit") != 2:
+        raise ValueError("pre-kickoff revalidation stake unit must be 2")
+    return settings
+
+
+def _receipt_kickoff(candidate: dict) -> datetime:
+    return _aware_datetime(
+        candidate.get("earliest_kickoff_at_bjt"), "candidate earliest kickoff"
+    )
+
+
+def _append_receipt_rows(
+    existing: list[dict], new_rows: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    rows = [dict(row) for row in existing]
+    by_bet_id = {
+        _required_text(row.get("bet_id"), "bet_id"): row for row in rows
+    }
+    by_candidate_id = {
+        _required_text(row.get("candidate_id"), "candidate_id"): row
+        for row in rows
+        if _row_evidence_type(row) == "revalidation_receipt"
+    }
+    accepted = []
+    for row in new_rows:
+        bet_id = _required_text(row.get("bet_id"), "bet_id")
+        candidate_id = _required_text(row.get("candidate_id"), "candidate_id")
+        collisions = [
+            existing_row
+            for existing_row in (
+                by_bet_id.get(bet_id),
+                by_candidate_id.get(candidate_id),
+            )
+            if existing_row is not None
+        ]
+        if collisions:
+            expected = _immutable_evidence_payload(row)
+            if any(
+                _immutable_evidence_payload(existing_row) != expected
+                for existing_row in collisions
+            ):
+                raise ValueError(
+                    "duplicate receipt bet_id or candidate_id conflicts with evidence"
+                )
+            continue
+        copied = dict(row)
+        rows.append(copied)
+        accepted.append(copied)
+        by_bet_id[bet_id] = copied
+        by_candidate_id[candidate_id] = copied
+    return rows, accepted
+
+
+def _normalize_receipt_destination(
+    root: Path, existing_rows: list[dict], *, destination: str
+) -> list[dict]:
+    if destination not in {"paid", "observation", "rehearsal"}:
+        raise ValueError("receipt ledger destination is invalid")
+    if destination in {"paid", "rehearsal"}:
+        evidence = _load_locked_plan_evidence(root, existing_rows)
+        normalized, _known = _normalize_existing_rows(
+            existing_rows, canonical_evidence=evidence
+        )
+        return _dedupe_destination_rows(normalized, receipts_only=True)
+
+    normalized = []
+    for source_row in existing_rows:
+        if not isinstance(source_row, dict):
+            raise ValueError("existing observation row must be a mapping")
+        row = dict(source_row)
+        if _row_evidence_type(row) == "revalidation_receipt":
+            _validate_existing_receipt_observation(root, row)
+        else:
+            expected_id = _validate_new_observation(row)
+            if _required_text(row.get("bet_id"), "bet_id") != expected_id:
+                raise ValueError("existing observation bet_id is invalid")
+            _validate_zero_stake_status(row)
+        normalized.append(row)
+    return _dedupe_destination_rows(normalized, receipts_only=False)
+
+
+def _dedupe_destination_rows(
+    rows: list[dict], *, receipts_only: bool
+) -> list[dict]:
+    deduped = []
+    by_bet_id: dict[str, dict] = {}
+    by_candidate_id: dict[str, dict] = {}
+    for row in rows:
+        is_receipt = _row_evidence_type(row) == "revalidation_receipt"
+        bet_id = _required_text(row.get("bet_id"), "bet_id")
+        previous = by_bet_id.get(bet_id)
+        if previous is not None:
+            if _immutable_evidence_payload(previous) != _immutable_evidence_payload(row):
+                raise ValueError("duplicate ledger bet_id conflicts with immutable payload")
+            continue
+        if is_receipt:
+            candidate_id = _required_text(row.get("candidate_id"), "candidate_id")
+            previous = by_candidate_id.get(candidate_id)
+            if previous is not None:
+                if _immutable_evidence_payload(previous) != _immutable_evidence_payload(row):
+                    raise ValueError(
+                        "duplicate ledger candidate_id conflicts with evidence"
+                    )
+                continue
+            by_candidate_id[candidate_id] = row
+        elif receipts_only:
+            deduped.append(row)
+            by_bet_id[bet_id] = row
+            continue
+        deduped.append(row)
+        by_bet_id[bet_id] = row
+    return deduped
+
+
+def _validate_existing_receipt_observation(root: Path, row: dict) -> None:
+    report_date = _strict_canonical_date(row.get("report_date"), "report_date")
+    if _strict_canonical_date(row.get("date"), "date") != report_date:
+        raise ValueError("observation date and report_date must match")
+    candidate_id = _required_text(row.get("candidate_id"), "candidate_id")
+    expected_id = _receipt_bet_id(
+        report_date,
+        candidate_id,
+        _required_text(row.get("t30_receipt_sha256"), "T-30 receipt digest"),
+    )
+    if _required_text(row.get("bet_id"), "bet_id") != expected_id:
+        raise ValueError("observation bet_id must equal its receipt identity")
+    if row.get("plan_sha256") not in (None, ""):
+        raise ValueError("receipt observation cannot claim plan-lock evidence")
+    if _aware_datetime(row.get("locked_at_bjt"), "locked_at_bjt") != _aware_datetime(
+        row.get("final_confirmed_at_bjt"), "final confirmed time"
+    ):
+        raise ValueError("receipt observation lock time is invalid")
+    for field in (
+        "candidate_payload_sha256",
+        "t90_receipt_sha256",
+        "t30_receipt_sha256",
+        "live_odds_snapshot_sha256",
+    ):
+        if not _is_sha256(row.get(field)):
+            raise ValueError("receipt observation evidence digest is invalid")
+    for field in (
+        "t90_receipt_path",
+        "t30_receipt_path",
+        "live_odds_snapshot_path",
+    ):
+        _required_text(row.get(field), field)
+    _verify_row_payload_digest(row)
+    expected = _expected_receipt_row(root, row)
+    expected["stake"] = "0.00"
+    expected["row_payload_sha256"] = _row_payload_digest(expected)
+    if _immutable_evidence_payload(row) != _immutable_evidence_payload(expected):
+        raise ValueError("receipt observation differs from immutable evidence")
+    _validate_zero_stake_status(row)
+
+
+def _expected_receipt_row(root: Path, row: dict) -> dict:
+    from revalidation import read_valid_revalidation_receipt
+
+    target_date = date.fromisoformat(_paid_ledger_effective_date(row))
+    receipt_path = (Path(root) / row["t30_receipt_path"]).resolve()
+    evidence = read_valid_revalidation_receipt(
+        root,
+        receipt_path,
+        target_date,
+        expected_stage="t30",
+        _capture_evidence=True,
+    )
+    expected = _revalidation_ledger_row(
+        target_date, _mutable_json(evidence.candidate), evidence
+    )
+    source = _required_text(expected.get("odds_source"), "odds_source").lower()
+    _validate_new_paid_rows(
+        [],
+        [expected],
+        source,
+        target_date.isoformat(),
+        _aware_datetime(expected["final_confirmed_at_bjt"], "final confirmed time"),
+    )
+    return expected
+
+
+def _validate_zero_stake_status(row: dict) -> None:
+    if _required_decimal(row.get("stake"), "observation stake") != MONEY_ZERO:
+        raise ValueError("observation row must have zero stake")
+    if _required_decimal(row.get("return"), "observation return") != MONEY_ZERO:
+        raise ValueError("observation return must be zero")
+    if _required_decimal(row.get("profit"), "observation profit") != MONEY_ZERO:
+        raise ValueError("observation profit must be zero")
+    status = row.get("status")
+    settlement_fields = (
+        "result_status",
+        "result_source",
+        "source_record_id",
+        "captured_at_bjt",
+        "score_scope",
+        "settlement_minutes",
+        "home_goals",
+        "away_goals",
+        "settled_at_bjt",
+        "result_legs_json",
+    )
+    if status == PENDING:
+        if any(row.get(field) not in (None, "") for field in settlement_fields):
+            raise ValueError("pending observation contains settlement evidence")
+        return
+    if status in TERMINAL_STATUSES:
+        _aware_iso(row.get("settled_at_bjt"), "settled_at_bjt")
+        if _is_parlay(row):
+            if not _settled_parlay_identities(row):
+                raise ValueError("terminal observation parlay evidence is invalid")
+            return
+        identity = {
+            "match_id": _canonical_match_id(row.get("match_id")),
+            "market_type": _required_text(
+                row.get("market_type"), "market_type"
+            ).lower(),
+            "selection": _required_text(row.get("selection"), "selection"),
+            "line": _line_value(row.get("market_line", row.get("line", ""))),
+        }
+        if not _is_proven_result(row):
+            raise ValueError("terminal observation result evidence is invalid")
+        if status != _single_terminal_status(identity, row):
+            raise ValueError("terminal observation result is inconsistent")
+        return
+    if status == ABNORMAL:
+        if not _is_invalid_with_provenance(row):
+            raise ValueError("abnormal observation requires invalid provenance")
+        _aware_iso(row.get("settled_at_bjt"), "settled_at_bjt")
+        return
+    raise ValueError("observation status is invalid")
+
+
+def _immutable_evidence_payload(row: dict) -> str:
+    payload = {
+        field: _row_payload_value(field, row)
+        for field in IMMUTABLE_ROW_PAYLOAD_FIELDS
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _mutable_json(value: object) -> object:
+    if isinstance(value, dict) or hasattr(value, "items"):
+        return {key: _mutable_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_mutable_json(item) for item in value]
+    if isinstance(value, list):
+        return [_mutable_json(item) for item in value]
+    return value
+
+
+def _validate_receipt_paid_caps(
+    existing_rows: list[dict], new_rows: list[dict], target_date: date
+) -> None:
+    accepted = []
+    for row in new_rows:
+        _validate_new_paid_rows(
+            [*existing_rows, *accepted],
+            [row],
+            _required_text(row.get("odds_source"), "odds_source").lower(),
+            target_date.isoformat(),
+            _aware_datetime(row["final_confirmed_at_bjt"], "final confirmed time"),
+        )
+        accepted.append(row)
+
+
+def _revalidation_ledger_row(
+    target_date: date,
+    candidate: dict,
+    evidence,
+) -> dict:
+    receipt = _mutable_json(evidence.receipt)
+    snapshot = _mutable_json(evidence.snapshot)
+    row = dict(candidate.get("source_plan_row") or {})
+    if not row:
+        raise ValueError("candidate source plan row is invalid")
+    snapshot_relative = evidence.snapshot_path
+    final_odds = _decimal_odds(receipt["current_odds"], "final odds")
+    final_stake = _paid_stake(receipt["final_stake"])
+    if final_stake > _paid_stake(candidate["provisional_stake"]):
+        raise ValueError("receipt stake cannot exceed provisional stake")
+    final_sha = evidence.receipt_sha256
+    market_type = _required_text(row.get("market_type"), "market_type").lower()
+    selection = row.get("selection")
+    if market_type in {"had", "hhad"} and selection in THREE_WAY_SELECTIONS:
+        row["selection"] = THREE_WAY_SELECTIONS[selection]
+    elif market_type == "ttg" and selection in TOTAL_GOALS_SELECTIONS:
+        row["selection"] = TOTAL_GOALS_SELECTIONS[selection]
+    if market_type == "parlay":
+        raw_legs = row.get("legs_json", row.get("legs"))
+        if isinstance(raw_legs, str):
+            try:
+                raw_legs = json.loads(raw_legs)
+            except json.JSONDecodeError as exc:
+                raise ValueError("receipt parlay legs are invalid") from exc
+        if not isinstance(raw_legs, list) or len(raw_legs) != 2:
+            raise ValueError("receipt parlay must contain exactly two legs")
+        matches = {
+            match.get("match_id"): match
+            for match in snapshot.get("matches", [])
+            if isinstance(match, dict)
+        }
+        bound = {
+            leg["match_id"]: leg
+            for leg in candidate["execution_identity"]["legs"]
+        }
+        final_legs = []
+        for source_leg in raw_legs:
+            leg = dict(source_leg)
+            leg_type = _required_text(
+                leg.get("market_type"), "parlay leg market_type"
+            ).lower()
+            code = leg.get("selection")
+            display = (
+                THREE_WAY_SELECTIONS.get(code, code)
+                if leg_type in {"had", "hhad"}
+                else TOTAL_GOALS_SELECTIONS.get(code, code)
+            )
+            leg_evidence = bound.get(leg.get("match_id"))
+            match = matches.get(leg.get("match_id"))
+            if leg_evidence is None or match is None:
+                raise ValueError("receipt parlay leg evidence is invalid")
+            market = match.get("markets", {}).get(leg_type)
+            if not isinstance(market, dict) or code not in market:
+                raise ValueError("receipt parlay final market evidence is invalid")
+            leg.update({
+                "selection": display,
+                "odds": str(market[code]),
+                "locked_odds": str(market[code]),
+                "odds_source": leg_evidence["source"],
+                "odds_source_record_id": leg_evidence["source_record_id"],
+                "odds_captured_at_bjt": snapshot["captured_at"],
+            })
+            final_legs.append(leg)
+        row["legs_json"] = json.dumps(
+            final_legs,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        row["canonical_legs_json"] = json.dumps(
+            _canonical_legs(row),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    bet_id = _receipt_bet_id(
+        target_date.isoformat(), candidate["candidate_id"], final_sha
+    )
+    row.update({
+        "bet_id": bet_id,
+        "date": target_date.isoformat(),
+        "report_date": target_date.isoformat(),
+        "locked_at_bjt": receipt["checked_at_bjt"],
+        "plan_sha256": "",
+        "odds_captured_at_bjt": snapshot["captured_at"],
+        "locked_odds": format(final_odds, "f"),
+        "odds": format(final_odds, "f"),
+        "stake": format(final_stake, ".2f"),
+        "status": PENDING,
+        "evidence_type": "revalidation_receipt",
+        "candidate_id": candidate["candidate_id"],
+        "candidate_payload_sha256": candidate["candidate_payload_sha256"],
+        "t90_receipt_path": evidence.t90_receipt_path,
+        "t90_receipt_sha256": evidence.t90_receipt_sha256,
+        "t30_receipt_path": evidence.receipt_path,
+        "t30_receipt_sha256": final_sha,
+        "live_odds_snapshot_path": snapshot_relative,
+        "live_odds_snapshot_sha256": evidence.snapshot_sha256,
+        "final_confirmed_at_bjt": receipt["checked_at_bjt"],
+    })
+    row.setdefault("kelly_fraction", "0.25")
+    if not _is_parlay(row):
+        leg = candidate["execution_identity"]["legs"][0]
+        row["odds_source"] = leg["source"]
+        row["odds_source_record_id"] = leg["source_record_id"]
+    for field in (
+        "result_status", "result_source", "source_record_id", "captured_at_bjt",
+        "score_scope", "settlement_minutes", "home_goals", "away_goals",
+        "settled_at_bjt", "result_legs_json", "clv",
+    ):
+        row[field] = ""
+    row["return"] = "0.00"
+    row["profit"] = "0.00"
+    row["row_payload_sha256"] = _row_payload_digest(row)
+    return row
 
 
 def settle_ledger(root: Path, results: dict, settled_at: datetime) -> Path:
     """Settle existing canonical ledger rows without regenerating any plan."""
     root = Path(root)
     ledger_path = root / "output" / "betting_ledger.csv"
-    source_rows = _read_csv(ledger_path)
-    canonical_evidence = _load_locked_plan_evidence(root, source_rows)
-    rows, _known_keys = _normalize_existing_rows(
-        source_rows, canonical_evidence=canonical_evidence
-    )
-    return write_ledger_atomic(ledger_path, settle_pending(rows, results, settled_at))
+
+    def mutate(_generation_id: str | None, current: dict[str, list[dict]]):
+        source_rows = current[ledger_path.name]
+        canonical_evidence = _load_locked_plan_evidence(root, source_rows)
+        rows, _known_keys = _normalize_existing_rows(
+            source_rows, canonical_evidence=canonical_evidence
+        )
+        return {
+            ledger_path.name: settle_pending(rows, results, settled_at)
+        }
+
+    return _mutate_ledger_rows(
+        ledger_path.parent, (ledger_path.name,), mutate
+    )[ledger_path.name]
 
 
 def _load_locked_plan_evidence(
     root: Path, existing_rows: list[dict]
 ) -> dict[tuple[str, str], str]:
     report_dates: set[str] = set()
+    receipt_rows: list[dict] = []
     for row in existing_rows:
         if not isinstance(row, dict):
             raise ValueError("existing row must be a mapping")
         effective_date = _paid_ledger_effective_date(row)
+        if _row_evidence_type(row) == "revalidation_receipt":
+            _validate_existing_canonical_paid_row(row)
+            receipt_rows.append(row)
+            continue
         after_cutover = (
             date.fromisoformat(effective_date) >= CANONICAL_PAID_CUTOVER_DATE
         )
@@ -789,11 +1690,57 @@ def _load_locked_plan_evidence(
                 raise ValueError("duplicate canonical identity in locked plan evidence")
             plan_ids.add(bet_id)
             expected_row = _new_locked_row(plan_row, lock, lock_source, bet_id)
-            evidence[(report_date, bet_id)] = expected_row["row_payload_sha256"]
+            allowed = {
+                expected_row["row_payload_sha256"],
+                _legacy_row_payload_digest(expected_row),
+            }
+            actual = next(
+                (
+                    row.get("row_payload_sha256")
+                    for row in existing_rows
+                    if row.get("bet_id") == bet_id
+                    and _paid_ledger_effective_date(row) == report_date
+                ),
+                expected_row["row_payload_sha256"],
+            )
+            if actual not in allowed:
+                raise ValueError(
+                    "canonical row strategy_version or payload differs from locked plan evidence"
+                )
+            evidence[(report_date, bet_id)] = actual
+
+    if receipt_rows:
+        from revalidation import read_valid_revalidation_receipt
+
+        for row in receipt_rows:
+            report_date = _paid_ledger_effective_date(row)
+            target_date = date.fromisoformat(report_date)
+            receipt_path = (root / row["t30_receipt_path"]).resolve()
+            validated = read_valid_revalidation_receipt(
+                root,
+                receipt_path,
+                target_date,
+                expected_stage="t30",
+                _capture_evidence=True,
+            )
+            expected = _revalidation_ledger_row(
+                target_date,
+                _mutable_json(validated.candidate),
+                validated,
+            )
+            if _immutable_evidence_payload(row) != _immutable_evidence_payload(
+                expected
+            ):
+                raise ValueError("receipt ledger row differs from immutable evidence")
+            evidence[(report_date, row["bet_id"])] = expected["row_payload_sha256"]
     return evidence
 
 
 def _read_csv(path: Path) -> list[dict]:
+    return _read_csv_file(resolve_ledger_path(path))
+
+
+def _read_csv_file(path: Path) -> list[dict]:
     if not path.exists():
         return []
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -915,6 +1862,8 @@ def _canonical_legs(row: dict, *, allow_legacy_match: bool = False) -> list[dict
 
 
 def _existing_dedupe_key(row: dict) -> tuple[str, str]:
+    if _row_evidence_type(row) == "revalidation_receipt":
+        return "canonical", _required_text(row.get("bet_id"), "bet_id")
     try:
         return "canonical", stable_bet_id(row)
     except ValueError:
@@ -994,6 +1943,8 @@ def _normalize_existing_rows(
 
 
 def _claims_canonical_identity(row: dict) -> bool:
+    if _row_evidence_type(row) == "revalidation_receipt":
+        return True
     provided_id = row.get("bet_id")
     if isinstance(provided_id, str) and provided_id in _canonical_identity_candidates(
         row
@@ -1034,6 +1985,8 @@ def _canonical_evidence_key(
     key = (effective_date, provided_id)
     if key not in canonical_evidence:
         return None
+    if _row_evidence_type(row) == "revalidation_receipt":
+        return key
     if provided_id not in _canonical_identity_candidates(row):
         return None
     return key
@@ -1059,23 +2012,73 @@ def _is_sha256(value: object) -> bool:
     )
 
 
+def _row_evidence_type(row: dict) -> str:
+    value = row.get("evidence_type")
+    if value in (None, ""):
+        return "plan_lock"
+    if value not in {"plan_lock", "revalidation_receipt"}:
+        raise ValueError("ledger evidence_type is invalid")
+    return value
+
+
+def _receipt_bet_id(
+    report_date: str, candidate_id: str, final_receipt_sha256: str
+) -> str:
+    if not _is_sha256(final_receipt_sha256):
+        raise ValueError("final receipt digest is invalid")
+    identity = {
+        "report_date": _strict_canonical_date(report_date, "report_date"),
+        "candidate_id": _required_text(candidate_id, "candidate_id"),
+        "t30_receipt_sha256": final_receipt_sha256,
+    }
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def _validate_existing_canonical_paid_row(row: dict) -> None:
     row_date = _strict_canonical_date(row.get("date"), "date")
     report_date = _strict_canonical_date(row.get("report_date"), "report_date")
     if row_date != report_date:
         raise ValueError("date and report_date must match")
     provided_id = _required_text(row.get("bet_id"), "bet_id")
-    if provided_id != stable_bet_id(row):
+    evidence_type = _row_evidence_type(row)
+    if evidence_type == "revalidation_receipt":
+        expected_id = _receipt_bet_id(
+            report_date,
+            _required_text(row.get("candidate_id"), "candidate_id"),
+            _required_text(row.get("t30_receipt_sha256"), "T-30 receipt digest"),
+        )
+        if provided_id != expected_id:
+            raise ValueError("bet_id must equal the stable receipt identity")
+    elif provided_id != stable_bet_id(row):
         raise ValueError("bet_id must equal the stable canonical identity")
     _verify_row_payload_digest(row)
     locked_at = _aware_datetime(row.get("locked_at_bjt"), "locked_at_bjt")
     plan_hash = row.get("plan_sha256")
-    if (
+    if evidence_type == "plan_lock" and (
         not isinstance(plan_hash, str)
         or len(plan_hash) != 64
         or any(character not in "0123456789abcdef" for character in plan_hash.lower())
     ):
         raise ValueError("plan_sha256 must be a SHA-256 hex string")
+    if evidence_type == "revalidation_receipt":
+        if plan_hash not in (None, ""):
+            raise ValueError("receipt-backed row cannot claim a plan lock digest")
+        if locked_at != _aware_datetime(
+            row.get("final_confirmed_at_bjt"), "final confirmed time"
+        ):
+            raise ValueError("receipt-backed lock time must equal confirmation time")
+        for field in (
+            "candidate_payload_sha256", "t90_receipt_sha256",
+            "t30_receipt_sha256", "live_odds_snapshot_sha256",
+        ):
+            if not _is_sha256(row.get(field)):
+                raise ValueError("receipt-backed evidence digest is invalid")
+        for field in (
+            "t90_receipt_path", "t30_receipt_path", "live_odds_snapshot_path"
+        ):
+            _required_text(row.get(field), field)
     source = _required_text(row.get("odds_source"), "odds_source").lower()
     _validate_new_paid_rows([], [row], source, report_date, locked_at)
 
@@ -1128,12 +2131,26 @@ def _strict_canonical_date(value: object, name: str) -> str:
 
 
 def _row_payload_digest(row: dict) -> str:
+    return _row_payload_digest_for(
+        row, IMMUTABLE_ROW_PAYLOAD_FIELDS, ROW_PAYLOAD_SCHEMA_VERSION
+    )
+
+
+def _legacy_row_payload_digest(row: dict) -> str:
+    return _row_payload_digest_for(
+        row, IMMUTABLE_ROW_PAYLOAD_FIELDS[:-10], LEGACY_ROW_PAYLOAD_SCHEMA_VERSION
+    )
+
+
+def _row_payload_digest_for(
+    row: dict, fields: tuple[str, ...], schema_version: int
+) -> str:
     immutable = {
         field: _row_payload_value(field, row)
-        for field in IMMUTABLE_ROW_PAYLOAD_FIELDS
+        for field in fields
     }
     payload = {
-        "schema_version": ROW_PAYLOAD_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "immutable": immutable,
         "initial_economics": {
             "status": PENDING,
@@ -1165,7 +2182,13 @@ def _verify_row_payload_digest(row: dict) -> None:
         not isinstance(digest, str)
         or len(digest) != 64
         or any(character not in "0123456789abcdef" for character in digest)
-        or digest != _row_payload_digest(row)
+        or (
+            digest != _row_payload_digest(row)
+            and not (
+                _row_evidence_type(row) == "plan_lock"
+                and digest == _legacy_row_payload_digest(row)
+            )
+        )
     ):
         raise ValueError("canonical row payload digest is missing or invalid")
 
@@ -1360,6 +2383,7 @@ def _new_locked_row(source_row: dict, lock: dict, lock_source: str, bet_id: str)
     row["locked_at_bjt"] = lock["locked_at_bjt"]
     row["plan_sha256"] = lock["plan_sha256"].lower()
     row["odds_source"] = lock_source
+    row["evidence_type"] = "plan_lock"
     if not row.get("locked_odds"):
         row["locked_odds"] = row.get("odds", "")
     if "odds" not in row:

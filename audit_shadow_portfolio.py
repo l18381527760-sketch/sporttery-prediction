@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Callable
 
 from activation_readiness import activation_config_digest, validate_activation_payload
-from betting_ledger import DOMESTIC_ODDS_SOURCES, stable_bet_id
+from betting_ledger import (
+    DOMESTIC_ODDS_SOURCES,
+    LEDGER_TRANSACTION_MANIFEST,
+    LEDGER_TRANSACTION_NAMES,
+    resolve_ledger_path,
+    stable_bet_id,
+)
 from decision_bundle import read_valid_decision_bundle
 from generate_betting_plan import ValueV4BuildResult, build_value_v4_from_inputs
 from official_markets import (
@@ -920,16 +926,21 @@ def _snapshot_identity_errors(
 
 def _read_csv_rows(path: Path) -> tuple[list[dict] | None, str | None]:
     try:
+        path = resolve_ledger_path(path)
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             return list(csv.DictReader(handle)), None
-    except (OSError, csv.Error, UnicodeError):
+    except (OSError, csv.Error, UnicodeError, ValueError):
         return None, "invalid"
 
 
 def _read_optional_csv_rows(path: Path) -> tuple[list[dict], str | None]:
-    if not path.is_file():
+    try:
+        resolved = resolve_ledger_path(path)
+    except ValueError:
+        return [], "invalid"
+    if not resolved.is_file():
         return [], None
-    rows, error = _read_csv_rows(path)
+    rows, error = _read_csv_rows(resolved)
     return rows or [], error
 
 
@@ -939,11 +950,16 @@ def _protected_hashes(root: Path) -> dict[str, str]:
         "shadow_betting_plan_*.csv",
         "observation_plan_*.csv",
         "plan_lock_*.json*",
-        "betting_ledger.csv",
-        "observation_ledger.csv",
     )
     output = root / "output"
     paths = {path for pattern in patterns for path in output.glob(pattern) if path.is_file()}
+    manifest = output / LEDGER_TRANSACTION_MANIFEST
+    if manifest.is_file():
+        paths.add(manifest)
+    for name in LEDGER_TRANSACTION_NAMES:
+        ledger = resolve_ledger_path(output / name)
+        if ledger.is_file():
+            paths.add(ledger)
     return {
         path.relative_to(root).as_posix(): _sha256(path)
         for path in sorted(paths)

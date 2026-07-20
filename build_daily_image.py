@@ -1,12 +1,15 @@
+import argparse
 import csv
 import json
 import os
 import textwrap
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
 
+from betting_ledger import resolve_ledger_path
+from provisional_plan import read_valid_provisional_state
 from build_site import (
     SUBTYPE_LABELS,
     SETTLEMENT_LABELS,
@@ -28,15 +31,18 @@ OUTPUT_DIR = ROOT / "output"
 WEB_DIR = ROOT / "web"
 WIDTH = 1600
 BUILD_ID = os.environ.get("REPORT_BUILD_ID", "local")
+BEIJING = timezone(timedelta(hours=8))
+REPORT_STAGES = ("daily", "forecast", "provisional", "settlement")
 
 
 def read_csv(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
     try:
+        path = resolve_ledger_path(path)
+        if not path.exists():
+            return []
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             return list(csv.DictReader(handle))
-    except (OSError, UnicodeError, csv.Error):
+    except (OSError, UnicodeError, csv.Error, ValueError):
         return []
 
 
@@ -237,6 +243,26 @@ def latest_plan() -> tuple[str, list[dict]]:
     return path.stem.removeprefix("betting_plan_"), read_csv(path)
 
 
+def validated_provisional_rows(
+    root: Path, report_date: date
+) -> tuple[list[dict], list[dict]]:
+    """Return active and shadow rows from the pointer-selected generation."""
+    state = read_valid_provisional_state(root, report_date)
+    routes = {"active": [], "shadow": []}
+    for candidate in state["candidates"]:
+        source = candidate.get("source_plan_row")
+        if not isinstance(source, dict):
+            raise ValueError("validated provisional candidate source row is invalid")
+        rendered = {
+            **source,
+            **candidate,
+            "date": report_date.isoformat(),
+            "stake": candidate["provisional_stake"],
+        }
+        routes[candidate["route"]].append(rendered)
+    return routes["active"], routes["shadow"]
+
+
 def observation_plan(report_date: str) -> list[dict]:
     return read_csv(OUTPUT_DIR / f"observation_plan_{report_date}.csv")
 
@@ -245,9 +271,82 @@ def daily_decision(report_date: str) -> dict:
     return read_draw_json(f"daily_decision_{report_date}.json")
 
 
-def draw_report() -> Path:
-    report_date, plan = latest_plan()
-    observations = observation_plan(report_date)
+def revalidation_label(change: dict) -> str:
+    state = external_text(change.get("state")).strip()
+    if state == "cancelled":
+        return "已撤销"
+    if state == "confirmed":
+        if number(change, "final_stake") < number(change, "provisional_stake"):
+            return "临场降额"
+        return "临场确认"
+    if state == "screened":
+        return "90分钟筛查通过"
+    return "初选待复核"
+
+
+def _draw_revalidation_report(
+    output_path: Path,
+    report_date: date,
+    changes: list[dict],
+    change_digest: str,
+) -> Path:
+    height = max(440, 240 + len(changes) * 150)
+    image = Image.new("RGB", (WIDTH, height), "#f3f6f4")
+    draw = ImageDraw.Draw(image)
+    ink, muted, green, red, gold, line = "#17201b", "#617068", "#147d50", "#bd4337", "#b98216", "#d7dfda"
+    draw.rectangle((0, 0, WIDTH, 175), fill="#10271d")
+    draw.text((70, 42), "博弈预测看板 · 临场复核更新", font=font(44), fill="white")
+    draw.text((72, 110), f"业务日期：{report_date.isoformat()}　北京时间", font=font(23), fill="#dce9e1")
+    y = 215
+    for change in changes:
+        label = revalidation_label(change)
+        label_color = red if label == "已撤销" else gold if label == "临场降额" else green
+        draw.rounded_rectangle((70, y, WIDTH - 70, y + 122), radius=7, fill="white", outline=line)
+        draw.text((88, y + 15), label, font=font(25), fill=label_color)
+        draw_fitted_text(draw, (320, y + 17), change.get("match", change.get("match_id", "-")), font(24), ink, 520)
+        draw_fitted_text(draw, (860, y + 17), change.get("market", change.get("selection", "-")), font(22), ink, WIDTH - 950)
+        odds = f"初选赔率 {change.get('odds', change.get('initial_odds', change.get('provisional_odds', '-')))}　当前赔率 {change.get('current_odds', '-') }"
+        stakes = f"暂定金额（未计入盈亏） {change.get('provisional_stake', '-')}元　最终金额 {change.get('final_stake', change.get('stake', '-'))}元"
+        detail = f"{odds}　{stakes}　当前EV {change.get('current_ev', '-')}"
+        draw_fitted_text(draw, (88, y + 55), detail, font(18), muted, WIDTH - 176)
+        draw_fitted_text(draw, (88, y + 87), f"原因：{change.get('reason', change.get('reason_code', '-'))}", font(17), muted, WIDTH - 176)
+        y += 150
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pnginfo = PngImagePlugin.PngInfo()
+    pnginfo.add_text("build_id", BUILD_ID)
+    pnginfo.add_text("report_date", report_date.isoformat())
+    pnginfo.add_text("change_digest", change_digest)
+    pnginfo.add_text("report_stage", "revalidation")
+    image.save(output_path, optimize=True, pnginfo=pnginfo)
+    return output_path
+
+
+def draw_report(
+    output_path: Path | None = None,
+    report_date: date | None = None,
+    revalidation_changes: list[dict] | None = None,
+    change_digest: str = "",
+    report_stage: str = "daily",
+) -> Path:
+    if revalidation_changes is not None:
+        if report_date is None:
+            raise ValueError("report_date is required for revalidation images")
+        destination = Path(output_path) if output_path is not None else WEB_DIR / "daily-report.png"
+        return _draw_revalidation_report(destination, report_date, revalidation_changes, change_digest)
+    if report_stage not in REPORT_STAGES:
+        raise ValueError("report_stage is invalid")
+    if report_stage == "provisional":
+        if report_date is None:
+            raise ValueError("report_date is required for provisional rendering")
+        report_date_text = report_date.isoformat()
+        plan, observations = validated_provisional_rows(ROOT, report_date)
+    elif report_date is None:
+        report_date_text, plan = latest_plan()
+        observations = observation_plan(report_date_text)
+    else:
+        report_date_text, plan = report_date.isoformat(), read_csv(OUTPUT_DIR / f"betting_plan_{report_date.isoformat()}.csv")
+        observations = observation_plan(report_date_text)
+    report_date = report_date_text
     decision = daily_decision(report_date)
     ledger = read_csv(OUTPUT_DIR / "betting_ledger.csv")
     all_metrics = read_metrics()
@@ -294,7 +393,8 @@ def draw_report() -> Path:
 
     draw.rectangle((0, 0, WIDTH, 205), fill="#10271d")
     draw.text((70, 42), "竞彩足球每日方案与盈亏总表", font=font(48), fill="white")
-    draw.text((72, 112), f"方案日期：{report_date}　北京时间生成：{datetime.now().strftime('%Y-%m-%d %H:%M')}", font=font(24), fill="#dce9e1")
+    generated_at = datetime.now(BEIJING).strftime('%Y-%m-%d %H:%M')
+    draw.text((72, 112), f"方案日期：{report_date}　北京时间生成：{generated_at}", font=font(24), fill="#dce9e1")
 
     total_stake = sum(number(row, "stake") for row in ledger)
     settled = [row for row in ledger if row.get("status") not in {"", "未结算"}]
@@ -493,14 +593,41 @@ def draw_report() -> Path:
             draw.text((1430, y + 18), f"{row_profit:+.0f}", font=font(18), fill=profit_color)
             y += 76
 
-    WEB_DIR.mkdir(exist_ok=True)
-    output = WEB_DIR / "daily-report.png"
+    output = Path(output_path) if output_path is not None else WEB_DIR / "daily-report.png"
+    output.parent.mkdir(parents=True, exist_ok=True)
     pnginfo = PngImagePlugin.PngInfo()
     pnginfo.add_text("build_id", BUILD_ID)
+    pnginfo.add_text("report_date", report_date)
+    pnginfo.add_text("change_digest", "")
+    pnginfo.add_text("report_stage", report_stage)
     image.save(output, optimize=True, pnginfo=pnginfo)
     print(f"Generated daily image: {output}")
     return output
 
 
+def _parse_date(value: str) -> date:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("date must be exact YYYY-MM-DD") from exc
+    if value != parsed.isoformat():
+        raise argparse.ArgumentTypeError("date must be exact YYYY-MM-DD")
+    return parsed
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build the daily report image.")
+    parser.add_argument("--date", type=_parse_date)
+    parser.add_argument("--stage", choices=REPORT_STAGES, default="daily")
+    args = parser.parse_args()
+    if args.stage == "provisional" and args.date is None:
+        parser.error("--date is required for provisional rendering")
+    try:
+        draw_report(report_date=args.date, report_stage=args.stage)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        parser.error(str(exc))
+    return 0
+
+
 if __name__ == "__main__":
-    draw_report()
+    raise SystemExit(main())

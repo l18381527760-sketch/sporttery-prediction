@@ -16,8 +16,8 @@ from betting_ledger import (
     settle_ledger,
     settled_market_identities,
     stable_bet_id,
-    update_observation_ledger,
-    write_ledger_atomic,
+    resolve_ledger_path,
+    update_observation_ledger_atomic,
 )
 from model_metrics import play_family, summarize, write_metrics
 from official_markets import normalize_market, parse_handicap
@@ -72,6 +72,7 @@ def load_odds(target_date: date) -> dict:
 
 
 def load_csv(path: Path) -> list[dict]:
+    path = resolve_ledger_path(path)
     if not path.exists():
         return []
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -262,11 +263,7 @@ def build_plan(target_date: date) -> list[dict]:
         odds_source = str(read_json(status_path).get("source") or odds_source)
     strategy = config["draw_strategy"]
     value_strategy = config.get("value_strategy", {})
-    ledger_path = OUTPUT_DIR / "betting_ledger.csv"
-    historical_rows = []
-    if ledger_path.exists():
-        with ledger_path.open("r", encoding="utf-8-sig", newline="") as handle:
-            historical_rows = list(csv.DictReader(handle))
+    historical_rows = load_csv(OUTPUT_DIR / "betting_ledger.csv")
     performance = summarize(historical_rows).get("by_play", {})
 
     def performance_multiplier(family: str) -> float:
@@ -1522,6 +1519,19 @@ def build_strategy_outputs(
     return StrategyOutputs(active_plan, observations, shadow_plan, audit)
 
 
+def strategy_outputs_from_bundle(
+    target_date: date,
+    decision_bundle: dict,
+    generated_at: datetime,
+) -> StrategyOutputs:
+    """Build deterministic strategy outputs for provisional publication."""
+    return build_strategy_outputs(
+        target_date,
+        locked_at=_aware_locked_at(generated_at),
+        decision_bundle=decision_bundle,
+    )
+
+
 def write_shadow_audit(audit: dict, target_date: date) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUTPUT_DIR / f"shadow_portfolio_audit_{target_date.isoformat()}.json"
@@ -1599,13 +1609,12 @@ def write_observation_ledger(
     path = OUTPUT_DIR / "observation_ledger.csv"
     result_map = load_results() if results is None else results
     settlement_time = datetime.now(BEIJING) if settled_at is None else settled_at
-    rows = update_observation_ledger(
-        load_csv(path),
+    return update_observation_ledger_atomic(
+        path,
         load_all_observation_plans(),
         result_map,
         settlement_time,
     )
-    return write_ledger_atomic(path, rows)
 
 
 def write_daily_decision(

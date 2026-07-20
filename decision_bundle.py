@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from import_sporttery import import_manifest_path, read_valid_import_manifest
+from live_odds import read_valid_live_snapshot
 
 
 BEIJING = timezone(timedelta(hours=8))
@@ -136,6 +137,7 @@ def create_decision_bundle(
     root: Path,
     target_date: date,
     locked_at: datetime,
+    decision_snapshot_path: Path | None = None,
 ) -> dict:
     root = Path(root).resolve()
     locked = _aware_datetime(locked_at, "locked_at").astimezone(BEIJING)
@@ -153,17 +155,30 @@ def create_decision_bundle(
     )
     import_manifest = read_valid_import_manifest(root, target_date)
     manifest_record = _file_record(root, import_manifest_path(root, target_date))
-    snapshot_path, snapshot = _select_snapshot(
-        root,
-        target_date,
-        locked,
-        import_manifest=import_manifest,
-        manifest_record=manifest_record,
-    )
+    if decision_snapshot_path is None:
+        snapshot_path, snapshot = _select_snapshot(
+            root,
+            target_date,
+            locked,
+            import_manifest=import_manifest,
+            manifest_record=manifest_record,
+        )
+    else:
+        snapshot_path = Path(decision_snapshot_path)
+        snapshot = read_valid_live_snapshot(root, snapshot_path, target_date, locked)
+        _validate_live_snapshot_at_lock(snapshot, locked)
+        if not snapshot_path.is_absolute():
+            snapshot_path = root / snapshot_path
+        snapshot_path = snapshot_path.resolve()
     predictions_path = root / metadata["predictions"]["path"]
     predictions = _read_csv(predictions_path, required=True)
     fixtures = metadata["fixture_extract"]["rows"]
-    _validate_cross_artifact_identities(snapshot, predictions, fixtures)
+    _validate_cross_artifact_identities(
+        snapshot,
+        predictions,
+        fixtures,
+        require_match_num=_is_live_snapshot_path(root, snapshot_path, target_date),
+    )
 
     betting_config = _read_json(root / "betting_config.json")
     prediction_config = _read_json(root / "config.json")
@@ -279,8 +294,23 @@ def read_valid_decision_bundle(
     _verify_file_record(root, snapshot_record)
     _verify_file_record(root, prediction_record)
     _verify_file_record(root, prediction_record.get("metadata"))
+    snapshot_path = (root / snapshot_record["path"]).resolve()
+    snapshot_is_live = _is_live_snapshot_path(root, snapshot_path, target_date)
     snapshot = snapshot_record.get("payload")
-    _validate_snapshot(snapshot, target_date, locked.astimezone(BEIJING))
+    if not isinstance(snapshot, dict):
+        raise ValueError("decision bundle snapshot is invalid")
+    if snapshot_is_live:
+        if read_valid_live_snapshot(root, snapshot_path, target_date, locked) != snapshot:
+            raise ValueError("decision bundle live snapshot is inconsistent")
+        _validate_live_snapshot_at_lock(snapshot, locked)
+    else:
+        try:
+            bound_snapshot = _read_json(snapshot_path)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("decision bundle snapshot is missing or invalid") from exc
+        if bound_snapshot != snapshot:
+            raise ValueError("decision bundle snapshot is inconsistent")
+        _validate_snapshot(snapshot, target_date, locked.astimezone(BEIJING))
     import_manifest = read_valid_import_manifest(root, target_date)
     actual_manifest_record = _file_record(root, import_manifest_path(root, target_date))
     if (
@@ -291,7 +321,8 @@ def read_valid_decision_bundle(
         )
     ):
         raise ValueError("decision bundle import manifest is inconsistent")
-    _validate_snapshot_import(snapshot, import_manifest, actual_manifest_record)
+    if not snapshot_is_live:
+        _validate_snapshot_import(snapshot, import_manifest, actual_manifest_record)
     if snapshot_record.get("source") != snapshot.get("source", "").lower():
         raise ValueError("decision bundle source is inconsistent")
     if snapshot_record.get("captured_at_bjt") != _aware_datetime(
@@ -390,7 +421,12 @@ def read_valid_decision_bundle(
         raise ValueError("decision bundle odds role is invalid")
 
     predictions = _read_csv(root / prediction_record["path"], required=True)
-    _validate_cross_artifact_identities(snapshot, predictions, fixtures["rows"])
+    _validate_cross_artifact_identities(
+        snapshot,
+        predictions,
+        fixtures["rows"],
+        require_match_num=snapshot_is_live,
+    )
     return payload
 
 
@@ -542,20 +578,31 @@ def _validate_cross_artifact_identities(
     snapshot: dict,
     predictions: list[dict],
     fixtures: list[dict],
+    *,
+    require_match_num: bool | None = None,
 ) -> None:
-    def identities(rows: list[dict], label: str) -> dict[str, tuple[str, str, str]]:
+    if require_match_num is None:
+        require_match_num = snapshot.get("fetch_mode") == "live"
+
+    def identities(rows: list[dict], label: str) -> dict[str, tuple[str, ...]]:
         result = {}
         for row in rows:
             match_id = _canonical_match_id(row.get("match_id"))
             if match_id in result:
                 raise ValueError(f"duplicate {label} match identity")
-            result[match_id] = (
+            identity = (
                 _required_text(row.get("team_a"), f"{label} team_a"),
                 _required_text(row.get("team_b"), f"{label} team_b"),
                 _match_datetime(row.get("kickoff_at"), f"{label} kickoff_at")
                 .astimezone(BEIJING)
                 .isoformat(),
             )
+            if require_match_num:
+                identity = (
+                    _canonical_match_num(row.get("match_num"), f"{label} match_num"),
+                    *identity,
+                )
+            result[match_id] = identity
         return result
 
     snapshot_ids = identities(snapshot["matches"], "snapshot")
@@ -563,6 +610,28 @@ def _validate_cross_artifact_identities(
     fixture_ids = identities(fixtures, "fixture")
     if snapshot_ids != prediction_ids or snapshot_ids != fixture_ids:
         raise ValueError("decision bundle match identities differ across artifacts")
+
+
+def _is_live_snapshot_path(root: Path, path: Path, target_date: date) -> bool:
+    live_directory = (root / "data" / "live_odds_snapshots" / target_date.isoformat()).resolve()
+    try:
+        path.resolve().relative_to(live_directory)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_live_snapshot_at_lock(snapshot: dict, locked_at: datetime) -> None:
+    matches = snapshot.get("matches")
+    if not isinstance(matches, list):
+        raise ValueError("live snapshot matches are invalid")
+    locked = locked_at.astimezone(BEIJING)
+    for row in matches:
+        if not isinstance(row, dict):
+            raise ValueError("live snapshot match is invalid")
+        kickoff = _match_datetime(row.get("kickoff_at"), "live snapshot kickoff_at")
+        if kickoff.astimezone(BEIJING) <= locked:
+            raise ValueError("decision bundle lock is not pre-kickoff")
 
 
 def _validate_prediction_rows(rows: list[dict], target_date: date) -> None:
@@ -697,15 +766,22 @@ def _verify_file_record(root: Path, record: object) -> None:
 
 
 def _read_csv(path: Path, *, required: bool) -> list[dict]:
+    from betting_ledger import resolve_ledger_path
+
+    logical = Path(path)
+    try:
+        path = resolve_ledger_path(logical)
+    except ValueError as exc:
+        raise ValueError(f"CSV is invalid: {logical}") from exc
     if not path.is_file():
         if required:
-            raise ValueError(f"required CSV is missing: {path}")
+            raise ValueError(f"required CSV is missing: {logical}")
         return []
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             return list(csv.DictReader(handle))
     except (OSError, UnicodeError, csv.Error) as exc:
-        raise ValueError(f"CSV is invalid: {path}") from exc
+        raise ValueError(f"CSV is invalid: {logical}") from exc
 
 
 def _read_json(path: Path) -> dict:
@@ -762,6 +838,13 @@ def _canonical_match_id(value: object) -> str:
     text = _required_text(value, "match_id")
     if any(character.isspace() or not character.isprintable() for character in text):
         raise ValueError("match_id is not canonical")
+    return text
+
+
+def _canonical_match_num(value: object, name: str) -> str:
+    text = _required_text(value, name)
+    if any(character.isspace() or not character.isprintable() for character in text):
+        raise ValueError(f"{name} is not canonical")
     return text
 
 
@@ -823,9 +906,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Create one immutable daily decision bundle.")
     parser.add_argument("--date", required=True, type=_parse_date)
     parser.add_argument("--locked-at", required=True, type=_parse_datetime)
+    parser.add_argument("--decision-snapshot", type=Path)
     args = parser.parse_args()
     try:
-        create_decision_bundle(Path.cwd(), args.date, args.locked_at)
+        create_decision_bundle(
+            Path.cwd(), args.date, args.locked_at, args.decision_snapshot
+        )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
     return 0

@@ -13,6 +13,7 @@ from import_sporttery import (
     read_valid_import_manifest,
     single_eligibility,
 )
+from live_odds import capture_live_snapshot
 from report_status import verified_zero_fixture_day
 
 
@@ -215,9 +216,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Capture a pre-match odds snapshot.")
     parser.add_argument("--date", default=datetime.now(BEIJING).date().isoformat())
     parser.add_argument("--phase", choices=sorted(CAPTURE_PHASES), default="monitoring")
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--print-path", action="store_true")
     args = parser.parse_args()
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
-    output = capture(target_date, phase=args.phase)
+    output = (
+        capture_live_snapshot(ROOT, target_date, datetime.now(BEIJING))
+        if args.live
+        else capture(target_date, phase=args.phase)
+    )
+    if args.print_path and output is not None:
+        print(str(output))
     if args.phase == "decision":
         if not _snapshot_has_matches(output) and not verified_zero_fixture_day(ROOT, target_date):
             print(
