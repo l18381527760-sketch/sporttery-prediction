@@ -13,6 +13,71 @@ const CODE = fs.readFileSync(CODE_PATH, "utf8");
 const REPORT_DATE = "2026-07-16";
 const IMAGE_BYTES = [...Buffer.from("verified-report-image")];
 const IMAGE_HASH = crypto.createHash("sha256").update(Buffer.from(IMAGE_BYTES)).digest("hex");
+const REVALIDATION_IMAGE_BYTES = [...Buffer.from("verified-revalidation-image")];
+const REVALIDATION_IMAGE_HASH = crypto.createHash("sha256").update(Buffer.from(REVALIDATION_IMAGE_BYTES)).digest("hex");
+
+function canonicalJsonBytes(value) {
+  const canonical = (item) => {
+    if (Array.isArray(item)) return item.map(canonical);
+    if (item && typeof item === "object") {
+      return Object.fromEntries(Object.keys(item).sort().map((key) => [key, canonical(item[key])]));
+    }
+    return item;
+  };
+  return [...Buffer.from(`${JSON.stringify(canonical(value))}\n`, "utf8")];
+}
+
+function revalidationCandidate(candidateId, state = "confirmed", overrides = {}) {
+  return {
+    candidate_id: candidateId,
+    state,
+    ledger_status: state === "confirmed" ? "ingested" : "not_applicable",
+    match: `${candidateId} Home vs Away`,
+    market: "win",
+    provisional_odds: "2.05",
+    current_odds: "2.05",
+    provisional_stake: 16,
+    final_stake: state === "confirmed" ? 16 : 0,
+    current_ev: 0.087,
+    reason: state === "confirmed" ? "terms unchanged; final confirmation" : "value threshold failed",
+    ...overrides,
+  };
+}
+
+function revalidationStatus(reportDate, candidates = [revalidationCandidate("c1")], overrides = {}) {
+  const changeDigest = crypto.createHash("sha256")
+    .update(Buffer.from(canonicalJsonBytes(candidates).slice(0, -1)))
+    .digest("hex");
+  return {
+    schema_version: 1,
+    report_date: reportDate,
+    revision: 1,
+    changed_at_bjt: `${reportDate}T23:55:00+08:00`,
+    change_digest: changeDigest,
+    changed_candidates: candidates,
+    published_candidate_ids: candidates.map((candidate) => candidate.candidate_id).sort(),
+    next_revalidation_at_bjt: "",
+    all_candidates_terminal: true,
+    report_image_url: `web/revalidation/${reportDate}/revision-1-${changeDigest.slice(0, 12)}.png`,
+    report_image_sha256: REVALIDATION_IMAGE_HASH,
+    source_commit_sha: "0123456789abcdef",
+    ...overrides,
+  };
+}
+
+function revalidationIndex(records = [], generatedAt = "2026-07-20T00:10:00+08:00") {
+  return {
+    schema_version: 1,
+    generated_at_bjt: generatedAt,
+    dates: records.map(({ status, statusBytes = canonicalJsonBytes(status) }) => ({
+      report_date: status.report_date,
+      status_url: `web/revalidation/${status.report_date}/status.json`,
+      status_sha256: crypto.createHash("sha256").update(Buffer.from(statusBytes)).digest("hex"),
+      revision: status.revision,
+      next_revalidation_at_bjt: status.next_revalidation_at_bjt,
+    })),
+  };
+}
 
 function readyStatus(overrides = {}) {
   return {
@@ -72,13 +137,14 @@ function dispatchStatus(overrides = {}) {
   };
 }
 
-function response({ code = 200, json, bytes = [], text } = {}) {
+function response({ code = 200, json, bytes, text } = {}) {
   const body = text ?? (json === undefined ? "" : JSON.stringify(json));
+  const bodyBytes = bytes === undefined ? [...Buffer.from(body, "utf8")] : [...bytes];
   return {
     getResponseCode: () => code,
-    getContentText: () => body,
+    getContentText: () => bytes === undefined ? body : Buffer.from(bodyBytes).toString("utf8"),
     getBlob: () => ({
-      getBytes: () => [...bytes],
+      getBytes: () => [...bodyBytes],
       setName(name) {
         this.name = name;
         return this;
@@ -96,6 +162,10 @@ function makeHarness({
   lockAvailable = true,
   fetchHandler = null,
   triggers = [],
+  revalidationIndexValue = revalidationIndex(),
+  revalidationIndexBytes = null,
+  revalidationStatuses = {},
+  revalidationImages = {},
 } = {}) {
   const properties = new Map(Object.entries({
     GITHUB_TOKEN: "unit-test-token",
@@ -103,6 +173,7 @@ function makeHarness({
     GITHUB_REPO: "repo",
     REPORT_STATUS_URL: "https://example.test/report-status.json",
     REPORT_IMAGE_URL: "https://example.test/daily-report.png",
+    REVALIDATION_INDEX_URL: "https://example.test/revalidation-index.json",
     REPORT_SITE_URL: "https://example.test/",
     RECIPIENT_EMAIL: "recipient@example.test",
     ...initialProperties,
@@ -132,6 +203,20 @@ function makeHarness({
     if (url.startsWith("https://example.test/daily-report.png?build_id=")) {
       return response({ bytes: imageBytes });
     }
+    if (url.startsWith("https://example.test/revalidation-index.json?ts=")) {
+      return response({ bytes: revalidationIndexBytes ?? canonicalJsonBytes(revalidationIndexValue) });
+    }
+    if (url.startsWith("https://example.test/revalidation/") && url.includes("/status.json?ts=")) {
+      const reportDate = url.match(/revalidation\/(\d{4}-\d{2}-\d{2})\/status\.json/)?.[1];
+      const statusValue = revalidationStatuses[reportDate];
+      if (!statusValue) return response({ code: 404 });
+      const bytes = statusValue.bytes ?? canonicalJsonBytes(statusValue.status ?? statusValue);
+      return response({ bytes });
+    }
+    if (url.startsWith("https://example.test/revalidation/") && url.includes("/revision-")) {
+      const imagePath = url.replace("https://example.test/", "").split("?")[0];
+      return response({ bytes: revalidationImages[imagePath] ?? REVALIDATION_IMAGE_BYTES });
+    }
     if (url.startsWith("https://api.github.com/repos/")) {
       return response({ code: 204 });
     }
@@ -150,16 +235,20 @@ function makeHarness({
         assert.equal(algorithm, "SHA_256");
         return [...crypto.createHash("sha256").update(Buffer.from(bytes)).digest()];
       },
-      newBlob: (bytes, contentType, name) => ({
-        bytes: [...bytes],
-        contentType,
-        name,
-        getBytes: () => [...bytes],
-        setName(nextName) {
-          this.name = nextName;
-          return this;
-        },
-      }),
+      newBlob: (bytes, contentType, name) => {
+        const blobBytes = typeof bytes === "string" ? [...Buffer.from(bytes, "utf8")] : [...bytes];
+        return {
+          bytes: blobBytes,
+          contentType,
+          name,
+          getBytes: () => [...blobBytes],
+          getDataAsString: () => Buffer.from(blobBytes).toString("utf8"),
+          setName(nextName) {
+            this.name = nextName;
+            return this;
+          },
+        };
+      },
       formatDate: (date, timezone, format) => {
         assert.equal(timezone, "Asia/Shanghai");
         assert.equal(format, "yyyy-MM-dd");
@@ -222,6 +311,20 @@ function makeHarness({
 
 function clockAt(hour, minute) {
   return { date: REPORT_DATE, hour, minute, minutes: hour * 60 + minute, nowMs: Date.UTC(2026, 6, 16, hour - 8, minute) };
+}
+
+function revalidationFixture(reportDate, {
+  candidates = [revalidationCandidate("c1")],
+  statusOverrides = {},
+  statusBytes = null,
+} = {}) {
+  const status = revalidationStatus(reportDate, candidates, statusOverrides);
+  const exactStatusBytes = statusBytes ?? canonicalJsonBytes(status);
+  return {
+    status,
+    index: revalidationIndex([{ status, statusBytes: exactStatusBytes }]),
+    statuses: { [reportDate]: { status, bytes: exactStatusBytes } },
+  };
 }
 
 test("12:14 does not dispatch", () => {
@@ -455,6 +558,273 @@ test("sha256Hex_ computes lowercase exact SHA-256", () => {
   assert.equal(context.sha256Hex_(IMAGE_BYTES), IMAGE_HASH);
 });
 
+test("00:10 dispatches the due previous Beijing business date with aware inputs", () => {
+  const reportDate = "2026-07-19";
+  const fixture = revalidationFixture(reportDate, {
+    statusOverrides: { next_revalidation_at_bjt: "2026-07-20T00:05:00+08:00", all_candidates_terminal: false },
+  });
+  const { context, calls, properties } = makeHarness({
+    now: "2026-07-19T16:10:00.000Z",
+    revalidationIndexValue: fixture.index,
+    revalidationStatuses: fixture.statuses,
+  });
+
+  context.runAutomation();
+
+  const dispatches = calls.fetch.filter((call) => call.url.includes("api.github.com"));
+  assert.equal(dispatches.length, 1);
+  assert.match(dispatches[0].url, /\/pre-kickoff-revalidation\.yml\/dispatches$/);
+  assert.deepEqual(JSON.parse(dispatches[0].options.payload), {
+    ref: "main",
+    inputs: { target_date: reportDate, now_bjt: "2026-07-20T00:10:00+08:00" },
+  });
+  assert.equal(properties.get("LAST_REVALIDATION_DISPATCH_DATE"), reportDate);
+  assert.equal(properties.has("LAST_REVALIDATION_DISPATCH_ATTEMPT_DATE"), false);
+});
+
+test("due revalidation has priority and runAutomation dispatches at most one workflow", () => {
+  const fixture = revalidationFixture(REPORT_DATE, {
+    statusOverrides: { next_revalidation_at_bjt: `${REPORT_DATE}T13:40:00+08:00`, all_candidates_terminal: false },
+  });
+  const { context, calls } = makeHarness({
+    now: "2026-07-16T05:45:00.000Z",
+    status: dispatchStatus(),
+    revalidationIndexValue: fixture.index,
+    revalidationStatuses: fixture.statuses,
+  });
+
+  context.runAutomation();
+
+  const dispatches = calls.fetch.filter((call) => call.url.includes("api.github.com"));
+  assert.equal(dispatches.length, 1);
+  assert.match(dispatches[0].url, /\/pre-kickoff-revalidation\.yml\/dispatches$/);
+});
+
+test("revalidation confirmed and ambiguous-attempt cooldown keys are independent", () => {
+  const due = {
+    dates: [{ report_date: REPORT_DATE, next_revalidation_at_bjt: `${REPORT_DATE}T12:00:00+08:00` }],
+  };
+  const { context } = makeHarness();
+  const clock = clockAt(12, 15);
+  assert.equal(context.chooseRevalidationDispatch_(clock, due, {
+    LAST_REVALIDATION_DISPATCH_DATE: REPORT_DATE,
+    LAST_REVALIDATION_DISPATCH_AT: String(clock.nowMs),
+  }), null);
+  assert.equal(context.chooseRevalidationDispatch_(clock, due, {
+    LAST_REVALIDATION_DISPATCH_ATTEMPT_DATE: REPORT_DATE,
+    LAST_REVALIDATION_DISPATCH_ATTEMPT_AT: String(clock.nowMs),
+  }), null);
+  assert.equal(context.chooseRevalidationDispatch_(clock, due, {
+    LAST_FORECAST_DISPATCH_DATE: REPORT_DATE,
+    LAST_FORECAST_DISPATCH_AT: String(clock.nowMs),
+  }).report_date, REPORT_DATE);
+});
+
+test("revalidation index requires canonical exact schema and at most two dates", () => {
+  const status = revalidationStatus(REPORT_DATE, [], {
+    revision: 0,
+    change_digest: "",
+    changed_candidates: [],
+    published_candidate_ids: [],
+    report_image_url: "",
+    report_image_sha256: "",
+    all_candidates_terminal: false,
+  });
+  const threeDates = revalidationIndex([
+    { status: { ...status, report_date: "2026-07-14", changed_at_bjt: "2026-07-14T12:00:00+08:00" } },
+    { status: { ...status, report_date: "2026-07-15", changed_at_bjt: "2026-07-15T12:00:00+08:00" } },
+    { status },
+  ]);
+  const overLimit = makeHarness({ now: "2026-07-16T00:10:00.000Z", revalidationIndexValue: threeDates });
+  overLimit.context.runAutomation();
+  assert.equal(overLimit.calls.fetch.some((call) => call.url.includes("/revalidation/2026-07-14/status.json")), false);
+  assert.ok(overLimit.calls.logs.includes("revalidation index unavailable"));
+
+  const noncanonical = makeHarness({
+    now: "2026-07-16T00:10:00.000Z",
+    revalidationIndexBytes: [...Buffer.from(JSON.stringify(revalidationIndex()), "utf8")],
+  });
+  noncanonical.context.runAutomation();
+  assert.ok(noncanonical.calls.logs.includes("revalidation index unavailable"));
+});
+
+test("status bytes must match the index SHA-256 before dispatch or email", () => {
+  const reportDate = "2026-07-19";
+  const good = revalidationStatus(reportDate, [revalidationCandidate("c1")], {
+    next_revalidation_at_bjt: "2026-07-20T00:05:00+08:00",
+    all_candidates_terminal: false,
+  });
+  const goodBytes = canonicalJsonBytes(good);
+  const tampered = { ...good, source_commit_sha: "tampered" };
+  const index = revalidationIndex([{ status: good, statusBytes: goodBytes }]);
+  const { context, calls } = makeHarness({
+    now: "2026-07-19T16:10:00.000Z",
+    initialProperties: { LAST_INITIAL_SENT_DATE: reportDate },
+    revalidationIndexValue: index,
+    revalidationStatuses: { [reportDate]: { bytes: canonicalJsonBytes(tampered) } },
+  });
+
+  context.runAutomation();
+
+  assert.equal(calls.fetch.some((call) => call.url.includes("api.github.com")), false);
+  assert.equal(calls.mail.length, 0);
+});
+
+test("revision image bytes must match status before an update is sent", () => {
+  const fixture = revalidationFixture(REPORT_DATE);
+  const { context, calls, properties } = makeHarness({
+    initialProperties: { LAST_INITIAL_SENT_DATE: REPORT_DATE },
+    revalidationIndexValue: fixture.index,
+    revalidationStatuses: fixture.statuses,
+    revalidationImages: {
+      [fixture.status.report_image_url.replace(/^web\//, "")]: [...Buffer.from("tampered")],
+    },
+  });
+
+  context.runAutomation();
+
+  assert.equal(calls.mail.length, 0);
+  assert.equal(properties.has("SENT_REVALIDATION_DIGESTS"), false);
+});
+
+test("revalidation update requires a recorded initial email for the same report date", () => {
+  const fixture = revalidationFixture(REPORT_DATE);
+  const { context, calls, properties } = makeHarness({
+    now: "2026-07-15T16:10:00.000Z",
+    revalidationIndexValue: fixture.index,
+    revalidationStatuses: fixture.statuses,
+  });
+
+  context.runAutomation();
+
+  assert.equal(calls.mail.length, 0);
+  assert.equal(properties.has("SENT_REVALIDATION_DIGESTS"), false);
+});
+
+test("one grouped update includes all terminal candidates and unchanged confirmed terms", () => {
+  const candidates = [
+    revalidationCandidate("c1", "confirmed"),
+    revalidationCandidate("c2", "cancelled"),
+  ];
+  const fixture = revalidationFixture(REPORT_DATE, { candidates });
+  const { context, calls, properties } = makeHarness({
+    initialProperties: { LAST_INITIAL_SENT_DATE: REPORT_DATE },
+    revalidationIndexValue: fixture.index,
+    revalidationStatuses: fixture.statuses,
+  });
+
+  context.runAutomation();
+
+  assert.equal(calls.mail.length, 1);
+  assert.equal(calls.mail[0][1], `[\u4e34\u573a\u786e\u8ba4] ${REPORT_DATE} \u535a\u5f08\u9884\u6d4b\u65b9\u6848\u66f4\u65b0`);
+  assert.match(calls.mail[0][2], /c1/);
+  assert.match(calls.mail[0][2], /c2/);
+  assert.equal(calls.mail[0][3].attachments.length, 1);
+  const sent = JSON.parse(properties.get("SENT_REVALIDATION_DIGESTS"));
+  assert.deepEqual(sent[0].candidate_ids, ["c1", "c2"]);
+});
+
+test("report_date plus change_digest is sent exactly once", () => {
+  const fixture = revalidationFixture(REPORT_DATE);
+  const { context, calls, properties } = makeHarness({
+    initialProperties: { LAST_INITIAL_SENT_DATE: REPORT_DATE },
+    revalidationIndexValue: fixture.index,
+    revalidationStatuses: fixture.statuses,
+  });
+
+  context.runAutomation();
+  context.runAutomation();
+
+  assert.equal(calls.mail.length, 1);
+  const sent = JSON.parse(properties.get("SENT_REVALIDATION_DIGESTS"));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].report_date, REPORT_DATE);
+  assert.equal(sent[0].change_digest, fixture.status.change_digest);
+});
+
+test("failed revalidation Gmail call preserves sent digest state byte-for-byte", () => {
+  const fixture = revalidationFixture(REPORT_DATE);
+  const oldState = JSON.stringify([{
+    report_date: "2026-07-15",
+    change_digest: "a".repeat(64),
+    sent_at_bjt: "2026-07-15T14:00:00+08:00",
+    candidate_ids: ["old"],
+  }]);
+  const { context, properties } = makeHarness({
+    initialProperties: { LAST_INITIAL_SENT_DATE: REPORT_DATE, SENT_REVALIDATION_DIGESTS: oldState },
+    gmailError: new Error("gmail unavailable"),
+    revalidationIndexValue: fixture.index,
+    revalidationStatuses: fixture.statuses,
+  });
+
+  assert.throws(() => context.runAutomation(), /gmail unavailable/);
+  assert.equal(properties.get("SENT_REVALIDATION_DIGESTS"), oldState);
+});
+
+test("sent revalidation digests prune to the latest 30 business dates", () => {
+  const fixture = revalidationFixture("2026-07-20");
+  const prior = Array.from({ length: 31 }, (_, index) => {
+    const reportDate = new Date(Date.UTC(2026, 5, 1 + index)).toISOString().slice(0, 10);
+    return {
+      report_date: reportDate,
+      change_digest: index.toString(16).padStart(64, "0"),
+      sent_at_bjt: `${reportDate}T14:00:00+08:00`,
+      candidate_ids: [`old-${index}`],
+    };
+  });
+  const { context, properties } = makeHarness({
+    now: "2026-07-20T06:00:00.000Z",
+    initialProperties: {
+      LAST_INITIAL_SENT_DATE: "2026-07-20",
+      SENT_REVALIDATION_DIGESTS: JSON.stringify(prior),
+    },
+    revalidationIndexValue: fixture.index,
+    revalidationStatuses: fixture.statuses,
+  });
+
+  context.runAutomation();
+
+  const sent = JSON.parse(properties.get("SENT_REVALIDATION_DIGESTS"));
+  assert.equal(new Set(sent.map((entry) => entry.report_date)).size, 30);
+  assert.ok(sent.some((entry) => entry.report_date === "2026-07-20"));
+  assert.equal(sent.some((entry) => entry.report_date === "2026-06-01"), false);
+  assert.equal(sent.some((entry) => entry.report_date === "2026-06-02"), false);
+});
+
+test("today's initial failure cutoff does not block a previous-date update", () => {
+  const reportDate = "2026-07-19";
+  const fixture = revalidationFixture(reportDate);
+  const { context, calls } = makeHarness({
+    now: "2026-07-20T10:10:00.000Z",
+    initialProperties: {
+      LAST_INITIAL_SENT_DATE: reportDate,
+      LAST_FAILURE_NOTICE_DATE: "2026-07-20",
+    },
+    revalidationIndexValue: fixture.index,
+    revalidationStatuses: fixture.statuses,
+  });
+
+  context.runAutomation();
+
+  assert.equal(calls.mail.length, 1);
+  assert.equal(calls.mail[0][1], `[\u4e34\u573a\u786e\u8ba4] ${reportDate} \u535a\u5f08\u9884\u6d4b\u65b9\u6848\u66f4\u65b0`);
+});
+
+test("TEST_MODE revalidation dry run does not call Gmail or write sent digests", () => {
+  const fixture = revalidationFixture(REPORT_DATE);
+  const { context, calls, properties } = makeHarness({
+    initialProperties: { LAST_INITIAL_SENT_DATE: REPORT_DATE, TEST_MODE: "true" },
+    revalidationIndexValue: fixture.index,
+    revalidationStatuses: fixture.statuses,
+  });
+
+  context.runAutomation();
+
+  assert.equal(calls.mail.length, 0);
+  assert.equal(properties.has("SENT_REVALIDATION_DIGESTS"), false);
+  assert.ok(calls.logs.some((entry) => entry.includes("TEST_MODE revalidation update")));
+});
+
 test("runAutomation dispatches at most one workflow with required GitHub request", () => {
   const { context, calls, properties } = makeHarness({ now: "2026-07-16T04:15:00.000Z", status: { schema_version: 1, report_date: REPORT_DATE, forecast_ready: false } });
   context.runAutomation();
@@ -552,7 +922,8 @@ test("ready status plus matching image hash sends once and persists after Gmail"
   assert.equal(calls.mail.length, 1);
   assert.equal(calls.mail[0][0], "recipient@example.test");
   assert.equal(calls.mail[0][3].attachments.length, 1);
-  assert.equal(properties.get("LAST_SENT_DATE"), REPORT_DATE);
+  assert.equal(properties.get("LAST_INITIAL_SENT_DATE"), REPORT_DATE);
+  assert.equal(properties.has("LAST_SENT_DATE"), false);
   assert.equal(properties.get("LAST_SENT_IMAGE_SHA256"), IMAGE_HASH);
 });
 
@@ -602,7 +973,8 @@ test("18:00 gives a currently ready normal report priority", () => {
   context.runAutomation();
   assert.equal(calls.mail.length, 1);
   assert.equal(calls.mail[0][3].attachments.length, 1);
-  assert.equal(properties.get("LAST_SENT_DATE"), REPORT_DATE);
+  assert.equal(properties.get("LAST_INITIAL_SENT_DATE"), REPORT_DATE);
+  assert.equal(properties.has("LAST_SENT_DATE"), false);
   assert.equal(properties.has("LAST_FAILURE_NOTICE_DATE"), false);
   assert.equal(calls.fetch.some((call) => call.url.includes("api.github.com")), false);
 });
@@ -623,7 +995,7 @@ test("a report becoming ready after failure notice does not send or dispatch lat
   const { context, calls } = makeHarness({ now: "2026-07-16T10:10:00.000Z", initialProperties: { LAST_FAILURE_NOTICE_DATE: REPORT_DATE } });
   context.runAutomation();
   assert.equal(calls.mail.length, 0);
-  assert.equal(calls.fetch.length, 0);
+  assert.equal(calls.fetch.filter((call) => !call.url.includes("revalidation-index.json")).length, 0);
 });
 
 test("normal and failure mail both deduplicate by Beijing date", () => {
@@ -638,6 +1010,7 @@ test("normal and failure mail both deduplicate by Beijing date", () => {
 test("failed Gmail call does not write normal sent state", () => {
   const { context, properties } = makeHarness({ now: "2026-07-16T06:00:00.000Z", gmailError: new Error("gmail unavailable") });
   assert.throws(() => context.runAutomation(), /gmail unavailable/);
+  assert.equal(properties.has("LAST_INITIAL_SENT_DATE"), false);
   assert.equal(properties.has("LAST_SENT_DATE"), false);
   assert.equal(properties.has("LAST_SENT_IMAGE_SHA256"), false);
 });
@@ -663,6 +1036,7 @@ test("TEST_MODE normal dry run leaves production mail state untouched and permit
   context.runAutomation();
   assert.equal(calls.mail.length, 0);
   assert.ok(calls.logs.some((entry) => entry.includes("TEST_MODE normal report")));
+  assert.equal(properties.has("LAST_INITIAL_SENT_DATE"), false);
   assert.equal(properties.has("LAST_SENT_DATE"), false);
   assert.equal(properties.has("LAST_SENT_IMAGE_SHA256"), false);
   assert.equal(properties.has("LAST_FAILURE_NOTICE_DATE"), false);
@@ -671,7 +1045,8 @@ test("TEST_MODE normal dry run leaves production mail state untouched and permit
   context.runAutomation();
   context.runAutomation();
   assert.equal(calls.mail.length, 1);
-  assert.equal(properties.get("LAST_SENT_DATE"), REPORT_DATE);
+  assert.equal(properties.get("LAST_INITIAL_SENT_DATE"), REPORT_DATE);
+  assert.equal(properties.has("LAST_SENT_DATE"), false);
   assert.equal(properties.get("LAST_SENT_IMAGE_SHA256"), IMAGE_HASH);
   assert.equal(properties.has("LAST_FAILURE_NOTICE_DATE"), false);
 });

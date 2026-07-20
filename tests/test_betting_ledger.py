@@ -1,14 +1,20 @@
 import copy
 import csv
+from copy import deepcopy
+import hashlib
 import json
+import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from threading import Event, Lock
 from unittest.mock import patch
 
 import betting_ledger as ledger_module
+import revalidation as revalidation_module
 from betting_ledger import (
     ABNORMAL,
     LOST,
@@ -16,13 +22,26 @@ from betting_ledger import (
     REFUNDED,
     WON,
     ingest_date,
+    ingest_revalidated_receipts,
     ingest_locked_plan as _ingest_locked_plan,
     settle_pending,
     stable_bet_id,
     write_ledger_atomic,
 )
+from generate_betting_plan import StrategyOutputs
 from official_markets import THREE_WAY_SELECTIONS, TOTAL_GOALS_SELECTIONS
 from plan_lock import sha256_file
+from provisional_plan import create_provisional_outputs
+from revalidation import run_due_revalidation
+from tests.test_revalidation import (
+    DAY as REVALIDATION_DAY,
+    actual_snapshot,
+    config as revalidation_config,
+    production_task2_bundle,
+    production_value_v4_row,
+    production_value_v4_parlay_row,
+    write_actual_snapshot,
+)
 
 
 BJT = timezone(timedelta(hours=8))
@@ -185,6 +204,945 @@ def v4_parlay_row(prefix="parlay", stake="10"):
         stake=stake,
         legs_json=json.dumps(legs, ensure_ascii=False),
     )
+
+
+class BettingLedgerTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def write_confirmed_receipt(
+        self, *, route="active", stake=60, mode="active", parlay=False,
+        final_odds="2.50", generated_at=None,
+    ) -> Path:
+        row = production_value_v4_parlay_row() if parlay else production_value_v4_row()
+        row["stake"] = stake
+        return self.write_confirmed_batch(
+            [(route, row)], mode=mode, final_odds=final_odds,
+            generated_at=generated_at,
+        )[0]
+
+    def write_confirmed_batch(
+        self, routed_rows: list[tuple[str, dict]], *, mode="active",
+        final_odds="2.50", generated_at=None,
+    ) -> list[Path]:
+        settings = revalidation_config()
+        settings["mode"] = mode
+        (self.root / "betting_config.json").write_text(
+            json.dumps({
+                "pre_kickoff_revalidation": settings,
+                "value_strategy": {"activation_mode": "shadow"},
+            }),
+            encoding="utf-8",
+        )
+        outputs = StrategyOutputs(
+            [row for route, row in routed_rows if route == "active"],
+            [],
+            [row for route, row in routed_rows if route == "shadow"],
+            {},
+        )
+        bundle = production_task2_bundle()
+        if any(row.get("market_type") == "parlay" for _route, row in routed_rows):
+            initial_snapshot = actual_snapshot()
+            initial_snapshot["captured_at"] = "2026-07-20T00:00:00+08:00"
+            bundle["decision_snapshot"]["payload"] = initial_snapshot
+            bundle["decision_snapshot"]["captured_at_bjt"] = initial_snapshot[
+                "captured_at"
+            ]
+        with patch(
+            "provisional_plan.strategy_outputs_from_bundle", return_value=outputs
+        ), patch(
+            "provisional_plan.read_valid_decision_bundle", return_value=bundle
+        ):
+            source = create_provisional_outputs(
+                self.root,
+                REVALIDATION_DAY,
+                generated_at or datetime(2026, 7, 19, 23, 30, tzinfo=BJT),
+                bundle,
+            )
+
+        with patch("revalidation.read_valid_provisional_state", return_value=source), patch(
+            "revalidation.ingest_revalidated_receipts",
+            return_value=self.root / "output" / "ignored.csv",
+        ):
+            run_due_revalidation(
+                self.root,
+                datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
+                target_dates=[REVALIDATION_DAY],
+                snapshot_provider=lambda *_args: write_actual_snapshot(self.root),
+            )
+            final_snapshot = actual_snapshot()
+            final_snapshot["captured_at"] = "2026-07-20T01:35:00+08:00"
+            final_snapshot["matches"][0]["markets"]["had"]["h"] = final_odds
+            run_due_revalidation(
+                self.root,
+                datetime(2026, 7, 20, 1, 35, tzinfo=BJT),
+                target_dates=[REVALIDATION_DAY],
+                snapshot_provider=lambda *_args: write_actual_snapshot(
+                    self.root, final_snapshot
+                ),
+            )
+        state = json.loads(
+            (self.root / "output" / f"revalidation_state_{REVALIDATION_DAY}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.source = source
+        return [
+            self.root / entry["t30_receipt_path"]
+            for entry in state["candidates"]
+        ]
+
+    def read_rows(self, path: Path) -> list[dict]:
+        path = ledger_module.resolve_ledger_path(path)
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            return list(csv.DictReader(handle))
+
+    def run_serialized_ledger_writers(self, first_writer, second_writer):
+        """Force the second writer to wait for the first locked callback."""
+        first_callback_entered = Event()
+        release_first_callback = Event()
+        second_writer_started = Event()
+        second_callback_entered = Event()
+        state_lock = Lock()
+        state = {"transaction_count": 0, "callback_count": 0}
+        generations = {}
+        real_mutate = ledger_module._mutate_ledger_rows
+
+        def coordinated_transaction(output, names, mutate):
+            with state_lock:
+                state["transaction_count"] += 1
+                transaction_count = state["transaction_count"]
+            if transaction_count == 2:
+                second_writer_started.set()
+
+            def coordinated_callback(generation_id, current):
+                with state_lock:
+                    state["callback_count"] += 1
+                    callback_count = state["callback_count"]
+                if callback_count == 1:
+                    generations["first"] = generation_id
+                    first_callback_entered.set()
+                    if not release_first_callback.wait(timeout=5):
+                        raise TimeoutError("first ledger callback was not released")
+                elif callback_count == 2:
+                    generations["second"] = generation_id
+                    manifest = ledger_module._read_ledger_manifest(Path(output))
+                    generations["second_manifest"] = (
+                        None if manifest is None else manifest["generation_id"]
+                    )
+                    second_callback_entered.set()
+                return mutate(generation_id, current)
+
+            return real_mutate(output, names, coordinated_callback)
+
+        with patch(
+            "betting_ledger._mutate_ledger_rows", side_effect=coordinated_transaction
+        ), ThreadPoolExecutor(max_workers=2) as executor:
+            try:
+                first_future = executor.submit(first_writer)
+                self.assertTrue(first_callback_entered.wait(timeout=5))
+
+                second_future = executor.submit(second_writer)
+                self.assertTrue(second_writer_started.wait(timeout=5))
+                self.assertFalse(second_callback_entered.is_set())
+            finally:
+                release_first_callback.set()
+
+            self.assertTrue(second_callback_entered.wait(timeout=5))
+            first_result = first_future.result(timeout=10)
+            second_result = second_future.result(timeout=10)
+
+        self.assertNotEqual(generations["first"], generations["second"])
+        self.assertEqual(
+            generations["second"], generations["second_manifest"]
+        )
+        return [first_result, second_result]
+
+    def rewrite_final_receipt(self, path: Path, **changes) -> None:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        receipt.update(changes)
+        raw = (
+            json.dumps(
+                receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            + "\n"
+        ).encode("utf-8")
+        path.write_bytes(raw)
+        state_path = self.root / "output" / f"revalidation_state_{REVALIDATION_DAY}.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["candidates"][0]["t30_receipt_sha256"] = hashlib.sha256(raw).hexdigest()
+        state_path.write_bytes(
+            (
+                json.dumps(
+                    state,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+        )
+
+    def test_only_confirmed_active_receipt_enters_paid_ledger(self):
+        receipt_path = self.write_confirmed_receipt(route="active")
+        with patch("revalidation.read_valid_provisional_state", return_value=self.source):
+            path = ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+        rows = self.read_rows(path)
+        self.assertEqual(1, len(rows))
+        self.assertEqual("revalidation_receipt", rows[0]["evidence_type"])
+        self.assertEqual(PENDING, rows[0]["status"])
+        self.assertEqual("60.00", rows[0]["stake"])
+
+    def test_shadow_mode_writes_only_rehearsal_and_preserves_canonical_ledgers(self):
+        receipt_path = self.write_confirmed_receipt(mode="shadow")
+        paid = self.root / "output" / "betting_ledger.csv"
+        observation = self.root / "output" / "observation_ledger.csv"
+        paid.parent.mkdir(parents=True, exist_ok=True)
+        paid.write_bytes(b"paid-history\n")
+        observation.write_bytes(b"observation-history\n")
+        with patch("revalidation.read_valid_provisional_state", return_value=self.source):
+            path = ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+        self.assertEqual("revalidation_rehearsal_ledger.csv", path.name)
+        self.assertEqual(b"paid-history\n", paid.read_bytes())
+        self.assertEqual(b"observation-history\n", observation.read_bytes())
+        self.assertEqual("60.00", self.read_rows(path)[0]["stake"])
+
+    def test_active_mode_routes_strategy_shadow_only_to_observation(self):
+        receipt_path = self.write_confirmed_receipt(route="shadow", mode="active")
+        with patch("revalidation.read_valid_provisional_state", return_value=self.source):
+            path = ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+        self.assertEqual("observation_ledger.csv", path.name)
+        self.assertFalse((self.root / "output" / "betting_ledger.csv").exists())
+        rows = self.read_rows(path)
+        self.assertEqual(1, len(rows))
+        self.assertEqual("0.00", rows[0]["stake"])
+        self.assertEqual("revalidation_receipt", rows[0]["evidence_type"])
+
+    def test_final_receipt_ingestion_is_byte_idempotent(self):
+        receipt_path = self.write_confirmed_receipt()
+        with patch("revalidation.read_valid_provisional_state", return_value=self.source):
+            path = ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+            first = ledger_module.resolve_ledger_path(path).read_bytes()
+            rerun = ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+        self.assertEqual(first, ledger_module.resolve_ledger_path(rerun).read_bytes())
+        self.assertEqual(1, len(self.read_rows(path)))
+
+    def test_validated_evidence_cannot_be_swapped_before_row_construction(self):
+        receipt_path = self.write_confirmed_receipt()
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = json.loads(receipt_bytes.decode("utf-8"))
+        snapshot_path = self.root / receipt["live_odds_snapshot_path"]
+        snapshot_bytes = snapshot_path.read_bytes()
+        original_receipt_sha = hashlib.sha256(receipt_bytes).hexdigest()
+        original_snapshot = json.loads(snapshot_bytes.decode("utf-8"))
+        real_reader = revalidation_module.read_valid_revalidation_receipt
+
+        def swap_after_validation(*args, **kwargs):
+            validated = real_reader(*args, **kwargs)
+            receipt_path.write_bytes(receipt_bytes + b" ")
+            changed_snapshot = deepcopy(original_snapshot)
+            changed_snapshot["captured_at"] = "2026-07-20T01:34:00+08:00"
+            snapshot_path.write_bytes(
+                (
+                    json.dumps(
+                        changed_snapshot,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            )
+            return validated
+
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ), patch(
+            "revalidation.read_valid_revalidation_receipt",
+            side_effect=swap_after_validation,
+        ):
+            path = ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+
+        rows = self.read_rows(path)
+        self.assertEqual(original_receipt_sha, rows[0]["t30_receipt_sha256"])
+        self.assertEqual(
+            original_snapshot["captured_at"], rows[0]["odds_captured_at_bjt"]
+        )
+
+        receipt_path.write_bytes(receipt_bytes)
+        snapshot_path.write_bytes(snapshot_bytes)
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ):
+            ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+        self.assertEqual(1, len(self.read_rows(path)))
+
+    def test_validated_initial_t90_receipt_is_not_reread(self):
+        receipt_path = self.write_confirmed_receipt(
+            generated_at=datetime(2026, 7, 20, 0, 30, tzinfo=BJT)
+        )
+        candidate = self.source["candidates"][0]
+        self.assertEqual("screened", candidate["state"])
+        t90_path = self.root / candidate["t90_receipt_path"]
+        original = json.loads(t90_path.read_text(encoding="utf-8"))
+        real_validator = revalidation_module._validate_initial_t90_receipt
+        validation_calls = 0
+
+        def swap_after_validation(*args, **kwargs):
+            nonlocal validation_calls
+            validated = real_validator(*args, **kwargs)
+            validation_calls += 1
+            if validation_calls != 2:
+                return validated
+            changed = deepcopy(original)
+            changed["generated_at_bjt"] = "2026-07-20T01:40:00+08:00"
+            t90_path.write_bytes(
+                (
+                    json.dumps(
+                        changed,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            )
+            return validated
+
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ), patch(
+            "revalidation._validate_initial_t90_receipt",
+            side_effect=swap_after_validation,
+        ):
+            path = ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+
+        self.assertEqual(1, len(self.read_rows(path)))
+        self.assertEqual(2, validation_calls)
+
+    def test_receipt_snapshot_and_candidate_hash_tampering_fail_closed(self):
+        for kind in ("receipt", "snapshot", "candidate"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                self.root = Path(temporary)
+                receipt_path = self.write_confirmed_receipt()
+                source = deepcopy(self.source)
+                if kind == "receipt":
+                    receipt_path.write_bytes(receipt_path.read_bytes() + b" ")
+                elif kind == "snapshot":
+                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                    snapshot_path = self.root / receipt["live_odds_snapshot_path"]
+                    snapshot_path.write_bytes(snapshot_path.read_bytes() + b" ")
+                else:
+                    source["candidates"][0]["candidate_payload_sha256"] = "0" * 64
+                with patch(
+                    "revalidation.read_valid_provisional_state", return_value=source
+                ), self.assertRaises(ValueError):
+                    ingest_revalidated_receipts(
+                        self.root, REVALIDATION_DAY, [receipt_path]
+                    )
+
+    def test_every_receipt_destination_rejects_conflicting_existing_payload(self):
+        cases = (
+            ("paid", "active", "active"),
+            ("observation", "shadow", "active"),
+            ("rehearsal", "active", "shadow"),
+        )
+        for name, route, mode in cases:
+            with self.subTest(destination=name), tempfile.TemporaryDirectory() as temporary:
+                self.root = Path(temporary)
+                receipt_path = self.write_confirmed_receipt(route=route, mode=mode)
+                with patch(
+                    "revalidation.read_valid_provisional_state", return_value=self.source
+                ):
+                    destination = ingest_revalidated_receipts(
+                        self.root, REVALIDATION_DAY, [receipt_path]
+                    )
+                row = self.read_rows(destination)[0]
+                row["locked_odds"] = "2.60"
+                row["odds"] = "2.60"
+                row["row_payload_sha256"] = ledger_module._row_payload_digest(row)
+                if destination.name in ledger_module.LEDGER_TRANSACTION_NAMES:
+                    ledger_module._commit_ledger_generation(
+                        destination.parent, {destination.name: [row]}
+                    )
+                else:
+                    write_ledger_atomic(destination, [row])
+                conflicting_bytes = ledger_module.resolve_ledger_path(
+                    destination
+                ).read_bytes()
+
+                with patch(
+                    "revalidation.read_valid_provisional_state", return_value=self.source
+                ), self.assertRaisesRegex(ValueError, "evidence|payload|existing"):
+                    ingest_revalidated_receipts(
+                        self.root, REVALIDATION_DAY, [receipt_path]
+                    )
+                self.assertEqual(
+                    conflicting_bytes,
+                    ledger_module.resolve_ledger_path(destination).read_bytes(),
+                )
+
+    def test_changed_receipt_identity_cannot_bypass_candidate_uniqueness(self):
+        receipt_path = self.write_confirmed_receipt()
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ):
+            destination = ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+        row = self.read_rows(destination)[0]
+        row["t30_receipt_sha256"] = "0" * 64
+        row["bet_id"] = ledger_module._receipt_bet_id(
+            REVALIDATION_DAY.isoformat(), row["candidate_id"], "0" * 64
+        )
+        row["row_payload_sha256"] = ledger_module._row_payload_digest(row)
+        ledger_module._commit_ledger_generation(
+            destination.parent, {destination.name: [row]}
+        )
+        conflicting_bytes = ledger_module.resolve_ledger_path(
+            destination
+        ).read_bytes()
+
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ), self.assertRaisesRegex(ValueError, "candidate|evidence|receipt"):
+            ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+        self.assertEqual(
+            conflicting_bytes,
+            ledger_module.resolve_ledger_path(destination).read_bytes(),
+        )
+
+    def test_invalid_stage_time_odds_and_increased_stake_never_enter(self):
+        mutations = (
+            {"checked_at_bjt": "2026-07-20T02:00:00+08:00"},
+            {"checked_at_bjt": "2026-07-20T00:20:00+08:00"},
+            {"current_odds": "9.99"},
+            {"final_stake": 62},
+        )
+        for changes in mutations:
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temporary:
+                self.root = Path(temporary)
+                receipt_path = self.write_confirmed_receipt()
+                self.rewrite_final_receipt(receipt_path, **changes)
+                with patch(
+                    "revalidation.read_valid_provisional_state",
+                    return_value=self.source,
+                ), self.assertRaises(ValueError):
+                    ingest_revalidated_receipts(
+                        self.root, REVALIDATION_DAY, [receipt_path]
+                    )
+                self.assertFalse((self.root / "output" / "betting_ledger.csv").exists())
+
+    def test_nonfinal_receipt_never_enters_any_ledger(self):
+        self.write_confirmed_receipt()
+        state = json.loads(
+            (self.root / "output" / f"revalidation_state_{REVALIDATION_DAY}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        t90_path = self.root / state["candidates"][0]["t90_receipt_path"]
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ), self.assertRaises(ValueError):
+            ingest_revalidated_receipts(self.root, REVALIDATION_DAY, [t90_path])
+        self.assertFalse((self.root / "output" / "betting_ledger.csv").exists())
+
+    def test_provisional_screened_and_cancelled_candidates_never_enter(self):
+        for state_name in ("provisional", "screened", "cancelled"):
+            with self.subTest(state=state_name), tempfile.TemporaryDirectory() as temporary:
+                self.root = Path(temporary)
+                receipt_path = self.write_confirmed_receipt(
+                    final_odds="1.50" if state_name == "cancelled" else "2.50"
+                )
+                if state_name != "cancelled":
+                    state_path = self.root / "output" / f"revalidation_state_{REVALIDATION_DAY}.json"
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    entry = state["candidates"][0]
+                    entry.update(
+                        state=state_name,
+                        ledger_status="not_applicable",
+                        confirmed_stake=0,
+                    )
+                    entry["t30_receipt_path"] = ""
+                    entry["t30_receipt_sha256"] = ""
+                    if state_name == "provisional":
+                        entry["t90_receipt_path"] = ""
+                        entry["t90_receipt_sha256"] = ""
+                        entry["last_stake"] = entry["candidate"]["provisional_stake"]
+                    state_path.write_bytes(
+                        (
+                            json.dumps(
+                                state,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                            + "\n"
+                        ).encode("utf-8")
+                    )
+                with patch(
+                    "revalidation.read_valid_provisional_state",
+                    return_value=self.source,
+                ), self.assertRaises(ValueError):
+                    ingest_revalidated_receipts(
+                        self.root, REVALIDATION_DAY, [receipt_path]
+                    )
+                self.assertFalse((self.root / "output" / "betting_ledger.csv").exists())
+
+    def test_receipt_rows_enforce_account_caps_and_realized_loss_stop(self):
+        cases = (
+            ("daily", {"date": str(REVALIDATION_DAY), "stake": "460", "status": PENDING}),
+            ("monthly", {"date": "2026-07-19", "stake": "4960", "status": PENDING}),
+            ("match", {"date": str(REVALIDATION_DAY), "stake": "150", "status": PENDING, "match_id": "match-1"}),
+            ("loss", {"date": "2026-07-19", "stake": "2", "status": LOST, "profit": "-5000"}),
+        )
+        for name, existing in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                self.root = Path(temporary)
+                receipt_path = self.write_confirmed_receipt()
+                existing.setdefault("report_date", existing["date"])
+                existing.setdefault("match_id", "other-match")
+                write_ledger_atomic(
+                    self.root / "output" / "betting_ledger.csv", [existing]
+                )
+                with patch(
+                    "revalidation.read_valid_provisional_state",
+                    return_value=self.source,
+                ), self.assertRaises(ValueError):
+                    ingest_revalidated_receipts(
+                        self.root, REVALIDATION_DAY, [receipt_path]
+                    )
+
+    def test_receipt_backed_paid_row_remains_valid_for_settlement(self):
+        receipt_path = self.write_confirmed_receipt()
+        with patch("revalidation.read_valid_provisional_state", return_value=self.source):
+            ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+            path = ledger_module.settle_ledger(
+                self.root,
+                {
+                    "match-1": finished(
+                        "match-1", 1, 0, source_record_id="result-match-1"
+                    )
+                },
+                datetime(2026, 7, 20, 4, 0, tzinfo=BJT),
+            )
+        rows = self.read_rows(path)
+        self.assertEqual(WON, rows[0]["status"])
+        self.assertEqual("150.00", rows[0]["return"])
+
+    def test_pre_extension_plan_lock_digest_remains_valid_without_backfill(self):
+        row = ingest_locked_plan([], [plan_row()], lock())[0]
+        for field in ledger_module.IMMUTABLE_ROW_PAYLOAD_FIELDS[-10:]:
+            row.pop(field, None)
+        old_fields = ledger_module.IMMUTABLE_ROW_PAYLOAD_FIELDS[:-10]
+        payload = {
+            "schema_version": 1,
+            "immutable": {
+                field: ledger_module._row_payload_value(field, row)
+                for field in old_fields
+            },
+            "initial_economics": {
+                "status": PENDING,
+                "return": "0.00",
+                "profit": "0.00",
+            },
+        }
+        row["row_payload_sha256"] = hashlib.sha256(
+            json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        evidence = {(row["report_date"], row["bet_id"]): row["row_payload_sha256"]}
+        normalized = _ingest_locked_plan(
+            [row], [], lock(), canonical_evidence=evidence
+        )
+        self.assertEqual(row, normalized[0])
+        self.assertNotIn("evidence_type", normalized[0])
+
+    def test_parlay_receipt_cap_and_batch_order_are_deterministic(self):
+        single = production_value_v4_row()
+        single["stake"] = 60
+        parlay = production_value_v4_parlay_row()
+        parlay["stake"] = 30
+        receipt_paths = self.write_confirmed_batch(
+            [("active", single), ("active", parlay)]
+        )
+        with patch("revalidation.read_valid_provisional_state", return_value=self.source):
+            path = ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, list(reversed(receipt_paths))
+            )
+        rows = self.read_rows(path)
+        self.assertEqual(["had", "parlay"], [row["market_type"] for row in rows])
+        self.assertEqual(["60.00", "30.00"], [row["stake"] for row in rows])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            self.root = Path(temporary)
+            oversized = self.write_confirmed_receipt(parlay=True, stake=32)
+            with patch(
+                "revalidation.read_valid_provisional_state", return_value=self.source
+            ), self.assertRaisesRegex(ValueError, "parlay"):
+                ingest_revalidated_receipts(
+                    self.root, REVALIDATION_DAY, [oversized]
+                )
+
+    def test_concurrent_paid_appends_from_same_generation_preserve_both(self):
+        single = production_value_v4_row()
+        single["stake"] = 60
+        parlay = production_value_v4_parlay_row()
+        parlay["stake"] = 30
+        receipt_paths = self.write_confirmed_batch(
+            [("active", single), ("active", parlay)]
+        )
+        paid = self.root / "output" / "betting_ledger.csv"
+
+        def ingest_one(receipt_path):
+            return ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_path]
+            )
+
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ):
+            returned_paths = self.run_serialized_ledger_writers(
+                lambda: ingest_one(receipt_paths[0]),
+                lambda: ingest_one(receipt_paths[1]),
+            )
+
+        self.assertEqual([paid, paid], returned_paths)
+        rows = self.read_rows(ledger_module.resolve_ledger_path(paid))
+        self.assertEqual(2, len(rows))
+        self.assertEqual(
+            {"had", "parlay"}, {row["market_type"] for row in rows}
+        )
+        self.assertEqual(
+            Decimal("90.00"), sum(Decimal(row["stake"]) for row in rows)
+        )
+        self.assertLessEqual(
+            sum(Decimal(row["stake"]) for row in rows),
+            ledger_module.HARD_MONTHLY_STAKE,
+        )
+
+    def test_paid_append_racing_settlement_preserves_row_and_settlement(self):
+        single = production_value_v4_row()
+        single["stake"] = 60
+        parlay = production_value_v4_parlay_row()
+        parlay["stake"] = 30
+        receipt_paths = self.write_confirmed_batch(
+            [("active", single), ("active", parlay)]
+        )
+        paid = self.root / "output" / "betting_ledger.csv"
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ):
+            ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_paths[0]]
+            )
+
+        def append_receipt():
+            return ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, [receipt_paths[1]]
+            )
+
+        def settle_paid():
+            return ledger_module.settle_ledger(
+                self.root,
+                {
+                    "match-1": finished(
+                        "match-1", 1, 0, source_record_id="result-match-1"
+                    )
+                },
+                datetime(2026, 7, 20, 4, 0, tzinfo=BJT),
+            )
+
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ):
+            returned_paths = self.run_serialized_ledger_writers(
+                append_receipt, settle_paid
+            )
+
+        self.assertEqual([paid, paid], returned_paths)
+        rows = self.read_rows(ledger_module.resolve_ledger_path(paid))
+        self.assertEqual(2, len(rows))
+        by_market = {row["market_type"]: row for row in rows}
+        self.assertEqual(WON, by_market["had"]["status"])
+        self.assertEqual(PENDING, by_market["parlay"]["status"])
+
+    def test_concurrent_paid_appends_recompute_caps_under_winning_generation(self):
+        single = production_value_v4_row()
+        single["stake"] = 60
+        parlay = production_value_v4_parlay_row()
+        parlay["stake"] = 30
+        receipt_paths = self.write_confirmed_batch(
+            [("active", single), ("active", parlay)]
+        )
+        paid = self.root / "output" / "betting_ledger.csv"
+        write_ledger_atomic(
+            paid,
+            [{
+                "date": "2026-07-17",
+                "report_date": "2026-07-17",
+                "stake": "4940",
+                "status": PENDING,
+                "match_id": "historical-match",
+            }],
+        )
+        def attempt(receipt_path):
+            try:
+                return ingest_revalidated_receipts(
+                    self.root, REVALIDATION_DAY, [receipt_path]
+                )
+            except ValueError as exc:
+                return exc
+
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ):
+            outcomes = self.run_serialized_ledger_writers(
+                lambda: attempt(receipt_paths[0]),
+                lambda: attempt(receipt_paths[1]),
+            )
+
+        self.assertEqual(paid, outcomes[0])
+        self.assertIsInstance(outcomes[1], ValueError)
+        rows = self.read_rows(ledger_module.resolve_ledger_path(paid))
+        self.assertEqual(2, len(rows))
+        self.assertEqual(
+            {"historical-match", "match-1"}, {row["match_id"] for row in rows}
+        )
+        self.assertLessEqual(
+            sum((Decimal(row["stake"]) for row in rows), Decimal("0")),
+            ledger_module.HARD_MONTHLY_STAKE,
+        )
+        self.assertEqual(
+            ledger_module.HARD_MONTHLY_STAKE,
+            sum((Decimal(row["stake"]) for row in rows), Decimal("0")),
+        )
+
+    def test_public_writer_rejects_every_physical_generation_path(self):
+        output = self.root / "output"
+        paid = output / "betting_ledger.csv"
+        observation = output / "observation_ledger.csv"
+        committed = ledger_module._commit_ledger_generation(
+            output,
+            {
+                paid.name: [{"marker": "committed-paid"}],
+                observation.name: [{"marker": "committed-observation"}],
+            },
+        )
+        physical = committed[paid.name]
+        manifest = output / ledger_module.LEDGER_TRANSACTION_MANIFEST
+        manifest_bytes = manifest.read_bytes()
+        physical_bytes = physical.read_bytes()
+        rejected_paths = (
+            physical,
+            physical.parent / "nested.csv",
+            output / ledger_module.LEDGER_GENERATION_DIRECTORY / "manual" / "other.csv",
+        )
+
+        for path in rejected_paths:
+            with self.subTest(path=path), self.assertRaisesRegex(
+                ValueError, "generation|physical"
+            ):
+                write_ledger_atomic(path, [{"marker": "overwrite"}])
+
+        with self.assertRaisesRegex(ValueError, "generation|transaction"):
+            write_ledger_atomic(paid, [{"marker": "stale-full-replacement"}])
+
+        self.assertEqual(manifest_bytes, manifest.read_bytes())
+        self.assertEqual(physical_bytes, physical.read_bytes())
+        self.assertEqual(physical, ledger_module.resolve_ledger_path(paid))
+        self.assertEqual("committed-paid", self.read_rows(physical)[0]["marker"])
+
+    def test_invalid_batch_replaces_no_ledger(self):
+        single = production_value_v4_row()
+        single["stake"] = 60
+        parlay = production_value_v4_parlay_row()
+        parlay["stake"] = 30
+        receipt_paths = self.write_confirmed_batch(
+            [("active", single), ("active", parlay)]
+        )
+        receipt_paths[1].write_bytes(receipt_paths[1].read_bytes() + b" ")
+        paid = self.root / "output" / "betting_ledger.csv"
+        paid.write_bytes(b"unchanged-ledger\n")
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ), self.assertRaises(ValueError):
+            ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, receipt_paths
+            )
+        self.assertEqual(b"unchanged-ledger\n", paid.read_bytes())
+
+    def test_active_mixed_routes_commit_both_destinations_once(self):
+        active = production_value_v4_row()
+        active["stake"] = 60
+        shadow = production_value_v4_row()
+        shadow["stake"] = 60
+        receipt_paths = self.write_confirmed_batch(
+            [("active", active), ("shadow", shadow)]
+        )
+        real_commit = ledger_module._commit_ledger_generation_locked
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ), patch(
+            "betting_ledger._commit_ledger_generation_locked", wraps=real_commit
+        ) as commit:
+            ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, receipt_paths
+            )
+        commit.assert_called_once()
+        self.assertEqual(
+            {"betting_ledger.csv", "observation_ledger.csv"},
+            set(commit.call_args.args[1]),
+        )
+
+    def test_mixed_routes_are_invisible_until_one_manifest_commit(self):
+        active = production_value_v4_row()
+        active["stake"] = 60
+        shadow = production_value_v4_row()
+        shadow["stake"] = 60
+        receipt_paths = self.write_confirmed_batch(
+            [("active", active), ("shadow", shadow)]
+        )
+        paid = self.root / "output" / "betting_ledger.csv"
+        observation = self.root / "output" / "observation_ledger.csv"
+        real_replace = os.replace
+        failed = False
+
+        def fail_after_paid_stage(source, destination):
+            nonlocal failed
+            if not failed and Path(destination).name == "observation_ledger.csv":
+                failed = True
+                raise OSError("observation stage unavailable")
+            return real_replace(source, destination)
+
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ), patch(
+            "betting_ledger.os.replace", side_effect=fail_after_paid_stage
+        ), self.assertRaisesRegex(OSError, "observation stage unavailable"):
+            ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, receipt_paths
+            )
+
+        self.assertFalse(paid.exists())
+        self.assertFalse(observation.exists())
+        prepared = list(
+            (self.root / "output" / "ledger_generations").rglob("*.csv")
+        )
+        self.assertTrue(prepared)
+
+        with patch(
+            "revalidation.read_valid_provisional_state", return_value=self.source
+        ):
+            ingest_revalidated_receipts(
+                self.root, REVALIDATION_DAY, receipt_paths
+            )
+        visible_paid = ledger_module.resolve_ledger_path(paid)
+        visible_observation = ledger_module.resolve_ledger_path(observation)
+        self.assertEqual(1, len(self.read_rows(visible_paid)))
+        self.assertEqual(1, len(self.read_rows(visible_observation)))
+        self.assertNotEqual(paid, visible_paid)
+        self.assertNotEqual(observation, visible_observation)
+
+    def test_authoritative_readers_never_bypass_committed_generation(self):
+        import audit_shadow_portfolio
+        import build_daily_image
+        import build_site
+        import decision_bundle
+        import generate_betting_plan
+        import model_metrics
+        import report_status
+
+        output = self.root / "output"
+        output.mkdir(parents=True, exist_ok=True)
+        paid = output / "betting_ledger.csv"
+        observation = output / "observation_ledger.csv"
+        write_ledger_atomic(paid, [{"stale": "paid"}])
+        write_ledger_atomic(observation, [{"stale": "observation"}])
+        committed = ledger_module._commit_ledger_generation(
+            output,
+            {
+                paid.name: [{"marker": "committed-paid"}],
+                observation.name: [{"marker": "committed-observation"}],
+            },
+        )
+
+        readers = {
+            "site": lambda: build_site.read_betting_ledger(),
+            "image": lambda: build_daily_image.read_csv(paid),
+            "decision": lambda: decision_bundle._read_csv(paid, required=False),
+            "strategy": lambda: generate_betting_plan.load_csv(paid),
+            "audit": lambda: audit_shadow_portfolio._read_csv_rows(paid)[0],
+        }
+        with patch.object(build_site, "OUTPUT_DIR", output):
+            for name, reader in readers.items():
+                with self.subTest(reader=name):
+                    self.assertEqual("committed-paid", reader()[0]["marker"])
+
+        self.assertEqual(
+            (True, 1),
+            report_status._csv_with_header(paid, frozenset({"marker"})),
+        )
+
+        metric_inputs = []
+
+        def summarize(rows, _active_strategy=""):
+            metric_inputs.append(rows)
+            return {
+                "overall": {},
+                "active_strategy": {},
+                "by_play": {},
+                "by_play_all": {},
+                "by_league": {},
+            }
+
+        with patch.object(model_metrics, "ROOT", self.root), patch.object(
+            model_metrics, "OUTPUT_DIR", output
+        ), patch.object(model_metrics, "DATA_DIR", self.root / "data"), patch.object(
+            model_metrics, "summarize", side_effect=summarize
+        ), patch.object(model_metrics, "closing_line_value", return_value={}), patch.object(
+            model_metrics, "snapshot_coverage", return_value={}
+        ), patch.object(
+            model_metrics, "fit_league_draw_calibrations", return_value={}
+        ):
+            model_metrics.write_metrics()
+        self.assertEqual(
+            ["committed-paid", "committed-observation"],
+            [rows[0]["marker"] for rows in metric_inputs],
+        )
+
+        protected = audit_shadow_portfolio._protected_hashes(self.root)
+        expected_protected = {
+            (output / ledger_module.LEDGER_TRANSACTION_MANIFEST)
+            .relative_to(self.root)
+            .as_posix(),
+            committed[paid.name].relative_to(self.root).as_posix(),
+            committed[observation.name].relative_to(self.root).as_posix(),
+        }
+        self.assertEqual(expected_protected, set(protected))
 
 
 class IdentityAndIngestionTest(unittest.TestCase):
@@ -477,7 +1435,9 @@ class IdentityAndIngestionTest(unittest.TestCase):
                 ledger_module.settle_ledger(
                     root, {"1001": finished("1001", 1, 1)}, SETTLED_AT
                 )
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+            with ledger_module.resolve_ledger_path(ledger_path).open(
+                encoding="utf-8-sig", newline=""
+            ) as handle:
                 rows = list(csv.DictReader(handle))
         self.assertEqual(1, len(rows))
         self.assertEqual("20.00", rows[0]["profit"])
@@ -520,7 +1480,9 @@ class IdentityAndIngestionTest(unittest.TestCase):
                 ledger_module, "read_valid_lock", return_value=lock_payload
             ):
                 ledger_module.settle_ledger(root, results, SETTLED_AT)
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+            with ledger_module.resolve_ledger_path(ledger_path).open(
+                encoding="utf-8-sig", newline=""
+            ) as handle:
                 rows = list(csv.DictReader(handle))
         self.assertEqual(1, len(rows))
         self.assertEqual("50.00", rows[0]["profit"])
@@ -1268,7 +2230,9 @@ class SettlementTest(unittest.TestCase):
                     root, {"1001": finished("1001", 2, 1)}, SETTLED_AT
                 )
 
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+            with ledger_module.resolve_ledger_path(ledger_path).open(
+                encoding="utf-8-sig", newline=""
+            ) as handle:
                 rows = list(csv.DictReader(handle))
         self.assertEqual(1, len(rows))
         self.assertEqual(canonical["bet_id"], rows[0]["bet_id"])
@@ -1307,7 +2271,9 @@ class SettlementTest(unittest.TestCase):
 
             ledger_module.settle_ledger(root, {}, SETTLED_AT)
 
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+            with ledger_module.resolve_ledger_path(ledger_path).open(
+                encoding="utf-8-sig", newline=""
+            ) as handle:
                 rows = list(csv.DictReader(handle))
         self.assertEqual(1, len(rows))
         self.assertEqual("legacy-existing-id", rows[0]["bet_id"])
@@ -1767,7 +2733,9 @@ class LockedIngestCommandTest(unittest.TestCase):
                 ledger_module, "_read_plan_bytes", side_effect=capture_then_change
             ) as read_bytes:
                 ledger_path = ingest_date(root, target_date)
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+            with ledger_module.resolve_ledger_path(ledger_path).open(
+                encoding="utf-8-sig", newline=""
+            ) as handle:
                 rows = list(csv.DictReader(handle))
 
         read_bytes.assert_called_once_with(plan_path)
@@ -1810,7 +2778,9 @@ class LockedIngestCommandTest(unittest.TestCase):
             ):
                 ledger_path = ingest_date(root, target_date)
 
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+            with ledger_module.resolve_ledger_path(ledger_path).open(
+                encoding="utf-8-sig", newline=""
+            ) as handle:
                 rows = list(csv.DictReader(handle))
         self.assertEqual(1, len(rows))
         self.assertEqual("20", rows[0]["stake"])

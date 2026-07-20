@@ -957,17 +957,28 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
 
                 settle_once()
                 observation_path = output / "observation_ledger.csv"
-                first_observation_bytes = observation_path.read_bytes()
-                first_paid_bytes = (output / "betting_ledger.csv").read_bytes()
-                with observation_path.open(
+                paid_path = output / "betting_ledger.csv"
+                first_observation_bytes = ledger_module.resolve_ledger_path(
+                    observation_path
+                ).read_bytes()
+                first_paid_bytes = ledger_module.resolve_ledger_path(
+                    paid_path
+                ).read_bytes()
+                with ledger_module.resolve_ledger_path(observation_path).open(
                     encoding="utf-8-sig", newline=""
                 ) as handle:
                     rows = list(csv.DictReader(handle))
 
                 settle_once()
 
-            self.assertEqual(first_observation_bytes, observation_path.read_bytes())
-            self.assertEqual(first_paid_bytes, (output / "betting_ledger.csv").read_bytes())
+            self.assertEqual(
+                first_observation_bytes,
+                ledger_module.resolve_ledger_path(observation_path).read_bytes(),
+            )
+            self.assertEqual(
+                first_paid_bytes,
+                ledger_module.resolve_ledger_path(paid_path).read_bytes(),
+            )
             self.assertEqual(3, len(rows))
             self.assertEqual({ledger_module.WON}, {row["status"] for row in rows})
             for field in (
@@ -983,7 +994,7 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
                     [], rows, TARGET_DATE + timedelta(days=1)
                 ),
             )
-            with (output / "betting_ledger.csv").open(
+            with ledger_module.resolve_ledger_path(paid_path).open(
                 encoding="utf-8-sig", newline=""
             ) as handle:
                 self.assertEqual([], list(csv.DictReader(handle)))
@@ -1005,7 +1016,9 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
             ):
                 self.assertEqual(0, strategy.main())
 
-            with (output / "observation_ledger.csv").open(
+            with ledger_module.resolve_ledger_path(
+                output / "observation_ledger.csv"
+            ).open(
                 encoding="utf-8-sig", newline=""
             ) as handle:
                 reader = csv.DictReader(handle)
@@ -1128,7 +1141,9 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
             with patch("plan_lock.read_valid_decision_bundle", return_value=bundle):
                 lock_plan(root, TARGET_DATE, LOCKED_AT)
                 ledger_path = ingest_date(root, TARGET_DATE)
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+            with ledger_module.resolve_ledger_path(ledger_path).open(
+                encoding="utf-8-sig", newline=""
+            ) as handle:
                 rows = list(csv.DictReader(handle))
             locked_plan_bytes = plan_path.read_bytes()
 

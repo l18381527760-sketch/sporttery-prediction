@@ -10,10 +10,18 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+from PIL.PngImagePlugin import PngInfo
+
 import import_sporttery
-from decision_bundle import create_decision_bundle, write_prediction_metadata
-from generate_betting_plan import plan_csv_bytes
+from decision_bundle import (
+    create_decision_bundle,
+    read_valid_decision_bundle,
+    write_prediction_metadata,
+)
+from generate_betting_plan import StrategyOutputs, plan_csv_bytes
 from plan_lock import lock_plan
+from provisional_plan import create_provisional_outputs
 from report_status import (
     OFFICIAL_FIXTURE_SOURCES,
     _matching_decision_snapshot,
@@ -56,6 +64,18 @@ LEDGER_FIELDS = [
 
 
 class ReportStatusTest(unittest.TestCase):
+    def write_report_image(
+        self, root: Path, report_date: date, report_stage: str, build_id: str
+    ) -> Path:
+        path = root / "web" / "daily-report.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        metadata = PngInfo()
+        metadata.add_text("report_date", report_date.isoformat())
+        metadata.add_text("report_stage", report_stage)
+        metadata.add_text("build_id", build_id)
+        Image.new("RGB", (1, 1)).save(path, pnginfo=metadata)
+        return path
+
     def make_artifacts(self, root: Path, fixture_ids=("001", "002")) -> None:
         data = root / "data"
         output = root / "output"
@@ -222,10 +242,12 @@ class ReportStatusTest(unittest.TestCase):
                 "source_record_id": "report-status-snapshot",
                 "matches": [{
                     "match_id": row["match_id"],
+                    "source_record_id": f"report-status-{row['match_id']}",
                     "team_a": row["team_a"],
                     "team_b": row["team_b"],
                     "match_num": row["match_id"],
                     "kickoff_at": row["kickoff_at"],
+                    "sales_state": "Selling",
                     "markets": {
                         "had": {"h": "2.00", "d": "3.20", "a": "3.50"},
                         "hhad": {},
@@ -301,6 +323,9 @@ class ReportStatusTest(unittest.TestCase):
         return path
 
     def publish(self, root: Path, phase: str, **kwargs) -> dict:
+        self.write_report_image(
+            root, REPORT_DATE, phase, "123456-1-" + phase
+        )
         return publish_status(
             root,
             REPORT_DATE,
@@ -314,7 +339,7 @@ class ReportStatusTest(unittest.TestCase):
     def test_base_status_contains_the_machine_readable_defaults(self):
         self.assertEqual(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "report_date": "2026-07-16",
                 "forecast_ready": False,
                 "decision_snapshot_ready": False,
@@ -323,9 +348,172 @@ class ReportStatusTest(unittest.TestCase):
                 "settled_through": "",
                 "decision_odds_at_bjt": "",
                 "plan_locked_at_bjt": "",
+                "report_stage": "forecast",
+                "initial_report_ready": False,
+                "provisional_plan_sha256": "",
+                "confirmed_stake": 0,
+                "provisional_stake": 0,
+                "revalidation_ready": False,
             },
             base_status(REPORT_DATE),
         )
+
+    def test_provisional_status_uses_bundle_and_provisional_artifacts_without_plan_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            self.make_lock(root)
+            (root / "output" / f"plan_lock_{REPORT_DATE.isoformat()}.json").unlink()
+            decision_bundle = read_valid_decision_bundle(root, REPORT_DATE)
+            active_row = {
+                "date": REPORT_DATE.isoformat(),
+                "strategy_version": "value-v4",
+                "match_id": "001",
+                "market_type": "had",
+                "market_line": "",
+                "selection": "h",
+                "kickoff_local": "2026-07-16T16:00:00+08:00",
+                "odds": "2.10",
+                "stake": "140",
+                "conservative_probability": "0.55",
+                "minimum_ev": "0.05",
+                "legs_json": "[]",
+            }
+            shadow_row = {**active_row, "match_id": "002", "stake": "20"}
+            outputs = StrategyOutputs([active_row], [], [shadow_row], {})
+            with patch(
+                "provisional_plan.strategy_outputs_from_bundle", return_value=outputs
+            ):
+                create_provisional_outputs(
+                    root, REPORT_DATE, GENERATED_AT, decision_bundle
+                )
+
+            status = self.publish(root, "provisional")
+
+            self.assertEqual(2, status["schema_version"])
+            self.assertEqual("provisional", status["report_stage"])
+            self.assertTrue(status["initial_report_ready"])
+            self.assertRegex(status["provisional_plan_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual(0, status["confirmed_stake"])
+            self.assertEqual(140, status["provisional_stake"])
+            self.assertFalse(status["data_quality"]["plan_lock_ready"])
+            self.assertTrue(status["revalidation_ready"])
+            revalidation_status = json.loads(
+                (
+                    root
+                    / f"web/revalidation/{REPORT_DATE.isoformat()}/status.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(0, revalidation_status["revision"])
+            self.assertTrue((root / "web/revalidation-index.json").is_file())
+
+    def test_provisional_status_rejects_state_only_fractional_stake_tampering(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            self.make_lock(root)
+            decision_bundle = read_valid_decision_bundle(root, REPORT_DATE)
+            row = {
+                "date": REPORT_DATE.isoformat(),
+                "strategy_version": "value-v4",
+                "match_id": "001",
+                "market_type": "had",
+                "market_line": "",
+                "selection": "h",
+                "kickoff_local": "2026-07-16T16:00:00+08:00",
+                "odds": "2.10",
+                "stake": "140",
+                "conservative_probability": "0.55",
+                "minimum_ev": "0.05",
+                "legs_json": "[]",
+            }
+            with patch(
+                "provisional_plan.strategy_outputs_from_bundle",
+                return_value=StrategyOutputs([row], [], [], {}),
+            ):
+                create_provisional_outputs(root, REPORT_DATE, GENERATED_AT, decision_bundle)
+
+            pointer_path = root / "output" / f"provisional_generation_{REPORT_DATE.isoformat()}.json"
+            pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+            state_path = root / pointer["artifacts"]["state"]["path"]
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["candidates"][0]["provisional_stake"] = 140.5
+            candidate = state["candidates"][0]
+            candidate["candidate_payload_sha256"] = hashlib.sha256(
+                json.dumps(
+                    {
+                        key: value
+                        for key, value in candidate.items()
+                        if key != "candidate_payload_sha256"
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            state["active_provisional_stake"] = 140.5
+            state_bytes = (
+                json.dumps(
+                    state,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                + b"\n"
+            )
+            state_path.write_bytes(state_bytes)
+            pointer["artifacts"]["state"]["sha256"] = hashlib.sha256(state_bytes).hexdigest()
+            pointer["artifacts"]["state"]["bytes"] = len(state_bytes)
+            pointer_path.write_text(
+                json.dumps(
+                    pointer,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            status = self.publish(root, "provisional")
+
+            self.assertFalse(status["initial_report_ready"])
+            self.assertEqual(0, status["provisional_stake"])
+
+    def test_artifact_state_uses_only_the_validated_csv_state_join_total(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            validated = {
+                "provisional_plan_sha256": "a" * 64,
+                "active_candidate_count": 1,
+                "shadow_candidate_count": 0,
+                "active_provisional_stake": 140,
+                "candidates": [
+                    {"route": "active", "provisional_stake": "999.9"}
+                ],
+            }
+            with patch(
+                "report_status.read_valid_decision_bundle", return_value={}
+            ), patch(
+                "report_status.read_valid_provisional_state",
+                return_value=validated,
+            ):
+                state = artifact_state(root, REPORT_DATE)
+
+            self.assertEqual(140, state["provisional_stake"])
+
+    def test_schema_one_status_is_readable_when_publishing_a_provisional_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            (root / "web" / "report-status.json").write_text(
+                json.dumps({**base_status(REPORT_DATE), "schema_version": 1, "forecast_ready": True}),
+                encoding="utf-8",
+            )
+            status = self.publish(root, "forecast")
+            self.assertEqual(2, status["schema_version"])
+            self.assertTrue(status["forecast_ready"])
 
     def test_new_business_date_discards_yesterdays_flags(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -362,7 +550,7 @@ class ReportStatusTest(unittest.TestCase):
             self.publish(root, "decision")
             status = self.publish(root, "settlement", settled_through=date(2026, 7, 15))
 
-            self.assertEqual(1, status["schema_version"])
+            self.assertEqual(2, status["schema_version"])
             self.assertEqual("2026-07-16", status["report_date"])
             self.assertTrue(status["forecast_ready"])
             self.assertTrue(status["decision_snapshot_ready"])
@@ -736,9 +924,56 @@ class ReportStatusTest(unittest.TestCase):
             status = self.publish(root, "forecast")
 
             self.assertEqual(
-                hashlib.sha256(b"exact png bytes").hexdigest(),
+                hashlib.sha256(
+                    (root / "web" / "daily-report.png").read_bytes()
+                ).hexdigest(),
                 status["image_sha256"],
             )
+
+    def test_image_readiness_requires_exact_date_stage_and_build_metadata(self):
+        variants = (
+            (date(2026, 7, 18), "provisional", "build-1"),
+            (REPORT_DATE, "forecast", "build-1"),
+            (REPORT_DATE, "provisional", "build-2"),
+        )
+        for image_date, image_stage, image_build_id in variants:
+            with self.subTest(
+                image_date=image_date,
+                image_stage=image_stage,
+                image_build_id=image_build_id,
+            ), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "data").mkdir()
+                (root / "output").mkdir()
+                self.write_report_image(
+                    root, image_date, image_stage, image_build_id
+                )
+
+                state = artifact_state(
+                    root,
+                    REPORT_DATE,
+                    expected_report_stage="provisional",
+                    expected_build_id="build-1",
+                )
+
+                self.assertFalse(state["image_ready"])
+                self.assertEqual("", state["image_sha256"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "data").mkdir()
+            (root / "output").mkdir()
+            self.write_report_image(root, REPORT_DATE, "provisional", "build-1")
+
+            state = artifact_state(
+                root,
+                REPORT_DATE,
+                expected_report_stage="provisional",
+                expected_build_id="build-1",
+            )
+
+            self.assertTrue(state["image_ready"])
+            self.assertTrue(state["image_sha256"])
 
     def test_settlement_cannot_claim_a_date_before_yesterday(self):
         with tempfile.TemporaryDirectory() as tmp:

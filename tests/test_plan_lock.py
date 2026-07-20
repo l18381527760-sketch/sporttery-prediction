@@ -514,7 +514,7 @@ class PlanLockTest(unittest.TestCase):
 
                 ledger_module.settle_ledger(root, {}, SETTLED_AT)
 
-                with ledger_path.open(
+                with ledger_module.resolve_ledger_path(ledger_path).open(
                     "r", encoding="utf-8-sig", newline=""
                 ) as handle:
                     rows = list(csv.DictReader(handle))

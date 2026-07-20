@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import generate_betting_plan as strategy
 import predict_today
+import live_odds
 from decision_bundle import (
     BUNDLE_SCHEMA_VERSION,
     PREDICTION_METADATA_SCHEMA_VERSION,
@@ -379,6 +380,135 @@ class DecisionBundleTest(unittest.TestCase):
             len(verified["paid_plan_evidence"]["rows"]),
         )
 
+    def test_bundle_binds_exact_live_snapshot_without_matching_manifest_source(self):
+        self._prepare_live_identity_fields()
+        write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
+        live_path = live_odds.capture_live_snapshot(
+            self.root,
+            TARGET_DATE,
+            datetime(2026, 7, 16, 13, 30, tzinfo=BJT),
+            sporttery_fetcher=lambda day: [{
+                "matchId": "1001",
+                "matchNumStr": "001",
+                "homeTeam": "Team A",
+                "awayTeam": "Team B",
+                "matchStatus": "Selling",
+                "kickoff_at": "2026-07-16T20:00:00+08:00",
+                "isSingleHad": True,
+                "isSingleHhad": False,
+                "isSingleTtg": False,
+            }],
+            sporttery_odds_fetcher=lambda match_id: {
+                "had": {"h": "2.10", "d": "3.20", "a": "3.40"}, "hhad": {}, "ttg": {},
+            },
+        )
+
+        bundle = create_decision_bundle(
+            self.root, TARGET_DATE, LOCKED_AT, decision_snapshot_path=live_path
+        )
+
+        self.assertEqual(
+            live_path.relative_to(self.root).as_posix(),
+            bundle["decision_snapshot"]["path"],
+        )
+        self.assertEqual("sporttery", bundle["decision_snapshot"]["source"])
+        self.assertEqual("live", bundle["decision_snapshot"]["payload"]["fetch_mode"])
+
+    def test_live_bundle_reread_rejects_embedded_payload_reclassified_as_legacy(self):
+        self._prepare_live_identity_fields()
+        write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
+        bundle = create_decision_bundle(
+            self.root,
+            TARGET_DATE,
+            LOCKED_AT,
+            decision_snapshot_path=self._capture_live_snapshot(),
+        )
+        bundle_path = self.root / "output" / "decision_bundle_2026-07-16.json"
+        snapshot = bundle["decision_snapshot"]["payload"]
+        snapshot.pop("fetch_mode")
+        snapshot["capture_phase"] = "decision"
+        snapshot["source"] = "zgzcw"
+        snapshot["import_manifest"] = self._file_record(self.import_manifest_path)
+        bundle["decision_snapshot"]["source"] = "zgzcw"
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "live snapshot|inconsistent"):
+            read_valid_decision_bundle(self.root, TARGET_DATE)
+
+    def test_legacy_bundle_reread_rejects_altered_embedded_snapshot_payload(self):
+        write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
+        bundle = create_decision_bundle(self.root, TARGET_DATE, LOCKED_AT)
+        bundle_path = self.root / "output" / "decision_bundle_2026-07-16.json"
+        snapshot = bundle["decision_snapshot"]["payload"]
+        snapshot["matches"][0]["markets"]["had"]["h"] = "9.99"
+        bundle["decision_snapshot"]["paid_market_values"][0]["markets"] = snapshot[
+            "matches"
+        ][0]["markets"]
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "snapshot.*inconsistent"):
+            read_valid_decision_bundle(self.root, TARGET_DATE)
+
+    def test_live_bundle_creation_rejects_lock_at_or_after_fixture_kickoff(self):
+        self._prepare_live_identity_fields()
+        write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
+        live_path = self._capture_live_snapshot()
+
+        with self.assertRaisesRegex(ValueError, "lock.*pre-kickoff"):
+            create_decision_bundle(
+                self.root,
+                TARGET_DATE,
+                datetime(2026, 7, 16, 20, 0, tzinfo=BJT),
+                decision_snapshot_path=live_path,
+            )
+
+    def test_live_bundle_reread_rejects_lock_at_or_after_fixture_kickoff(self):
+        self._prepare_live_identity_fields()
+        write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
+        bundle = create_decision_bundle(
+            self.root,
+            TARGET_DATE,
+            LOCKED_AT,
+            decision_snapshot_path=self._capture_live_snapshot(),
+        )
+        bundle_path = self.root / "output" / "decision_bundle_2026-07-16.json"
+        bundle["locked_at_bjt"] = "2026-07-16T20:00:00+08:00"
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "lock.*pre-kickoff"):
+            read_valid_decision_bundle(self.root, TARGET_DATE)
+
+    def test_live_bundle_requires_matching_canonical_match_number(self):
+        variants = (
+            ("live", "002"),
+            ("prediction", "002"),
+            ("fixture", "002"),
+            ("prediction", ""),
+            ("fixture", " "),
+        )
+        for artifact, match_num in variants:
+            with self.subTest(artifact=artifact, match_num=match_num):
+                bundle_path = self.root / "output" / "decision_bundle_2026-07-16.json"
+                if bundle_path.exists():
+                    bundle_path.unlink()
+                self._prepare_live_identity_fields()
+                if artifact == "prediction":
+                    self._rewrite_prediction_match_number(match_num)
+                elif artifact == "fixture":
+                    self._rewrite_fixture_match_number(match_num)
+                write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
+                live_path = self._capture_live_snapshot(
+                    match_num=match_num if artifact == "live" else "001"
+                )
+
+                with self.assertRaisesRegex(ValueError, "match_num|identities"):
+                    create_decision_bundle(
+                        self.root,
+                        TARGET_DATE,
+                        LOCKED_AT,
+                        decision_snapshot_path=live_path,
+                    )
+
     def test_bundle_rejects_snapshot_source_divergent_from_import_manifest(self):
         manifest = json.loads(self.import_manifest_path.read_text(encoding="utf-8"))
         manifest["source"] = "sporttery"
@@ -528,6 +658,68 @@ class DecisionBundleTest(unittest.TestCase):
         path = self.root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def _capture_live_snapshot(self, match_num: str = "001") -> Path:
+        return live_odds.capture_live_snapshot(
+            self.root,
+            TARGET_DATE,
+            datetime(2026, 7, 16, 13, 30, tzinfo=BJT),
+            sporttery_fetcher=lambda day: [{
+                "matchId": "1001",
+                "matchNumStr": match_num,
+                "homeTeam": "Team A",
+                "awayTeam": "Team B",
+                "matchStatus": "Selling",
+                "kickoff_at": "2026-07-16T20:00:00+08:00",
+                "isSingleHad": True,
+                "isSingleHhad": False,
+                "isSingleTtg": False,
+            }],
+            sporttery_odds_fetcher=lambda match_id: {
+                "had": {"h": "2.10", "d": "3.20", "a": "3.40"},
+                "hhad": {},
+                "ttg": {},
+            },
+        )
+
+    def _prepare_live_identity_fields(self) -> None:
+        self._rewrite_prediction_match_number("001")
+        self._rewrite_fixture_match_number("001")
+
+    def _rewrite_prediction_match_number(self, match_num: str) -> None:
+        self._write_csv(
+            "output/predictions_2026-07-16.csv",
+            [{
+                "date": "2026-07-16",
+                "match_id": "1001",
+                "match_num": match_num,
+                "team_a": "Team A",
+                "team_b": "Team B",
+                "kickoff_at": "2026-07-16T20:00:00+08:00",
+                "p_a": "0.5",
+                "p_draw": "0.3",
+                "p_b": "0.2",
+                "xg_a": "1.4",
+                "xg_b": "1.0",
+            }],
+        )
+
+    def _rewrite_fixture_match_number(self, match_num: str) -> None:
+        extract_path = self.root / "data" / "import_extracts" / "2026-07-16" / "fixtures.csv"
+        self._write_csv(
+            "data/import_extracts/2026-07-16/fixtures.csv",
+            [{
+                "date": "2026-07-16",
+                "match_id": "1001",
+                "match_num": match_num,
+                "team_a": "Team A",
+                "team_b": "Team B",
+                "kickoff_at": "2026-07-16T20:00:00+08:00",
+            }],
+        )
+        manifest = json.loads(self.import_manifest_path.read_text(encoding="utf-8"))
+        manifest["fixtures"] = self._file_record(extract_path)
+        self._write_json("data/import_manifests/2026-07-16.json", manifest)
 
     def _write_csv(self, relative: str, rows: list[dict]):
         path = self.root / relative

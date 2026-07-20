@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import re
@@ -7,13 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import csv
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
-
-import betting_ledger as ledger_module
-from betting_ledger import TERMINAL_STATUSES, settle_ledger, stable_bet_id
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,79 +14,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class WorkflowScheduleTest(unittest.TestCase):
     WORKFLOWS = ROOT / ".github" / "workflows"
-    TARGET_DATE_STEPS = {
-        "daily-forecast.yml": (
-            "forecast",
-            (
-                "Generate required base forecast and plan",
-                "Capture opening odds",
-                "Collect optional market evidence",
-                "Generate optional draw alerts",
-                "Build final website and image",
-            ),
-        ),
-        "draw-alert-refresh.yml": (
-            "refresh",
-            (
-                "Refresh required decision plan",
-                "Refresh optional market evidence",
-                "Refresh draw alerts",
-                "Rebuild report from the latest committed data",
-            ),
-        ),
-        "noon-settlement.yml": (
-            "settlement",
-            ("Update results, settle ledgers, and train the draw model",),
-        ),
-    }
-    REPORT_WORKFLOWS = {
-        "daily-forecast.yml": (
-            "forecast",
-            "Build final website and image",
-            "Commit generated files",
-            "forecast",
-            "$TARGET_DATE",
-        ),
-        "draw-alert-refresh.yml": (
-            "refresh",
-            "Rebuild report from the latest committed data",
-            "Commit refreshed files",
-            "decision",
-            "$TARGET_DATE",
-        ),
-        "noon-settlement.yml": (
-            "settlement",
-            "Update results, settle ledgers, and train the draw model",
-            "Commit settlement files",
-            "settlement",
-            "$TODAY",
-        ),
-    }
+    CONCURRENCY = (
+        "concurrency:\n  group: sporttery-repository\n"
+        "  cancel-in-progress: false\n  queue: max"
+    )
     WORKFLOW_JOBS = {
-        "daily-forecast.yml": "forecast",
-        "draw-alert-refresh.yml": "refresh",
-        "noon-settlement.yml": "settlement",
-        "email-report.yml": "email",
-        "odds-snapshot.yml": "snapshot",
+        "daily-forecast.yml": ("forecast", "Checkout"),
+        "draw-alert-refresh.yml": ("refresh", "Checkout latest main report"),
+        "pre-kickoff-revalidation.yml": ("revalidate", "Checkout latest main report"),
+        "odds-snapshot.yml": ("snapshot", "Checkout"),
+        "noon-settlement.yml": ("settlement", "Checkout"),
+        "email-report.yml": ("email", "Checkout latest report"),
     }
-    MAIN_OR_SCHEDULE_GUARD = (
-        "if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'"
-    )
-    LOCK_PATH_COMMAND = 'LOCK_PATH="output/plan_lock_${TARGET_DATE}.json"'
-    VALID_LOCK_MESSAGE = (
-        'echo "Valid plan lock exists for $TARGET_DATE; preserving locked plan and odds"'
-    )
-    INVALID_LOCK_MESSAGE = (
-        'echo "Existing plan lock is invalid for $TARGET_DATE; refusing to rewrite locked artifacts" >&2'
-    )
 
     def read_workflow(self, name):
         return (self.WORKFLOWS / name).read_text(encoding="utf-8")
 
     def job_block(self, text, job_name):
         lines = text.splitlines()
-        marker = f"  {job_name}:"
-        start = lines.index(marker)
+        start = lines.index(f"  {job_name}:")
         for end in range(start + 1, len(lines)):
             if lines[end].startswith("  ") and not lines[end].startswith("    "):
                 return "\n".join(lines[start:end])
@@ -101,20 +40,11 @@ class WorkflowScheduleTest(unittest.TestCase):
 
     def step_block(self, text, job_name, step_name):
         lines = self.job_block(text, job_name).splitlines()
-        marker = f"      - name: {step_name}"
-        self.assertIn(marker, lines)
-        start = lines.index(marker)
+        start = lines.index(f"      - name: {step_name}")
         for end in range(start + 1, len(lines)):
             if lines[end].startswith("      - name: "):
                 return "\n".join(lines[start:end])
         return "\n".join(lines[start:])
-
-    def assert_commands_in_order(self, text, commands):
-        cursor = 0
-        for command in commands:
-            position = text.find(command, cursor)
-            self.assertNotEqual(-1, position, f"missing ordered command: {command}")
-            cursor = position + len(command)
 
     def multiline_run_bodies(self, text):
         return re.findall(
@@ -127,29 +57,19 @@ class WorkflowScheduleTest(unittest.TestCase):
         step = self.step_block(text, job_name, step_name)
         marker = "        run: |\n"
         self.assertIn(marker, step)
-        indented = step.split(marker, 1)[1]
         return "\n".join(
             line[10:] if line.startswith("          ") else line
-            for line in indented.splitlines()
+            for line in step.split(marker, 1)[1].splitlines()
         )
 
-    def bash_executable(self):
-        candidates = (
-            shutil.which("bash"),
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files\Git\usr\bin\bash.exe",
-        )
-        for candidate in candidates:
-            if candidate and Path(candidate).is_file():
-                return candidate
-        self.fail("bash is required to validate and execute workflow shell bodies")
-
-    def run_workflow_body(self, body, root):
+    def run_bash_body(self, body, root, **environment):
         env = os.environ.copy()
-        env["REQUESTED_TARGET_DATE"] = "2026-07-16"
-        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+        env.update(environment)
+        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get(
+            "PATH", ""
+        )
         return subprocess.run(
-            [self.bash_executable(), "-c", body],
+            [self.bash_executable(), "-c", "set -eo pipefail\n" + body],
             cwd=root,
             env=env,
             text=True,
@@ -157,1002 +77,607 @@ class WorkflowScheduleTest(unittest.TestCase):
             check=False,
         )
 
-    def write_workflow_writer_stubs(self, root):
-        shutil.copy2(ROOT / "plan_lock.py", root / "plan_lock.py")
-        shutil.copy2(ROOT / "betting_ledger.py", root / "betting_ledger.py")
-        shutil.copy2(ROOT / "official_markets.py", root / "official_markets.py")
-        (root / "workflow_plan_fixture.py").write_text(
-            '''import csv
-import io
-
-def plan_row(target_date):
-    return {
-        "date": target_date,
-        "strategy_version": "value-v4",
-        "model_version": "workflow-test-model",
-        "match_id": "workflow-match",
-        "team_a": "Home",
-        "team_b": "Away",
-        "kickoff_local": target_date + "T14:00:00+08:00",
-        "play": "HAD",
-        "market_type": "had",
-        "market_line": "",
-        "selection": chr(0x80DC),
-        "odds": "2.00",
-        "locked_odds": "2.00",
-        "odds_source": "zgzcw",
-        "odds_source_record_id": "workflow-odds-1",
-        "odds_captured_at_bjt": target_date + "T13:30:00+08:00",
-        "raw_probability": "0.54",
-        "calibrated_probability": "0.53",
-        "official_market_probability": "0.50",
-        "conservative_probability": "0.51",
-        "edge": "0.01",
-        "net_ev": "0.02",
-        "full_kelly": "0.02",
-        "kelly_fraction": "0.25",
-        "data_quality_multiplier": "1.0",
-        "volatility_multiplier": "1.0",
-        "performance_multiplier": "1.0",
-        "portfolio_rank": "1",
-        "binding_limits": "daily",
-        "stake": "20",
-        "data_quality": "high",
-        "volatility_band": "low",
-    }
-
-def plan_bytes(rows):
-    stream = io.StringIO(newline="")
-    writer = csv.DictWriter(
-        stream, fieldnames=sorted(rows[0]), lineterminator="\\r\\n"
-    )
-    writer.writeheader()
-    writer.writerows(rows)
-    return stream.getvalue().encode("utf-8")
-''',
-            encoding="utf-8",
-        )
-        (root / "decision_bundle.py").write_text(
-            '''import argparse
-import hashlib
-import json
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
-from workflow_plan_fixture import plan_bytes, plan_row
-
-def _sha256(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-def read_valid_decision_bundle(root, target_date, *, expected_locked_at=None, verify_current_inputs=False):
-    path = Path(root) / "output" / f"decision_bundle_{target_date.isoformat()}.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("target_date") != target_date.isoformat():
-        raise ValueError("bundle date mismatch")
-    if expected_locked_at is not None:
-        persisted = datetime.fromisoformat(payload.get("locked_at_bjt"))
-        if persisted.astimezone(timezone.utc) != expected_locked_at.astimezone(timezone.utc):
-            raise ValueError("bundle lock mismatch")
-    snapshot = payload["decision_snapshot"]
-    snapshot_path = Path(root) / snapshot["path"]
-    if _sha256(snapshot_path) != snapshot["sha256"]:
-        raise ValueError("bundle snapshot mismatch")
-    manifest = payload["import_manifest"]
-    manifest_path = Path(root) / manifest["path"]
-    if _sha256(manifest_path) != manifest["sha256"]:
-        raise ValueError("bundle import manifest mismatch")
-    snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    if snapshot_payload.get("import_manifest") != manifest:
-        raise ValueError("snapshot import manifest mismatch")
-    return payload
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--date", required=True)
-    parser.add_argument("--locked-at", required=True)
-    args = parser.parse_args()
-    with Path("writer-calls.log").open("a", encoding="utf-8") as handle:
-        handle.write("decision_bundle.py\\n")
-    snapshot_path = Path("data/odds_snapshots") / f"{args.date}-133000-decision.json"
-    manifest_path = Path("data/import_manifests") / f"{args.date}.json"
-    paid_rows = [plan_row(args.date)]
-    paid_bytes = plan_bytes(paid_rows)
-    manifest_record = {
-        "path": manifest_path.as_posix(),
-        "sha256": _sha256(manifest_path),
-    }
-    payload = {
-        "target_date": args.date,
-        "locked_at_bjt": datetime.fromisoformat(args.locked_at).astimezone(
-            timezone(timedelta(hours=8))
-        ).isoformat(),
-        "decision_snapshot": {
-            "source": "zgzcw",
-            "path": snapshot_path.as_posix(),
-            "sha256": _sha256(snapshot_path),
-        },
-        "import_manifest": manifest_record,
-        "paid_plan_evidence": {
-            "plan_sha256": hashlib.sha256(paid_bytes).hexdigest(),
-            "bytes": len(paid_bytes),
-            "rows_sha256": hashlib.sha256(
-                json.dumps(paid_rows, sort_keys=True).encode("utf-8")
-            ).hexdigest(),
-            "rows": paid_rows,
-        },
-    }
-    output = Path("output") / f"decision_bundle_{args.date}.json"
-    output.write_text(json.dumps(payload, sort_keys=True) + "\\n", encoding="utf-8")
-    return 0
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-''',
-            encoding="utf-8",
-        )
-        stub = '''import csv
-import hashlib
-import json
-import os
-import sys
-from pathlib import Path
-from workflow_plan_fixture import plan_bytes
-
-name = Path(sys.argv[0]).name
-args = sys.argv[1:]
-target_date = args[args.index("--date") + 1]
-phase = args[args.index("--phase") + 1] if "--phase" in args else ""
-with Path("writer-calls.log").open("a", encoding="utf-8") as handle:
-    handle.write(name + (":" + phase if phase else "") + "\\n")
-
-if name == "capture_odds_snapshot.py" and os.environ.get("FAIL_CAPTURE") == "true":
-    raise SystemExit(7)
-
-Path("data").mkdir(exist_ok=True)
-Path("output").mkdir(exist_ok=True)
-if name == "import_sporttery.py":
-    fixture_path = Path("data/fixtures.csv")
-    fixture_path.write_text(
-        "match_id,team_a,team_b,kickoff_local\\n"
-        + f"workflow-match,Home,Away,{target_date}T14:00:00+08:00\\n",
-        encoding="utf-8",
-    )
-    odds_path = Path(f"data/sporttery_odds_{target_date}.json")
-    odds_path.write_text(
-        json.dumps({"writer": name}), encoding="utf-8"
-    )
-    ratings_path = Path("data/team_ratings.csv")
-    ratings_path.write_text(
-        "team,elo\\nHome,1500\\nAway,1490\\n", encoding="utf-8-sig"
-    )
-    extracts = Path("data/import_extracts") / target_date
-    extracts.mkdir(parents=True, exist_ok=True)
-    extract_fixtures = extracts / "fixtures.csv"
-    extract_odds = extracts / "odds.json"
-    extract_ratings = extracts / "ratings.csv"
-    extract_fixtures.write_bytes(fixture_path.read_bytes())
-    extract_odds.write_bytes(odds_path.read_bytes())
-    extract_ratings.write_bytes(ratings_path.read_bytes())
-    manifest_path = Path("data/import_manifests") / f"{target_date}.json"
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    def file_record(path):
-        payload = path.read_bytes()
-        return {
-            "path": path.as_posix(),
-            "sha256": hashlib.sha256(payload).hexdigest(),
-            "bytes": len(payload),
-        }
-    manifest_path.write_text(
-        json.dumps({
-            "schema_version": 2,
-            "target_date": target_date,
-            "source": "zgzcw",
-            "imported_at_bjt": target_date + "T13:25:00+08:00",
-            "fixtures": file_record(extract_fixtures),
-            "odds": file_record(extract_odds),
-            "ratings": file_record(extract_ratings),
-        }, sort_keys=True) + "\\n",
-        encoding="utf-8",
-    )
-elif name == "capture_odds_snapshot.py":
-    manifest_path = Path("data/import_manifests") / f"{target_date}.json"
-    manifest_bytes = manifest_path.read_bytes()
-    manifest = json.loads(manifest_bytes)
-    for key in ("fixtures", "odds", "ratings"):
-        record = manifest[key]
-        payload = Path(record["path"]).read_bytes()
-        if len(payload) != record["bytes"] or hashlib.sha256(payload).hexdigest() != record["sha256"]:
-            raise SystemExit(19)
-    manifest_record = {
-        "path": manifest_path.as_posix(),
-        "sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-    }
-    Path("data/odds_snapshots").mkdir(parents=True, exist_ok=True)
-    Path(f"data/odds_snapshots/{target_date}-133000-decision.json").write_text(
-        json.dumps({
-            "target_date": target_date,
-            "captured_at": target_date + "T13:30:00+08:00",
-            "capture_phase": "decision",
-            "source": manifest["source"],
-            "import_manifest": manifest_record,
-            "matches": [{"match_id": "workflow-match"}],
-        }),
-        encoding="utf-8",
-    )
-elif name == "generate_betting_plan.py":
-    bundle = json.loads(
-        Path(f"output/decision_bundle_{target_date}.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    Path(f"output/betting_plan_{target_date}.csv").write_bytes(
-        plan_bytes(bundle["paid_plan_evidence"]["rows"])
-    )
-'''
-        for name in (
-            "import_sporttery.py",
-            "build_historical_features.py",
-            "predict_today.py",
-            "generate_betting_plan.py",
-            "capture_odds_snapshot.py",
+    def bash_executable(self):
+        for candidate in (
+            shutil.which("bash"),
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
         ):
-            (root / name).write_text(stub, encoding="utf-8")
+            if candidate and Path(candidate).is_file():
+                return candidate
+        self.fail("bash is required to validate workflow shell bodies")
 
-    def writer_calls(self, root):
-        path = root / "writer-calls.log"
-        return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-
-    def sha256_bytes(self, value):
-        return hashlib.sha256(value).hexdigest()
-
-    def test_step_block_scopes_duplicate_step_names_to_the_requested_job(self):
-        workflow = """jobs:
-  other:
-    steps:
-      - name: Refresh input
-        continue-on-error: true
-        run: python correct.py
-  target:
-    steps:
-      - name: Refresh input
-        run: python missing-isolation.py
-"""
-
-        target_step = self.step_block(workflow, "target", "Refresh input")
-
-        self.assertIn("python missing-isolation.py", target_step)
-        self.assertNotIn("continue-on-error: true", target_step)
-
-    def test_beijing_schedule_crons_include_settlement_retry_and_snapshots(self):
-        schedules = {
+    def test_phase_schedules_use_beijing_mapped_crons(self):
+        expected = {
             "daily-forecast.yml": 'cron: "15 4 * * *"',
             "draw-alert-refresh.yml": 'cron: "30 5 * * *"',
-            "noon-settlement.yml": 'cron: "45 5 * * *"',
-            "email-report.yml": 'cron: "0 6 * * *"',
+            "pre-kickoff-revalidation.yml": 'cron: "*/10 * * * *"',
             "odds-snapshot.yml": 'cron: "*/30 * * * *"',
+            "noon-settlement.yml": 'cron: "45 5 * * *"',
         }
-        for name, cron in schedules.items():
+        for name, cron in expected.items():
             self.assertIn(cron, self.read_workflow(name))
         self.assertIn('cron: "5 6 * * *"', self.read_workflow("noon-settlement.yml"))
 
-    def test_all_related_workflows_share_the_repository_queue(self):
-        contract = "concurrency:\n  group: sporttery-repository\n  cancel-in-progress: false\n  queue: max"
-        for name in self.WORKFLOW_JOBS:
-            self.assertIn(contract, self.read_workflow(name))
-
-    def test_jobs_only_run_for_schedules_or_main_and_checkout_latest_main(self):
-        checkout_steps = {
-            "daily-forecast.yml": "Checkout",
-            "draw-alert-refresh.yml": "Checkout latest main report",
-            "noon-settlement.yml": "Checkout",
-            "email-report.yml": "Checkout latest report",
-            "odds-snapshot.yml": "Checkout",
-        }
-        for workflow_name, job_name in self.WORKFLOW_JOBS.items():
-            text = self.read_workflow(workflow_name)
-            self.assertIn(self.MAIN_OR_SCHEDULE_GUARD, self.job_block(text, job_name))
-            checkout = self.step_block(text, job_name, checkout_steps[workflow_name])
+    def test_all_workflows_share_latest_main_and_beijing_queue_contract(self):
+        for name, (job_name, checkout_name) in self.WORKFLOW_JOBS.items():
+            text = self.read_workflow(name)
+            self.assertIn(self.CONCURRENCY, text)
+            job = self.job_block(text, job_name)
+            self.assertIn("TZ: Asia/Shanghai", job)
+            checkout = self.step_block(text, job_name, checkout_name)
             self.assertIn("uses: actions/checkout@v4", checkout)
             self.assertIn("with:\n          ref: main", checkout)
+        for name, (job_name, _) in self.WORKFLOW_JOBS.items():
+            job = self.job_block(self.read_workflow(name), job_name)
+            if name == "email-report.yml":
+                self.assertIn("github.event_name == 'workflow_dispatch'", job)
+            else:
+                self.assertIn("github.event_name == 'schedule' || github.ref == 'refs/heads/main'", job)
 
-    def test_report_workflows_define_optional_target_date_input(self):
-        input_contract = """workflow_dispatch:
-    inputs:
-      target_date:
-        description: Beijing business date (YYYY-MM-DD)
-        required: false
-        type: string"""
-        for name in self.REPORT_WORKFLOWS:
-            self.assertIn(input_contract, self.read_workflow(name))
-
-    def test_target_date_inputs_use_step_env_bridge_not_bash_interpolation(self):
-        env_bridge = (
-            "        env:\n"
-            "          REQUESTED_TARGET_DATE: ${{ inputs.target_date }}"
-        )
-        for name, (job_name, step_names) in self.TARGET_DATE_STEPS.items():
-            text = self.read_workflow(name)
-            for run_body in self.multiline_run_bodies(text):
-                self.assertNotIn("inputs.target_date", run_body)
-            for step_name in step_names:
-                step = self.step_block(text, job_name, step_name)
-                self.assertIn(env_bridge, step)
-                self.assertIn('TARGET_DATE="$REQUESTED_TARGET_DATE"', step)
-                self.assertIn('TARGET_DATE="${TARGET_DATE:-$(date +%F)}"', step)
-
-    def test_all_multiline_workflow_shell_bodies_pass_bash_n(self):
-        for workflow_path in sorted(self.WORKFLOWS.glob("*.yml")):
-            text = workflow_path.read_text(encoding="utf-8")
-            for index, body in enumerate(self.multiline_run_bodies(text), start=1):
-                result = subprocess.run(
-                    [self.bash_executable(), "-n"],
-                    input=body,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                self.assertEqual(
-                    0,
-                    result.returncode,
-                    f"invalid shell in {workflow_path.name} body {index}: {result.stderr}",
-                )
-
-    def test_required_report_steps_validate_the_target_date_exactly(self):
-        required_steps = {
-            "daily-forecast.yml": (
-                "forecast",
-                "Generate required base forecast and plan",
-            ),
-            "draw-alert-refresh.yml": (
+    def test_required_steps_validate_exact_target_dates_through_step_environment(self):
+        required = (
+            ("daily-forecast.yml", "forecast", "Generate required daily forecast"),
+            (
+                "draw-alert-refresh.yml",
                 "refresh",
-                "Refresh required decision plan",
+                "Create provisional decision generation",
             ),
-            "noon-settlement.yml": (
+            (
+                "noon-settlement.yml",
                 "settlement",
-                "Update results, settle ledgers, and train the draw model",
+                "Update results and settle confirmed canonical rows",
             ),
-        }
-        expected = [
+        )
+        expected = (
             'TARGET_DATE="$REQUESTED_TARGET_DATE"',
             'TARGET_DATE="${TARGET_DATE:-$(date +%F)}"',
             'NORMALIZED_TARGET_DATE="$(date -d "$TARGET_DATE" +%F)"',
             'if [ "$NORMALIZED_TARGET_DATE" != "$TARGET_DATE" ]; then',
             "exit 1",
-        ]
-        for name, (job_name, step_name) in required_steps.items():
-            text = self.read_workflow(name)
-            self.assertIn("TZ: Asia/Shanghai", self.job_block(text, job_name))
-            step = self.step_block(text, job_name, step_name)
-            self.assert_commands_in_order(step, expected)
+        )
+        for workflow, job, step_name in required:
+            with self.subTest(workflow=workflow):
+                text = self.read_workflow(workflow)
+                step = self.step_block(text, job, step_name)
+                self.assertIn(
+                    "REQUESTED_TARGET_DATE: ${{ inputs.target_date }}", step
+                )
+                cursor = 0
+                for value in expected:
+                    cursor = step.find(value, cursor)
+                    self.assertNotEqual(-1, cursor, value)
+                    cursor += len(value)
+                run_body = self.multiline_step_body(text, job, step_name)
+                self.assertNotIn("${{ inputs.target_date }}", run_body)
 
-    def test_base_forecast_is_required_and_uses_beijing_target_date(self):
-        text = self.read_workflow("daily-forecast.yml")
-        self.assertIn("TZ: Asia/Shanghai", self.job_block(text, "forecast"))
-        step = self.step_block(
-            text, "forecast", "Generate required base forecast and plan"
+        revalidation = self.step_block(
+            self.read_workflow("pre-kickoff-revalidation.yml"),
+            "revalidate",
+            "Run due revalidations",
         )
-        expected = [
-            'TARGET_DATE="$REQUESTED_TARGET_DATE"',
-            'TARGET_DATE="${TARGET_DATE:-$(date +%F)}"',
-            self.LOCK_PATH_COMMAND,
-            'if [ -e "$LOCK_PATH" ]; then',
-            'if python plan_lock.py is-locked --date "$TARGET_DATE"; then',
-            self.VALID_LOCK_MESSAGE,
-            "else",
-            self.INVALID_LOCK_MESSAGE,
-            "exit 1",
-            "else",
-            'python import_sporttery.py --date "$TARGET_DATE"',
-            "python build_historical_features.py",
-            'python predict_today.py --date "$TARGET_DATE"',
-            'python generate_betting_plan.py --date "$TARGET_DATE"',
-        ]
-        self.assert_commands_in_order(step, expected)
-        self.assertIn("id: base_forecast", step)
-        self.assertNotIn("continue-on-error: true", step)
-        self.assertNotIn("collect_market_heat.py", step)
-        self.assertNotIn("generate_draw_alert.py", step)
-        self.assertNotIn("draw_alert_ledger.py", step)
-        self.assertNotIn("build_site.py", step)
+        self.assertIn('NORMALIZED_TARGET_DATE="$(date -d "$TARGET_DATE" +%F)"', revalidation)
+        self.assertIn('if [ "$NORMALIZED_TARGET_DATE" != "$TARGET_DATE" ]; then', revalidation)
 
-    def test_base_forecast_optional_steps_fail_independently_and_report_still_builds(self):
+    def test_daily_optional_failures_are_isolated_and_required_publication_stays_gated(self):
         text = self.read_workflow("daily-forecast.yml")
-        opening = self.step_block(text, "forecast", "Capture opening odds")
-        self.assertNotIn("continue-on-error: true", opening)
-        self.assert_commands_in_order(
-            opening,
-            [
-                'TARGET_DATE="$REQUESTED_TARGET_DATE"',
-                'TARGET_DATE="${TARGET_DATE:-$(date +%F)}"',
-                self.LOCK_PATH_COMMAND,
-                'if [ -e "$LOCK_PATH" ]; then',
-                'if python plan_lock.py is-locked --date "$TARGET_DATE"; then',
-                self.VALID_LOCK_MESSAGE,
-                "else",
-                self.INVALID_LOCK_MESSAGE,
-                "exit 1",
-                "else",
-                'python capture_odds_snapshot.py --date "$TARGET_DATE" --phase opening',
-            ],
+        optional = (
+            ("Collect optional market evidence", "collect_market_heat.py"),
+            ("Generate optional draw alerts", "generate_draw_alert.py"),
         )
-        self.assertIn(
-            'if ! python capture_odds_snapshot.py --date "$TARGET_DATE" --phase opening; then',
-            opening,
-        )
-        optional_steps = {
-            "Collect optional market evidence": (
-                'python collect_market_heat.py --date "$TARGET_DATE"',
-                True,
-            ),
-            "Generate optional draw alerts": (
-                'python generate_draw_alert.py --date "$TARGET_DATE"',
-                True,
-            ),
-            "Update optional draw alert ledger": (
-                "python draw_alert_ledger.py --settle",
-                False,
-            ),
-        }
-        positions = []
-        for step_name, (command, uses_date) in optional_steps.items():
+        for step_name, command in optional:
             step = self.step_block(text, "forecast", step_name)
             self.assertIn("continue-on-error: true", step)
             self.assertIn(command, step)
-            if uses_date:
-                self.assertIn('TARGET_DATE="$REQUESTED_TARGET_DATE"', step)
-                self.assertIn('TARGET_DATE="${TARGET_DATE:-$(date +%F)}"', step)
-            positions.append(text.index(f"      - name: {step_name}"))
-
-        build = self.step_block(text, "forecast", "Build final website and image")
-        self.assertIn(
-            "if: always() && steps.base_forecast.outcome == 'success'", build
-        )
-        self.assertIn("python build_site.py", build)
-        self.assertIn("python build_daily_image.py", build)
-        positions.insert(0, text.index("      - name: Capture opening odds"))
-        positions.append(text.index("      - name: Build final website and image"))
-        self.assertEqual(positions, sorted(positions))
-
-    def test_base_failure_cannot_reach_commit_or_pages_publication(self):
-        text = self.read_workflow("daily-forecast.yml")
-        publication_steps = (
+        build = self.step_block(text, "forecast", "Build base website and image")
+        self.assertIn("if: always() && steps.base_forecast.outcome == 'success'", build)
+        self.assertNotIn("continue-on-error: true", build)
+        for step_name in (
             "Commit generated files",
             "Configure Pages",
             "Upload Pages artifact",
             "Deploy to GitHub Pages",
-        )
-
-        for step_name in publication_steps:
+        ):
             step = self.step_block(text, "forecast", step_name)
             self.assertNotIn("if: always()", step)
             self.assertNotIn("continue-on-error: true", step)
 
-        build_position = text.index("      - name: Build final website and image")
-        publication_positions = [
-            text.index(f"      - name: {step_name}") for step_name in publication_steps
-        ]
-        self.assertLess(build_position, publication_positions[0])
-        self.assertEqual(publication_positions, sorted(publication_positions))
+    def test_status_publication_precedes_changed_only_commit_and_pages_deploy(self):
+        workflows = (
+            (
+                "daily-forecast.yml",
+                "report_status.py --date \"$TARGET_DATE\" --phase forecast",
+                "Commit generated files",
+            ),
+            (
+                "draw-alert-refresh.yml",
+                "report_status.py --date \"$TARGET_DATE\" --phase provisional",
+                "Commit provisional files",
+            ),
+            (
+                "pre-kickoff-revalidation.yml",
+                "report_status.py --date \"$DISPLAY_DATE\" --phase provisional",
+                "Commit changed revalidation files",
+            ),
+            (
+                "noon-settlement.yml",
+                "report_status.py --date \"$TODAY\" --phase settlement",
+                "Commit settlement files",
+            ),
+        )
+        for workflow, status_command, commit_name in workflows:
+            with self.subTest(workflow=workflow):
+                text = self.read_workflow(workflow)
+                status = text.index(status_command)
+                commit = text.index(f"      - name: {commit_name}")
+                upload = text.index("      - name: Upload Pages artifact")
+                deploy = text.index("      - name: Deploy to GitHub Pages")
+                self.assertLess(status, commit)
+                self.assertLess(commit, upload)
+                self.assertLess(upload, deploy)
+                commit_step = text[commit:upload]
+                self.assertIn('file_pattern: "data output web"', commit_step)
+                self.assertNotIn("*", commit_step)
 
-    def test_decision_refresh_requires_capture_generation_and_plan_locking(self):
-        text = self.read_workflow("draw-alert-refresh.yml")
-        step = self.step_block(text, "refresh", "Refresh required decision plan")
-        expected = [
-            self.LOCK_PATH_COMMAND,
-            'if [ -e "$LOCK_PATH" ]; then',
-            'if python plan_lock.py is-locked --date "$TARGET_DATE"; then',
-            self.VALID_LOCK_MESSAGE,
-            "else",
-            self.INVALID_LOCK_MESSAGE,
-            "exit 1",
-            "else",
-            'python import_sporttery.py --date "$TARGET_DATE"',
-            'python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision',
-            'python predict_today.py --date "$TARGET_DATE"',
-            'LOCKED_AT_BJT="$(date --iso-8601=seconds)"',
-            'python decision_bundle.py --date "$TARGET_DATE" --locked-at "$LOCKED_AT_BJT"',
-            'python generate_betting_plan.py --date "$TARGET_DATE" --generate-only --locked-at "$LOCKED_AT_BJT"',
-            "python plan_lock.py lock \\",
-            "--date \"$TARGET_DATE\" \\",
-            "--locked-at \"$LOCKED_AT_BJT\"",
-            'python betting_ledger.py ingest --date "$TARGET_DATE"',
-        ]
-        self.assert_commands_in_order(step, expected)
-        self.assertEqual(1, step.count('LOCKED_AT_BJT="$(date --iso-8601=seconds)"'))
-        self.assertNotIn("continue-on-error: true", step)
-
-    def test_decision_workflow_uses_active_v4_simulation_entrypoint(self):
-        config = json.loads((ROOT / "betting_config.json").read_text(encoding="utf-8"))
-        self.assertEqual("value-v4", config["strategy_version"])
-        self.assertEqual("shadow", config["value_strategy"]["activation_mode"])
-        self.assertEqual("simulation", config["simulation_account"]["mode"])
-        self.assertFalse(config["simulation_account"]["real_money_automation"])
-
+    def test_settlement_uses_prior_date_for_results_and_target_date_for_training(self):
         step = self.step_block(
-            self.read_workflow("draw-alert-refresh.yml"),
-            "refresh",
-            "Refresh required decision plan",
+            self.read_workflow("noon-settlement.yml"),
+            "settlement",
+            "Update results and settle confirmed canonical rows",
         )
-        command = (
-            'python generate_betting_plan.py --date "$TARGET_DATE" '
-            '--generate-only --locked-at "$LOCKED_AT_BJT"'
+        expected = (
+            'TODAY="$TARGET_DATE"',
+            'SETTLEMENT_DATE="$(date -d "$TODAY - 1 day" +%F)"',
+            'python update_sporttery_results.py --date "$SETTLEMENT_DATE"',
+            "python generate_betting_plan.py --settle-only",
+            'python draw_model_learning.py --train --date "$TODAY"',
+            'python build_site.py --date "$TODAY" --stage settlement',
+            'python build_daily_image.py --date "$TODAY" --stage settlement',
         )
-        self.assertEqual(1, step.count(command))
+        cursor = 0
+        for command in expected:
+            cursor = step.find(command, cursor)
+            self.assertNotEqual(-1, cursor, command)
+            cursor += len(command)
+        self.assertNotIn('update_sporttery_results.py --date "$TODAY"', step)
 
-    def test_decision_workflow_capture_consumes_the_exact_import_manifest(self):
-        body = self.multiline_step_body(
-            self.read_workflow("draw-alert-refresh.yml"),
-            "refresh",
-            "Refresh required decision plan",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_workflow_writer_stubs(root)
-
-            completed = self.run_workflow_body(body, root)
-
-            self.assertEqual(0, completed.returncode, completed.stderr)
-            odds = json.loads(
-                (root / "data" / "sporttery_odds_2026-07-16.json").read_text(
-                    encoding="utf-8"
+    def test_report_workflows_install_required_dependencies_and_do_not_dispatch_email(self):
+        for workflow, job in (
+            ("daily-forecast.yml", "forecast"),
+            ("draw-alert-refresh.yml", "refresh"),
+            ("pre-kickoff-revalidation.yml", "revalidate"),
+            ("noon-settlement.yml", "settlement"),
+        ):
+            with self.subTest(workflow=workflow):
+                text = self.read_workflow(workflow)
+                install_name = (
+                    "Install reporting dependencies and image fonts"
+                    if workflow == "pre-kickoff-revalidation.yml"
+                    else "Install learning dependencies and image fonts"
                 )
-            )
-            manifest_path = root / "data" / "import_manifests" / "2026-07-16.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            snapshot = json.loads(
-                (
-                    root
-                    / "data"
-                    / "odds_snapshots"
-                    / "2026-07-16-133000-decision.json"
-                ).read_text(encoding="utf-8")
-            )
+                install = self.step_block(text, job, install_name)
+                self.assertIn("python -m pip install --quiet -r requirements.txt", install)
+                self.assertIn("python -m pip install --quiet pillow", install)
+                self.assertIn("fonts-noto-cjk", install)
+                self.assertNotIn("email-report.yml", text)
 
-            self.assertEqual({"writer": "import_sporttery.py"}, odds)
-            self.assertEqual(
-                "data/import_extracts/2026-07-16/fixtures.csv",
-                manifest["fixtures"]["path"],
-            )
-            self.assertEqual(
-                "data/import_extracts/2026-07-16/odds.json",
-                manifest["odds"]["path"],
-            )
-            self.assertEqual("zgzcw", snapshot["source"])
-            self.assertEqual(
-                self.sha256_bytes(manifest_path.read_bytes()),
-                snapshot["import_manifest"]["sha256"],
-            )
+    def test_daily_forecast_is_prediction_only(self):
+        text = self.read_workflow("daily-forecast.yml")
+        generation = self.step_block(text, "forecast", "Generate required daily forecast")
+        self.assertIn('python import_sporttery.py --date "$TARGET_DATE"', generation)
+        self.assertIn("python build_historical_features.py", generation)
+        self.assertIn('python predict_today.py --date "$TARGET_DATE"', generation)
+        self.assertNotIn("generate_betting_plan.py", generation)
+        self.assertNotIn("provisional_plan.py", generation)
+        self.assertNotIn("decision_bundle.py", generation)
+        self.assertNotIn("plan_lock.py", text)
+        self.assertNotIn("betting_ledger.py ingest", text)
 
-    def test_valid_lock_recovers_ingestion_after_post_lock_failure(self):
-        body = self.multiline_step_body(
-            self.read_workflow("draw-alert-refresh.yml"),
-            "refresh",
-            "Refresh required decision plan",
-        )
-        expected_calls = [
-            "import_sporttery.py",
-            "capture_odds_snapshot.py:decision",
-            "predict_today.py",
-            "decision_bundle.py",
-            "generate_betting_plan.py",
+    def test_refresh_captures_live_decision_snapshot_and_publishes_provisional_generation(self):
+        text = self.read_workflow("draw-alert-refresh.yml")
+        refresh = self.step_block(text, "refresh", "Create provisional decision generation")
+        expected = [
+            'python import_sporttery.py --date "$TARGET_DATE"',
+            'LIVE_PATH="$(python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision --live --print-path)"',
+            'python predict_today.py --date "$TARGET_DATE"',
+            'PROVISIONAL_AT_BJT="$(date --iso-8601=seconds)"',
+            'python decision_bundle.py --date "$TARGET_DATE" --locked-at "$PROVISIONAL_AT_BJT" --decision-snapshot "$LIVE_PATH"',
+            'python provisional_plan.py --date "$TARGET_DATE" --generated-at "$PROVISIONAL_AT_BJT"',
         ]
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_workflow_writer_stubs(root)
-            real_ledger = root / "betting_ledger_real.py"
-            shutil.copy2(root / "betting_ledger.py", real_ledger)
-            (root / "betting_ledger.py").write_text(
-                '''import os
-import runpy
-from pathlib import Path
+        cursor = 0
+        for command in expected:
+            cursor = refresh.find(command, cursor)
+            self.assertNotEqual(-1, cursor, command)
+            cursor += len(command)
+        self.assertNotIn("plan_lock", refresh)
+        self.assertNotIn("betting_ledger.py ingest", refresh)
+        self.assertNotIn("generate_betting_plan.py", refresh)
+        self.assertIn("report_status.py --date \"$TARGET_DATE\" --phase provisional", text)
 
-if os.environ.get("FAIL_INGEST") == "true":
-    raise SystemExit(17)
-runpy.run_path(str(Path(__file__).with_name("betting_ledger_real.py")), run_name="__main__")
-''',
-                encoding="utf-8",
-            )
-
-            with patch.dict(os.environ, {"FAIL_INGEST": "true"}):
-                first = self.run_workflow_body(body, root)
-            self.assertEqual(17, first.returncode, first.stderr)
-            self.assertEqual(expected_calls, self.writer_calls(root))
-
-            lock_path = root / "output" / "plan_lock_2026-07-16.json"
-            plan_path = root / "output" / "betting_plan_2026-07-16.csv"
-            odds_path = root / "data" / "odds_snapshots" / "2026-07-16-133000-decision.json"
-            ledger_path = root / "output" / "betting_ledger.csv"
-            self.assertTrue(lock_path.is_file())
-            self.assertFalse(ledger_path.exists())
-            lock_check = subprocess.run(
-                [sys.executable, "plan_lock.py", "is-locked", "--date", "2026-07-16"],
-                cwd=root,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.assertEqual(0, lock_check.returncode, lock_check.stderr)
-            self.assertEqual(
-                "zgzcw",
-                json.loads(lock_path.read_text(encoding="utf-8"))["odds_source"],
-            )
-            lock_before = lock_path.read_bytes()
-            plan_before = plan_path.read_bytes()
-            odds_before = odds_path.read_bytes()
-            with plan_path.open(encoding="utf-8-sig", newline="") as handle:
-                locked_plan = list(csv.DictReader(handle))
-            self.assertTrue(locked_plan, "ZGZCW recovery fixture must be nonempty")
-            expected_bet_ids = [stable_bet_id(row) for row in locked_plan]
-            expected_locked_odds = [row["locked_odds"] for row in locked_plan]
-            expected_stakes = [row["stake"] for row in locked_plan]
-
-            second = self.run_workflow_body(body, root)
-            self.assertEqual(0, second.returncode, second.stderr)
-            self.assertEqual(expected_calls, self.writer_calls(root))
-            self.assertEqual(lock_before, lock_path.read_bytes())
-            self.assertEqual(plan_before, plan_path.read_bytes())
-            self.assertEqual(odds_before, odds_path.read_bytes())
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
-                recovered_rows = list(csv.DictReader(handle))
-            self.assertEqual(len(locked_plan), len(recovered_rows))
-            self.assertTrue(all(row["odds_source"] == "zgzcw" for row in recovered_rows))
-            self.assertEqual(expected_bet_ids, [row["bet_id"] for row in recovered_rows])
-            self.assertEqual(
-                expected_locked_odds,
-                [row["locked_odds"] for row in recovered_rows],
-            )
-            self.assertEqual(expected_stakes, [row["stake"] for row in recovered_rows])
-
-    def test_decision_workflow_reuses_locked_portfolio_and_settles_idempotently(self):
-        body = self.multiline_step_body(
-            self.read_workflow("draw-alert-refresh.yml"),
-            "refresh",
-            "Refresh required decision plan",
-        )
-        expected_calls = [
-            "import_sporttery.py",
-            "capture_odds_snapshot.py:decision",
-            "predict_today.py",
-            "decision_bundle.py",
-            "generate_betting_plan.py",
-        ]
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_workflow_writer_stubs(root)
-
-            first = self.run_workflow_body(body, root)
-            self.assertEqual(0, first.returncode, first.stderr)
-            ledger_path = root / "output" / "betting_ledger.csv"
-            self.assertTrue(ledger_path.exists(), "locked plan was not ingested")
-            first_ledger_bytes = ledger_path.read_bytes()
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
-                first_rows = list(csv.DictReader(handle))
-            self.assertEqual(1, len(first_rows))
-            self.assertEqual(expected_calls, self.writer_calls(root))
-            first_bet_ids = [row["bet_id"] for row in first_rows]
-            first_locked_odds = [row["locked_odds"] for row in first_rows]
-            first_stakes = [row["stake"] for row in first_rows]
-
-            with patch.dict(os.environ, {"MOCK_SOURCE_ODDS": "changed"}):
-                second = self.run_workflow_body(body, root)
-            self.assertEqual(0, second.returncode, second.stderr)
-            self.assertEqual(expected_calls, self.writer_calls(root))
-            self.assertEqual(first_ledger_bytes, ledger_path.read_bytes())
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
-                second_rows = list(csv.DictReader(handle))
-            self.assertEqual(first_bet_ids, [row["bet_id"] for row in second_rows])
-            self.assertEqual(first_locked_odds, [row["locked_odds"] for row in second_rows])
-            self.assertEqual(first_stakes, [row["stake"] for row in second_rows])
-
-            settled_at = datetime(2026, 7, 16, 15, 1, tzinfo=timezone(timedelta(hours=8)))
-            results = {
-                "workflow-match": {
-                    "match_id": "workflow-match",
-                    "result_status": "finished",
-                    "home_goals": "1",
-                    "away_goals": "0",
-                    "result_source": "sporttery",
-                    "source_record_id": "workflow-result-1",
-                    "captured_at_bjt": settled_at.isoformat(),
-                    "score_scope": "regular_time_90",
-                    "settlement_minutes": "90",
-                }
-            }
-            lock_payload = json.loads(
-                (
-                    root / "output" / "plan_lock_2026-07-16.json"
-                ).read_text(encoding="utf-8")
-            )
-            with patch.object(
-                ledger_module, "read_valid_lock", return_value=lock_payload
-            ):
-                settle_ledger(root, results, settled_at)
-            settled_bytes = ledger_path.read_bytes()
-            with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
-                settled_rows = list(csv.DictReader(handle))
-            self.assertTrue(all(row["status"] in TERMINAL_STATUSES for row in settled_rows))
-            conflicting_results = {
-                "workflow-match": {
-                    **results["workflow-match"],
-                    "home_goals": "0",
-                    "away_goals": "1",
-                    "source_record_id": "workflow-result-conflict",
-                    "captured_at_bjt": (settled_at + timedelta(minutes=5)).isoformat(),
-                }
-            }
-            with patch.object(
-                ledger_module, "read_valid_lock", return_value=lock_payload
-            ):
-                settle_ledger(
-                    root,
-                    conflicting_results,
-                    settled_at + timedelta(minutes=5),
-                )
-            self.assertEqual(settled_bytes, ledger_path.read_bytes())
-
-    def test_valid_decision_lock_survives_delayed_forecast_rerun_without_writers(self):
-        refresh_body = self.multiline_step_body(
-            self.read_workflow("draw-alert-refresh.yml"),
-            "refresh",
-            "Refresh required decision plan",
-        )
-        forecast_body = self.multiline_step_body(
-            self.read_workflow("daily-forecast.yml"),
-            "forecast",
-            "Generate required base forecast and plan",
-        )
-        opening_body = self.multiline_step_body(
-            self.read_workflow("daily-forecast.yml"),
-            "forecast",
-            "Capture opening odds",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_workflow_writer_stubs(root)
-
-            refresh = self.run_workflow_body(refresh_body, root)
-            self.assertEqual(0, refresh.returncode, refresh.stderr)
-            expected_initial_calls = [
-                "import_sporttery.py",
-                "capture_odds_snapshot.py:decision",
-                "predict_today.py",
-                "decision_bundle.py",
-                "generate_betting_plan.py",
-            ]
-            self.assertEqual(expected_initial_calls, self.writer_calls(root))
-
-            plan_path = root / "output" / "betting_plan_2026-07-16.csv"
-            odds_path = root / "data" / "odds_snapshots" / "2026-07-16-133000-decision.json"
-            lock_path = root / "output" / "plan_lock_2026-07-16.json"
-            plan_before = plan_path.read_bytes()
-            odds_before = odds_path.read_bytes()
-            lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
-            self.assertEqual(self.sha256_bytes(plan_before), lock_payload["plan_sha256"])
-            self.assertEqual(self.sha256_bytes(odds_before), lock_payload["odds_sha256"])
-
-            forecast = self.run_workflow_body(forecast_body, root)
-            opening = self.run_workflow_body(opening_body, root)
-            self.assertEqual(0, forecast.returncode, forecast.stderr)
-            self.assertEqual(0, opening.returncode, opening.stderr)
-            self.assertEqual(expected_initial_calls, self.writer_calls(root))
-            self.assertEqual(plan_before, plan_path.read_bytes())
-            self.assertEqual(odds_before, odds_path.read_bytes())
-
-    def test_decision_capture_failure_stops_before_prediction_plan_and_lock(self):
-        body = self.multiline_step_body(
-            self.read_workflow("draw-alert-refresh.yml"),
-            "refresh",
-            "Refresh required decision plan",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_workflow_writer_stubs(root)
-            with patch.dict(os.environ, {"FAIL_CAPTURE": "true"}):
-                result = self.run_workflow_body(body, root)
-
-            self.assertNotEqual(0, result.returncode)
-            self.assertEqual(
-                ["import_sporttery.py", "capture_odds_snapshot.py:decision"],
-                self.writer_calls(root),
-            )
-            self.assertFalse((root / "output" / "plan_lock_2026-07-16.json").exists())
-
-    def test_decision_zero_fixture_capture_success_continues_through_plan_lock(self):
-        body = self.multiline_step_body(
-            self.read_workflow("draw-alert-refresh.yml"),
-            "refresh",
-            "Refresh required decision plan",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_workflow_writer_stubs(root)
-
-            result = self.run_workflow_body(body, root)
-
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(
-                [
-                    "import_sporttery.py",
-                    "capture_odds_snapshot.py:decision",
-                    "predict_today.py",
-                    "decision_bundle.py",
-                    "generate_betting_plan.py",
-                ],
-                self.writer_calls(root),
-            )
-            self.assertTrue((root / "output" / "plan_lock_2026-07-16.json").is_file())
-
-    def test_invalid_existing_lock_fails_both_plan_workflows_before_writers(self):
-        guarded_steps = (
+    def test_report_builders_receive_one_explicit_date_and_stage(self):
+        expected = (
             (
                 "daily-forecast.yml",
                 "forecast",
-                "Generate required base forecast and plan",
+                "Build base website and image",
+                "$TARGET_DATE",
+                "forecast",
             ),
             (
                 "draw-alert-refresh.yml",
                 "refresh",
-                "Refresh required decision plan",
+                "Publish provisional website and status",
+                "$TARGET_DATE",
+                "provisional",
+            ),
+            (
+                "noon-settlement.yml",
+                "settlement",
+                "Update results and settle confirmed canonical rows",
+                "$TODAY",
+                "settlement",
             ),
         )
-        for workflow_name, job_name, step_name in guarded_steps:
-            with self.subTest(workflow=workflow_name), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                self.write_workflow_writer_stubs(root)
-                (root / "output").mkdir(exist_ok=True)
-                (root / "data").mkdir(exist_ok=True)
-                plan_path = root / "output" / "betting_plan_2026-07-16.csv"
-                odds_path = root / "data" / "sporttery_odds_2026-07-16.json"
-                lock_path = root / "output" / "plan_lock_2026-07-16.json"
-                plan_path.write_bytes(b"locked plan")
-                odds_path.write_bytes(b"locked odds")
-                lock_path.write_text("{}", encoding="utf-8")
-
-                body = self.multiline_step_body(
-                    self.read_workflow(workflow_name), job_name, step_name
+        for workflow, job, step_name, report_date, stage in expected:
+            with self.subTest(workflow=workflow):
+                step = self.step_block(self.read_workflow(workflow), job, step_name)
+                self.assertEqual(
+                    1,
+                    step.count(
+                        f'python build_site.py --date "{report_date}" --stage {stage}'
+                    ),
                 )
-                result = self.run_workflow_body(body, root)
-                self.assertNotEqual(0, result.returncode)
-                self.assertIn("Existing plan lock is invalid", result.stderr)
-                self.assertEqual([], self.writer_calls(root))
-                self.assertEqual(b"locked plan", plan_path.read_bytes())
-                self.assertEqual(b"locked odds", odds_path.read_bytes())
+                self.assertEqual(
+                    1,
+                    step.count(
+                        f'python build_daily_image.py --date "{report_date}" --stage {stage}'
+                    ),
+                )
 
-    def test_decision_optional_refreshes_remain_isolated(self):
-        text = self.read_workflow("draw-alert-refresh.yml")
-        refresh_steps = {
-            "Refresh optional market evidence": 'python collect_market_heat.py --date "$TARGET_DATE"',
-            "Refresh draw alerts": 'python generate_draw_alert.py --date "$TARGET_DATE"',
-        }
-        step_positions = []
-        for step_name, command in refresh_steps.items():
-            step = self.step_block(text, "refresh", step_name)
-            self.assertIn("continue-on-error: true", step)
-            self.assertIn('TARGET_DATE="$REQUESTED_TARGET_DATE"', step)
-            self.assertIn('TARGET_DATE="${TARGET_DATE:-$(date +%F)}"', step)
-            self.assertIn(command, step)
-            step_positions.append(text.index(f"      - name: {step_name}"))
-        self.assertEqual(step_positions, sorted(step_positions))
+    def test_revalidation_is_manual_rehearsable_and_publishes_only_changes(self):
+        text = self.read_workflow("pre-kickoff-revalidation.yml")
+        self.assertIn('cron: "*/10 * * * *"', text)
+        self.assertIn("target_date:", text)
+        self.assertIn("now_bjt:", text)
+        step = self.step_block(text, "revalidate", "Run due revalidations")
+        self.assertIn("python revalidation.py run-due", step)
+        self.assertIn("--target-date \"$TARGET_DATE\"", step)
+        self.assertIn("--now-bjt \"$NOW_BJT\"", step)
+        self.assertIn("changed_dates", step)
+        report = self.step_block(text, "revalidate", "Rebuild changed reports")
+        self.assertIn("python revalidation_reporting.py", report)
+        self.assertIn("python build_site.py", report)
+        self.assertIn("python build_daily_image.py", report)
+        self.assertIn("python report_status.py", report)
+        self.assertIn("if: steps.due.outputs.changed == 'true'", report)
+        commit = self.step_block(text, "revalidate", "Commit changed revalidation files")
+        self.assertIn("if: steps.due.outputs.changed == 'true'", commit)
+        self.assertIn('file_pattern: "data output web"', commit)
+        deploy = self.step_block(text, "revalidate", "Deploy to GitHub Pages")
+        self.assertIn("if: steps.due.outputs.changed == 'true'", deploy)
+        self.assertLess(text.index("Rebuild changed reports"), text.index("Deploy to GitHub Pages"))
 
-        ledger_step = self.step_block(text, "refresh", "Refresh draw alert ledger")
-        rebuild_step = self.step_block(text, "refresh", "Rebuild report from the latest committed data")
-        self.assertIn("python draw_alert_ledger.py --settle", ledger_step)
-        self.assertNotIn("continue-on-error: true", ledger_step)
-        self.assertIn("python build_site.py", rebuild_step)
-        self.assertIn("python build_daily_image.py", rebuild_step)
-        self.assertLess(
-            text.index("      - name: Refresh draw alert ledger"),
-            text.index("      - name: Rebuild report from the latest committed data"),
+    def test_revalidation_rebuilds_global_assets_once_for_the_selected_display_date(self):
+        text = self.read_workflow("pre-kickoff-revalidation.yml")
+        due = self.step_block(text, "revalidate", "Run due revalidations")
+        self.assertIn('echo "display_date=$DISPLAY_DATE" >> "$GITHUB_OUTPUT"', due)
+        rebuild = self.step_block(text, "revalidate", "Rebuild changed reports")
+        self.assertIn("DISPLAY_DATE: ${{ steps.due.outputs.display_date }}", rebuild)
+        self.assertEqual(
+            1,
+            rebuild.count(
+                'python build_site.py --date "$DISPLAY_DATE" --stage provisional'
+            ),
         )
+        self.assertEqual(
+            1,
+            rebuild.count(
+                'python build_daily_image.py --date "$DISPLAY_DATE" --stage provisional'
+            ),
+        )
+        self.assertEqual(
+            1,
+            rebuild.count(
+                'python report_status.py --date "$DISPLAY_DATE" --phase provisional'
+            ),
+        )
+        loop = re.search(r"for TARGET_DATE.*?done", rebuild, re.DOTALL)
+        self.assertIsNotNone(loop)
+        self.assertNotIn("build_site.py", loop.group(0))
+        self.assertNotIn("build_daily_image.py", loop.group(0))
+        self.assertNotIn("report_status.py", loop.group(0))
 
-    def test_recurring_snapshot_marks_monitoring_phase(self):
+    def test_monitoring_is_live_observation_only(self):
         text = self.read_workflow("odds-snapshot.yml")
-        step = self.step_block(text, "snapshot", "Capture official odds snapshot")
-        self.assertIn('TARGET_DATE="$(date +%F)"', step)
-        self.assertIn(
-            'python capture_odds_snapshot.py --date "$TARGET_DATE" --phase monitoring',
-            step,
-        )
-        commit = self.step_block(text, "snapshot", "Commit snapshot")
-        self.assertIn('file_pattern: "data/odds_snapshots"', commit)
-        self.assertNotIn("*.json", commit)
+        capture = self.step_block(text, "snapshot", "Capture live monitoring snapshot")
+        self.assertIn('python capture_odds_snapshot.py --date "$TARGET_DATE" --phase monitoring --live', capture)
+        self.assertNotIn("decision_bundle.py", text)
+        self.assertNotIn("provisional_plan.py", text)
+        self.assertNotIn("plan_lock.py", text)
+        self.assertNotIn("betting_ledger.py", text)
 
-    def test_settlement_uses_yesterday_for_results_and_today_for_training(self):
+    def test_settlement_processes_only_confirmed_canonical_rows(self):
         text = self.read_workflow("noon-settlement.yml")
-        step = self.step_block(text, "settlement", "Update results, settle ledgers, and train the draw model")
-        expected = [
-            'TARGET_DATE="$REQUESTED_TARGET_DATE"',
-            'TARGET_DATE="${TARGET_DATE:-$(date +%F)}"',
-            'TODAY="$TARGET_DATE"',
-            'SETTLEMENT_DATE="$(date -d "$TODAY - 1 day" +%F)"',
-            'python update_sporttery_results.py --date "$SETTLEMENT_DATE"',
-            "python build_historical_features.py",
-            "python generate_betting_plan.py --settle-only",
-            "python draw_alert_ledger.py --settle",
-            'python draw_model_learning.py --train --date "$TODAY"',
-            "python build_site.py",
-            "python build_daily_image.py",
-        ]
-        self.assert_commands_in_order(step, expected)
-        self.assertNotIn('python update_sporttery_results.py --date "$TODAY"', step)
+        settlement = self.step_block(text, "settlement", "Update results and settle confirmed canonical rows")
+        self.assertIn("python generate_betting_plan.py --settle-only", settlement)
+        self.assertIn("only path that ingests confirmed rows", settlement)
+        self.assertNotIn("draw_alert_ledger.py", settlement)
 
-    def test_phased_status_is_published_after_both_builders_and_before_publication(self):
-        for name, (
-            job_name,
-            build_step_name,
-            commit_step_name,
-            phase,
-            report_date,
-        ) in self.REPORT_WORKFLOWS.items():
-            text = self.read_workflow(name)
-            build = self.step_block(text, job_name, build_step_name)
-            expected_status = (
-                f'python report_status.py --date "{report_date}" --phase {phase}'
-            )
-            if phase == "settlement":
-                expected_status += ' --settled-through "$SETTLEMENT_DATE"'
-
-            build_id = (
-                f'REPORT_BUILD_ID="${{GITHUB_RUN_ID}}-'
-                f'${{GITHUB_RUN_ATTEMPT}}-{phase}"'
-            )
-            expected = [
-                build_id,
-                'export REPORT_BUILD_ID',
-                "python build_site.py",
-                "python build_daily_image.py",
-                'SOURCE_COMMIT_SHA="$(git rev-parse HEAD)"',
-                'GENERATED_AT_SHANGHAI="$(date --iso-8601=seconds)"',
-                expected_status,
-                '--build-id "$REPORT_BUILD_ID"',
-                '--source-commit "$SOURCE_COMMIT_SHA"',
-                '--generated-at "$GENERATED_AT_SHANGHAI"',
-            ]
-            self.assert_commands_in_order(build, expected)
-            self.assertNotIn("continue-on-error: true", build)
-            self.assertLess(
-                text.index(expected_status),
-                text.index(f"      - name: {commit_step_name}"),
-            )
-
-    def test_report_workflows_do_not_dispatch_email_report(self):
-        for name in self.REPORT_WORKFLOWS:
-            self.assertNotIn("email-report.yml", self.read_workflow(name))
-
-    def test_base_refresh_and_settlement_install_learning_and_image_dependencies(self):
-        jobs = {
-            "daily-forecast.yml": "forecast",
-            "draw-alert-refresh.yml": "refresh",
-            "noon-settlement.yml": "settlement",
-        }
-        for name, job_name in jobs.items():
-            step = self.step_block(
-                self.read_workflow(name), job_name, "Install learning dependencies and image fonts"
-            )
-            self.assertIn("python -m pip install --quiet -r requirements.txt", step)
-            self.assertIn("python -m pip install --quiet pillow", step)
-            self.assertIn("fonts-noto-cjk", step)
-
-    def test_generated_file_commits_do_not_require_optional_outputs(self):
-        commit_steps = {
-            "daily-forecast.yml": ("forecast", "Commit generated files"),
-            "draw-alert-refresh.yml": ("refresh", "Commit refreshed files"),
-            "noon-settlement.yml": ("settlement", "Commit settlement files"),
-        }
-        for name, (job_name, step_name) in commit_steps.items():
-            step = self.step_block(self.read_workflow(name), job_name, step_name)
-            self.assertIn('file_pattern: "data output web"', step)
-            self.assertNotIn("*", step)
-
-    def test_email_uses_the_queue_latest_main_checkout_and_secret_only_credentials(self):
+    def test_email_is_manual_diagnostic_only(self):
         text = self.read_workflow("email-report.yml")
+        trigger = text.split("permissions:", 1)[0]
+        self.assertNotIn("schedule:", trigger)
         job = self.job_block(text, "email")
-        self.assertIn("TZ: Asia/Shanghai", job)
-        self.assertIn("python send_daily_email.py", self.step_block(text, "email", "Send report image"))
-        password = re.search(r"^      GMAIL_APP_PASSWORD: (.+)$", job, re.MULTILINE)
-        self.assertIsNotNone(password)
-        self.assertEqual("${{ secrets.GMAIL_APP_PASSWORD }}", password.group(1))
-        self.assertNotIn("requirements.txt", job)
-        self.assertNotIn("pillow", job.lower())
+        self.assertIn('ALLOW_MANUAL_EMAIL_DIAGNOSTIC == "true"', job)
+        self.assertIn("python send_daily_email.py", text)
+
+    def test_all_multiline_workflow_shell_bodies_pass_bash_n(self):
+        for workflow_path in sorted(self.WORKFLOWS.glob("*.yml")):
+            for index, body in enumerate(self.multiline_run_bodies(workflow_path.read_text(encoding="utf-8")), start=1):
+                result = subprocess.run(
+                    [self.bash_executable(), "-n"], input=body, text=True,
+                    capture_output=True, check=False,
+                )
+                self.assertEqual(0, result.returncode, f"{workflow_path.name} body {index}: {result.stderr}")
+
+    def test_run_due_cli_emits_machine_readable_changed_dates(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "revalidation.py"),
+                "run-due",
+                "--target-date", "2026-07-16",
+                "--now-bjt", "2026-07-16T12:00:00+08:00",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"changed_dates": []}, json.loads(result.stdout))
+
+    def test_exact_date_clis_reject_compact_and_malformed_dates_with_exit_two(self):
+        commands = (
+            (
+                "provisional_plan.py",
+                lambda value: [
+                    "--date",
+                    value,
+                    "--generated-at",
+                    "2026-07-16T13:30:00+08:00",
+                ],
+            ),
+            (
+                "revalidation.py",
+                lambda value: [
+                    "run-due",
+                    "--target-date",
+                    value,
+                    "--now-bjt",
+                    "2026-07-16T13:30:00+08:00",
+                ],
+            ),
+        )
+        for script, arguments in commands:
+            for invalid in ("20260716", "2026-7-16", "not-a-date"):
+                with self.subTest(script=script, invalid=invalid):
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / script), *arguments(invalid)],
+                        cwd=ROOT,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(2, result.returncode, result.stderr)
+
+    def test_live_refresh_executes_with_the_exact_printed_snapshot_path(self):
+        body = self.multiline_step_body(
+            self.read_workflow("draw-alert-refresh.yml"),
+            "refresh",
+            "Create provisional decision generation",
+        )
+        stub = '''import sys
+from pathlib import Path
+
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+with Path("calls.log").open("a", encoding="utf-8") as handle:
+    handle.write(name + " " + " ".join(args) + "\\n")
+if name == "capture_odds_snapshot.py":
+    print("data/odds_snapshots/exact-live-path.json")
+if name == "decision_bundle.py":
+    value = args[args.index("--decision-snapshot") + 1]
+    if value != "data/odds_snapshots/exact-live-path.json":
+        raise SystemExit(23)
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for script in (
+                "import_sporttery.py",
+                "capture_odds_snapshot.py",
+                "predict_today.py",
+                "decision_bundle.py",
+                "provisional_plan.py",
+            ):
+                (root / script).write_text(stub, encoding="utf-8")
+
+            result = self.run_bash_body(
+                body,
+                root,
+                REQUESTED_TARGET_DATE="2026-07-16",
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            calls = (root / "calls.log").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(
+                [
+                    "import_sporttery.py",
+                    "capture_odds_snapshot.py",
+                    "predict_today.py",
+                    "decision_bundle.py",
+                    "provisional_plan.py",
+                ],
+                [line.split(" ", 1)[0] for line in calls],
+            )
+            self.assertIn(
+                "--decision-snapshot data/odds_snapshots/exact-live-path.json",
+                calls[3],
+            )
+
+    def test_due_step_handles_empty_json_and_rejects_malformed_json(self):
+        body = self.multiline_step_body(
+            self.read_workflow("pre-kickoff-revalidation.yml"),
+            "revalidate",
+            "Run due revalidations",
+        )
+        stub = '''import os
+print(os.environ["DUE_JSON"])
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "revalidation.py").write_text(stub, encoding="utf-8")
+            output = root / "github-output.txt"
+            empty = self.run_bash_body(
+                body,
+                root,
+                REQUESTED_TARGET_DATE="",
+                REQUESTED_NOW_BJT="2026-07-19T00:05:00+08:00",
+                DUE_JSON='{"changed_dates": []}',
+                GITHUB_OUTPUT=str(output),
+            )
+            self.assertEqual(0, empty.returncode, empty.stderr)
+            emitted = output.read_text(encoding="utf-8")
+            self.assertIn("changed_dates=\n", emitted)
+            self.assertIn("display_date=\n", emitted)
+            self.assertIn("changed=false\n", emitted)
+
+            output.write_text("", encoding="utf-8")
+            cross_midnight = self.run_bash_body(
+                body,
+                root,
+                REQUESTED_TARGET_DATE="",
+                REQUESTED_NOW_BJT="2026-07-19T00:05:00+08:00",
+                DUE_JSON=(
+                    '{"changed_dates": ["2026-07-18", "2026-07-19"]}'
+                ),
+                GITHUB_OUTPUT=str(output),
+            )
+            self.assertEqual(0, cross_midnight.returncode, cross_midnight.stderr)
+            emitted = output.read_text(encoding="utf-8")
+            self.assertIn("changed_dates=2026-07-18 2026-07-19\n", emitted)
+            self.assertIn("display_date=2026-07-19\n", emitted)
+            self.assertIn("changed=true\n", emitted)
+
+            for malformed in ("{", '{"changed_dates": "2026-07-19"}'):
+                with self.subTest(malformed=malformed):
+                    output.write_text("", encoding="utf-8")
+                    failed = self.run_bash_body(
+                        body,
+                        root,
+                        REQUESTED_TARGET_DATE="",
+                        REQUESTED_NOW_BJT="2026-07-19T00:05:00+08:00",
+                        DUE_JSON=malformed,
+                        GITHUB_OUTPUT=str(output),
+                    )
+                    self.assertNotEqual(0, failed.returncode)
+                    self.assertEqual("", output.read_text(encoding="utf-8"))
+
+    def test_cross_midnight_rebuild_preserves_both_date_reports_and_one_global_target(self):
+        body = self.multiline_step_body(
+            self.read_workflow("pre-kickoff-revalidation.yml"),
+            "revalidate",
+            "Rebuild changed reports",
+        )
+        stub = '''import sys
+from pathlib import Path
+
+with Path("global-calls.log").open("a", encoding="utf-8") as handle:
+    handle.write(Path(sys.argv[0]).name + " " + " ".join(sys.argv[1:]) + "\\n")
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for script in (
+                "build_site.py",
+                "build_daily_image.py",
+                "report_status.py",
+                "revalidation_reporting.py",
+            ):
+                (root / script).write_text(stub, encoding="utf-8")
+            expected = {}
+            for report_date in ("2026-07-18", "2026-07-19"):
+                directory = root / "web" / "revalidation" / report_date
+                directory.mkdir(parents=True)
+                image = directory / "revision-1.png"
+                image.write_bytes(("image-" + report_date).encode("ascii"))
+                status = directory / "status.json"
+                status.write_text(
+                    json.dumps(
+                        {
+                            "report_date": report_date,
+                            "report_image_url": image.relative_to(root).as_posix(),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                expected[report_date] = (status.read_bytes(), image.read_bytes())
+            subprocess.run(
+                ["git", "init", "-q"], cwd=root, check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "workflow@example.test"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Workflow Test"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "fixture"], cwd=root, check=True
+            )
+
+            result = self.run_bash_body(
+                body,
+                root,
+                CHANGED_DATES="2026-07-18 2026-07-19",
+                DISPLAY_DATE="2026-07-19",
+                GITHUB_RUN_ID="77",
+                GITHUB_RUN_ATTEMPT="2",
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            for report_date, (status_bytes, image_bytes) in expected.items():
+                directory = root / "web" / "revalidation" / report_date
+                self.assertEqual(status_bytes, (directory / "status.json").read_bytes())
+                self.assertEqual(image_bytes, (directory / "revision-1.png").read_bytes())
+            calls = (root / "global-calls.log").read_text(encoding="utf-8").splitlines()
+            for script in ("build_site.py", "build_daily_image.py", "report_status.py"):
+                matching = [line for line in calls if line.startswith(script + " ")]
+                self.assertEqual(1, len(matching), matching)
+                self.assertIn("--date 2026-07-19", matching[0])
+            self.assertEqual(
+                1,
+                sum(line.startswith("revalidation_reporting.py ") for line in calls),
+            )
+
+    def test_provisional_and_reporting_clis_expose_workflow_arguments(self):
+        commands = {
+            "provisional_plan.py": ([], ("--date", "--generated-at")),
+            "revalidation_reporting.py": (["rebuild-index"], ("--now-bjt",)),
+        }
+        for script, (arguments, expected) in commands.items():
+            result = subprocess.run(
+                [sys.executable, str(ROOT / script), *arguments, "--help"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            for argument in expected:
+                self.assertIn(argument, result.stdout)
 
 
 class DeploymentDocumentationTest(unittest.TestCase):
@@ -1170,6 +695,7 @@ class DeploymentDocumentationTest(unittest.TestCase):
         "GITHUB_TOKEN",
         "REPORT_STATUS_URL",
         "REPORT_IMAGE_URL",
+        "REVALIDATION_INDEX_URL",
         "REPORT_SITE_URL",
         "RECIPIENT_EMAIL",
     )
@@ -1209,11 +735,11 @@ class DeploymentDocumentationTest(unittest.TestCase):
         ):
             self.assertIn(literal, text)
 
-    def test_apps_script_readme_lists_exactly_seven_manual_config_properties(self):
+    def test_apps_script_readme_lists_exactly_eight_manual_config_properties(self):
         text = self.read_doc(self.APPS_SCRIPT_README)
         code = self.read_doc(self.CODE_PATH)
         section = re.search(
-            r"^### 必须手工配置的 7 项 Script Properties\n(?P<body>.*?)(?=^### )",
+            r"^### 必须手工配置的 8 项 Script Properties\n(?P<body>.*?)(?=^### )",
             text,
             re.MULTILINE | re.DOTALL,
         )
@@ -1225,7 +751,68 @@ class DeploymentDocumentationTest(unittest.TestCase):
         code_properties = set(re.findall(r'requiredProperty_\(properties, "([A-Z0-9_]+)"\)', code))
         self.assertEqual(set(self.REQUIRED_CONFIG_PROPERTIES), code_properties)
         self.assertIn("运行状态属性由 `Code.gs` 自动写入", text)
-        self.assertIn("`TEST_MODE` 是临时部署开关，不计入上述 7 项必填配置", text)
+        self.assertIn("`TEST_MODE` 是临时部署开关，不计入上述 8 项必填配置", text)
+
+    def test_operator_docs_define_pre_kickoff_cutover_and_rollback_contract(self):
+        combined = "\n".join(self.read_doc(path) for path in self.OPERATOR_DOCS)
+        for literal in (
+            "14:00 初选是 provisional",
+            "provisional 金额不计入盈亏",
+            "T-90",
+            "T-30",
+            "最终金额只能保持或降低",
+            "错过窗口必须取消",
+            "允许跨北京时间午夜",
+            "Apps Script 是唯一的邮件发送方",
+            "`.github/workflows/email-report.yml` 在 GitHub Actions 中保持 disabled",
+            "回滚后的正确行为是零新增模拟投注",
+        ):
+            self.assertIn(literal, combined)
+
+        for artifact in (
+            "`data/live_odds_snapshots/YYYY-MM-DD/`",
+            "`output/provisional_generation_YYYY-MM-DD.json`",
+            "`output/revalidation_state_YYYY-MM-DD.json`",
+            "`output/revalidation_receipts/YYYY-MM-DD/<candidate_id>-t90.json`",
+            "`output/revalidation_receipts/YYYY-MM-DD/<candidate_id>-t30.json`",
+            "`web/revalidation-index.json`",
+            "`web/revalidation/YYYY-MM-DD/status.json`",
+            "`web/revalidation/YYYY-MM-DD/revision-<revision>-<change-digest-prefix>.png`",
+            "`REVALIDATION_INDEX_URL`",
+            "`target_date`",
+            "`now_bjt`",
+            "`SENT_REVALIDATION_DIGESTS`",
+            "最近 30 个业务日",
+        ):
+            self.assertIn(artifact, combined)
+
+        cloud_setup = self.read_doc(ROOT / "CLOUD_SETUP.md")
+        for reason_code in (
+            "passed",
+            "confirmed",
+            "candidate_invalid",
+            "snapshot_invalid",
+            "fixture_mismatch",
+            "market_mismatch",
+            "market_not_selling",
+            "single_ineligible",
+            "kickoff_invalid",
+            "snapshot_after_kickoff",
+            "odds_invalid",
+            "odds_below_minimum",
+            "ev_below_minimum",
+            "stake_below_minimum",
+            "t90_window_missed",
+            "t30_window_missed",
+        ):
+            self.assertIn(f"`{reason_code}`", cloud_setup)
+
+    def test_repository_cutover_remains_simulation_only_and_shadow(self):
+        config = json.loads(self.read_doc(ROOT / "betting_config.json"))
+        self.assertEqual("shadow", config["pre_kickoff_revalidation"]["mode"])
+        self.assertEqual("shadow", config["value_strategy"]["activation_mode"])
+        self.assertEqual("simulation", config["simulation_account"]["mode"])
+        self.assertFalse(config["simulation_account"]["real_money_automation"])
 
     def test_docs_match_manifest_timezone_workflow_crons_and_pages_artifact_root(self):
         apps_readme = self.read_doc(self.APPS_SCRIPT_README)
@@ -1332,7 +919,7 @@ class DeploymentDocumentationTest(unittest.TestCase):
         failure = self.function_body(code, "sendFailureNotice_")
         self.assertLess(
             normal.index("GmailApp.sendEmail"),
-            normal.index('setProperty("LAST_SENT_DATE"'),
+            normal.index('setProperty("LAST_INITIAL_SENT_DATE"'),
         )
         self.assertLess(
             failure.index("GmailApp.sendEmail"),
@@ -1383,7 +970,7 @@ class DeploymentDocumentationTest(unittest.TestCase):
                 "打开现有 Apps Script 项目",
                 "`apps-script/Code.gs`",
                 "`apps-script/appsscript.json`",
-                "配置上述 7 项 Script Properties",
+                "配置上述 8 项 Script Properties",
                 "`TEST_MODE=true`",
                 "手动运行 `runAutomation`",
                 "批准权限",
@@ -1412,8 +999,9 @@ class DeploymentDocumentationTest(unittest.TestCase):
         self.assert_text_in_order(
             text,
             (
-                "回滚到旧的每日触发器",
+                "回滚邮件触发器与赛前系统",
                 "先禁用并删除 `runAutomation` 触发器",
+                "回滚后的正确行为是零新增模拟投注",
                 "再恢复之前唯一的每日 `sendDailyReport` 触发器",
             ),
         )

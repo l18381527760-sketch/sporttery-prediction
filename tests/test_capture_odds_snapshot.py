@@ -225,6 +225,26 @@ class CaptureOddsSnapshotCliTest(unittest.TestCase):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
                 self.assertEqual(0, self.run_main(Path(tmp), phase, None))
 
+    def test_live_flag_delegates_to_immutable_live_capture_and_prints_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "data" / "live_odds_snapshots" / TARGET_DATE / "live.json"
+            snapshot.parent.mkdir(parents=True)
+            snapshot.write_text(json.dumps({"matches": [{"match_id": "live-1"}]}), encoding="utf-8")
+            with (
+                patch.object(capture_odds_snapshot, "ROOT", root),
+                patch.object(capture_odds_snapshot, "capture_live_snapshot", return_value=snapshot) as capture_live,
+                patch.object(sys, "argv", [
+                    "capture_odds_snapshot.py", "--date", TARGET_DATE, "--phase", "decision", "--live", "--print-path",
+                ]),
+                patch("builtins.print") as output,
+            ):
+                self.assertEqual(0, capture_odds_snapshot.main())
+
+        capture_live.assert_called_once()
+        self.assertEqual((root, TARGET_DATE_VALUE), capture_live.call_args.args[:2])
+        output.assert_any_call(str(snapshot))
+
 
 class CaptureOddsSnapshotProductionTest(unittest.TestCase):
     def write_import_contract(self, root: Path, source: str) -> Path:
