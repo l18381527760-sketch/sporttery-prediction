@@ -31,10 +31,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Capture official odds snapshot
+      - name: Capture live monitoring snapshot
         run: |
           TARGET_DATE="$(date +%F)"
-          python capture_odds_snapshot.py --date "$TARGET_DATE" --phase monitoring
+          python capture_odds_snapshot.py --date "$TARGET_DATE" --phase monitoring --live
 
       - name: Commit snapshot
         uses: stefanzweifel/git-auto-commit-action@v5

@@ -51,7 +51,7 @@ jobs:
           python -m pip install --quiet -r requirements.txt
           python -m pip install --quiet pillow
 
-      - name: Update results, settle ledgers, and train the draw model
+      - name: Update results and settle confirmed canonical rows
         env:
           REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
         run: |
@@ -66,14 +66,13 @@ jobs:
           SETTLEMENT_DATE="$(date -d "$TODAY - 1 day" +%F)"
           python update_sporttery_results.py --date "$SETTLEMENT_DATE"
           python build_historical_features.py
-          # Retries only settle pending paid ledger rows; terminal rows remain immutable.
+          # The revalidation workflow is the only path that ingests confirmed rows.
           python generate_betting_plan.py --settle-only
-          python draw_alert_ledger.py --settle
           python draw_model_learning.py --train --date "$TODAY"
           REPORT_BUILD_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-settlement"
           export REPORT_BUILD_ID
-          python build_site.py
-          python build_daily_image.py
+          python build_site.py --date "$TODAY" --stage settlement
+          python build_daily_image.py --date "$TODAY" --stage settlement
           SOURCE_COMMIT_SHA="$(git rev-parse HEAD)"
           GENERATED_AT_SHANGHAI="$(date --iso-8601=seconds)"
           python report_status.py --date "$TODAY" --phase settlement --settled-through "$SETTLEMENT_DATE" \

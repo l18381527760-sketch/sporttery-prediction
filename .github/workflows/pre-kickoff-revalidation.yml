@@ -1,0 +1,135 @@
+name: Pre-Kickoff Revalidation
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: Optional Beijing business date to rehearse (YYYY-MM-DD)
+        required: false
+        type: string
+      now_bjt:
+        description: Optional aware Beijing timestamp for deterministic rehearsal
+        required: false
+        type: string
+  schedule:
+    # Every 10 minutes; job timezone is Beijing even though GitHub cron is UTC.
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: sporttery-repository
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  revalidate:
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout latest main report
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install reporting dependencies and image fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-noto-cjk
+          python -m pip install --quiet -r requirements.txt
+          python -m pip install --quiet pillow
+
+      - name: Run due revalidations
+        id: due
+        env:
+          REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
+          REQUESTED_NOW_BJT: ${{ inputs.now_bjt }}
+        run: |
+          TARGET_DATE="$REQUESTED_TARGET_DATE"
+          NOW_BJT="$REQUESTED_NOW_BJT"
+          if [ -n "$TARGET_DATE" ]; then
+            NORMALIZED_TARGET_DATE="$(date -d "$TARGET_DATE" +%F)"
+            if [ "$NORMALIZED_TARGET_DATE" != "$TARGET_DATE" ]; then
+              echo "target_date must be exact YYYY-MM-DD" >&2
+              exit 1
+            fi
+          fi
+          NOW_BJT="${NOW_BJT:-$(date --iso-8601=seconds)}"
+          if [ -n "$TARGET_DATE" ]; then
+            DUE_JSON="$(python revalidation.py run-due --target-date "$TARGET_DATE" --now-bjt "$NOW_BJT")"
+          else
+            DUE_JSON="$(python revalidation.py run-due --now-bjt "$NOW_BJT")"
+          fi
+          if ! CHANGED_DATES="$(python -c 'import datetime as d,json,sys; payload=json.load(sys.stdin); dates=payload.get("changed_dates"); isinstance(dates,list) or sys.exit("changed_dates must be a list"); all(isinstance(value,str) and value == d.date.fromisoformat(value).isoformat() for value in dates) or sys.exit("changed_dates must contain exact dates"); print(" ".join(sorted(set(dates))))' <<<"$DUE_JSON")"; then
+            echo "revalidation output must contain exact changed_dates JSON" >&2
+            exit 1
+          fi
+          if [ -n "$CHANGED_DATES" ]; then
+            DISPLAY_DATE="$(python -c 'import datetime as d,sys; dates=sys.argv[1:]; now=d.datetime.fromisoformat(sys.stdin.read().strip().replace("Z","+00:00")); today=now.astimezone(d.timezone(d.timedelta(hours=8))).date().isoformat(); print(today if today in dates else max(dates))' $CHANGED_DATES <<<"$NOW_BJT")"
+          else
+            DISPLAY_DATE=""
+          fi
+          echo "changed_dates=$CHANGED_DATES" >> "$GITHUB_OUTPUT"
+          echo "display_date=$DISPLAY_DATE" >> "$GITHUB_OUTPUT"
+          if [ -n "$CHANGED_DATES" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebuild changed reports
+        if: steps.due.outputs.changed == 'true'
+        env:
+          CHANGED_DATES: ${{ steps.due.outputs.changed_dates }}
+          DISPLAY_DATE: ${{ steps.due.outputs.display_date }}
+        run: |
+          for TARGET_DATE in $CHANGED_DATES; do
+            python -c 'import json,pathlib,sys; report_date=sys.argv[1]; status_path=pathlib.Path("web/revalidation")/report_date/"status.json"; status=json.loads(status_path.read_text(encoding="utf-8")); status.get("report_date") == report_date or sys.exit("revalidation status date mismatch"); image=status.get("report_image_url", ""); (not image or pathlib.Path(image).is_file()) or sys.exit("revalidation image is missing")' "$TARGET_DATE"
+          done
+          test -n "$DISPLAY_DATE"
+          python revalidation_reporting.py rebuild-index --now-bjt "$(date --iso-8601=seconds)"
+          REPORT_BUILD_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-revalidation-${DISPLAY_DATE}"
+          export REPORT_BUILD_ID
+          python build_site.py --date "$DISPLAY_DATE" --stage provisional
+          python build_daily_image.py --date "$DISPLAY_DATE" --stage provisional
+          SOURCE_COMMIT_SHA="$(git rev-parse HEAD)"
+          GENERATED_AT_BJT="$(date --iso-8601=seconds)"
+          python report_status.py --date "$DISPLAY_DATE" --phase provisional \
+            --build-id "$REPORT_BUILD_ID" \
+            --source-commit "$SOURCE_COMMIT_SHA" \
+            --generated-at "$GENERATED_AT_BJT"
+
+      - name: Commit changed revalidation files
+        if: steps.due.outputs.changed == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Publish pre-kickoff revalidation"
+          file_pattern: "data output web"
+
+      - name: Configure Pages
+        if: steps.due.outputs.changed == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: steps.due.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - name: Deploy to GitHub Pages
+        if: steps.due.outputs.changed == 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4

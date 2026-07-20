@@ -1,10 +1,7 @@
-name: Email Daily Betting Report
+name: Manual Email Diagnostic
 
 on:
   workflow_dispatch:
-  schedule:
-    # 14:00 Beijing time
-    - cron: "0 6 * * *"
 
 permissions:
   contents: read
@@ -16,7 +13,7 @@ concurrency:
 
 jobs:
   email:
-    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && vars.ALLOW_MANUAL_EMAIL_DIAGNOSTIC == "true"
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Shanghai

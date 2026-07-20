@@ -1,4 +1,4 @@
-name: Draw Alert Refresh
+name: Provisional Decision Refresh
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: false
         type: string
   schedule:
-    # 13:30 Beijing time, after new market snapshots are available.
+    # 13:30 Beijing time, after live decision odds are available.
     - cron: "30 5 * * *"
 
 permissions:
@@ -30,7 +30,6 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-
     steps:
       - name: Checkout latest main report
         uses: actions/checkout@v4
@@ -49,61 +48,7 @@ jobs:
           python -m pip install --quiet -r requirements.txt
           python -m pip install --quiet pillow
 
-      - name: Refresh required decision plan
-        env:
-          REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
-        run: |
-          set -e
-          TARGET_DATE="$REQUESTED_TARGET_DATE"
-          TARGET_DATE="${TARGET_DATE:-$(date +%F)}"
-          NORMALIZED_TARGET_DATE="$(date -d "$TARGET_DATE" +%F)"
-          if [ "$NORMALIZED_TARGET_DATE" != "$TARGET_DATE" ]; then
-            echo "target_date must be exact YYYY-MM-DD" >&2
-            exit 1
-          fi
-          LOCK_PATH="output/plan_lock_${TARGET_DATE}.json"
-          if [ -e "$LOCK_PATH" ]; then
-            if python plan_lock.py is-locked --date "$TARGET_DATE"; then
-              echo "Valid plan lock exists for $TARGET_DATE; preserving locked plan and odds"
-            else
-              echo "Existing plan lock is invalid for $TARGET_DATE; refusing to rewrite locked artifacts" >&2
-              exit 1
-            fi
-          else
-            python import_sporttery.py --date "$TARGET_DATE"
-            python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision
-            python predict_today.py --date "$TARGET_DATE"
-            LOCKED_AT_BJT="$(date --iso-8601=seconds)"
-            python decision_bundle.py --date "$TARGET_DATE" --locked-at "$LOCKED_AT_BJT"
-            python generate_betting_plan.py --date "$TARGET_DATE" --generate-only --locked-at "$LOCKED_AT_BJT"
-            python plan_lock.py lock \
-              --date "$TARGET_DATE" \
-              --locked-at "$LOCKED_AT_BJT"
-          fi
-          python betting_ledger.py ingest --date "$TARGET_DATE"
-
-      - name: Refresh optional market evidence
-        continue-on-error: true
-        env:
-          REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
-        run: |
-          TARGET_DATE="$REQUESTED_TARGET_DATE"
-          TARGET_DATE="${TARGET_DATE:-$(date +%F)}"
-          python collect_market_heat.py --date "$TARGET_DATE"
-
-      - name: Refresh draw alerts
-        continue-on-error: true
-        env:
-          REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
-        run: |
-          TARGET_DATE="$REQUESTED_TARGET_DATE"
-          TARGET_DATE="${TARGET_DATE:-$(date +%F)}"
-          python generate_draw_alert.py --date "$TARGET_DATE"
-
-      - name: Refresh draw alert ledger
-        run: python draw_alert_ledger.py --settle
-
-      - name: Rebuild report from the latest committed data
+      - name: Create provisional decision generation
         env:
           REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
         run: |
@@ -114,21 +59,34 @@ jobs:
             echo "target_date must be exact YYYY-MM-DD" >&2
             exit 1
           fi
-          REPORT_BUILD_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-decision"
+          python import_sporttery.py --date "$TARGET_DATE"
+          LIVE_PATH="$(python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision --live --print-path)"
+          python predict_today.py --date "$TARGET_DATE"
+          PROVISIONAL_AT_BJT="$(date --iso-8601=seconds)"
+          python decision_bundle.py --date "$TARGET_DATE" --locked-at "$PROVISIONAL_AT_BJT" --decision-snapshot "$LIVE_PATH"
+          python provisional_plan.py --date "$TARGET_DATE" --generated-at "$PROVISIONAL_AT_BJT"
+
+      - name: Publish provisional website and status
+        env:
+          REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
+        run: |
+          TARGET_DATE="$REQUESTED_TARGET_DATE"
+          TARGET_DATE="${TARGET_DATE:-$(date +%F)}"
+          REPORT_BUILD_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-provisional"
           export REPORT_BUILD_ID
-          python build_site.py
-          python build_daily_image.py
+          python build_site.py --date "$TARGET_DATE" --stage provisional
+          python build_daily_image.py --date "$TARGET_DATE" --stage provisional
           SOURCE_COMMIT_SHA="$(git rev-parse HEAD)"
-          GENERATED_AT_SHANGHAI="$(date --iso-8601=seconds)"
-          python report_status.py --date "$TARGET_DATE" --phase decision \
+          GENERATED_AT_BJT="$(date --iso-8601=seconds)"
+          python report_status.py --date "$TARGET_DATE" --phase provisional \
             --build-id "$REPORT_BUILD_ID" \
             --source-commit "$SOURCE_COMMIT_SHA" \
-            --generated-at "$GENERATED_AT_SHANGHAI"
+            --generated-at "$GENERATED_AT_BJT"
 
-      - name: Commit refreshed files
+      - name: Commit provisional files
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Refresh draw alert report"
+          commit_message: "Publish provisional Sporttery decision"
           file_pattern: "data output web"
 
       - name: Configure Pages
