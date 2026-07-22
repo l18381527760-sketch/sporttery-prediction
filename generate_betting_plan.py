@@ -1598,7 +1598,11 @@ def load_all_observation_plans() -> list[dict]:
     rows: list[dict] = []
     for path in sorted(OUTPUT_DIR.glob("observation_plan_*.csv")):
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            rows.extend(csv.DictReader(handle))
+            rows.extend(
+                row
+                for row in csv.DictReader(handle)
+                if row.get("strategy_version") == "value-v4"
+            )
     return rows
 
 

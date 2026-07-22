@@ -608,7 +608,21 @@ def _validate_cross_artifact_identities(
     snapshot_ids = identities(snapshot["matches"], "snapshot")
     prediction_ids = identities(predictions, "prediction")
     fixture_ids = identities(fixtures, "fixture")
-    if snapshot_ids != prediction_ids or snapshot_ids != fixture_ids:
+    if prediction_ids != fixture_ids:
+        raise ValueError("decision bundle match identities differ across artifacts")
+
+    expected_snapshot_ids = fixture_ids
+    if snapshot.get("fetch_mode") == "live":
+        captured_at = _aware_datetime(
+            snapshot.get("captured_at"), "snapshot captured_at"
+        ).astimezone(BEIJING)
+        expected_snapshot_ids = {}
+        for row in fixtures:
+            kickoff_at = _match_datetime(row.get("kickoff_at"), "fixture kickoff_at")
+            if kickoff_at > captured_at:
+                match_id = _canonical_match_id(row.get("match_id"))
+                expected_snapshot_ids[match_id] = fixture_ids[match_id]
+    if snapshot_ids != expected_snapshot_ids:
         raise ValueError("decision bundle match identities differ across artifacts")
 
 

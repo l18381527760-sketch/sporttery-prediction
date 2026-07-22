@@ -999,6 +999,36 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
             ) as handle:
                 self.assertEqual([], list(csv.DictReader(handle)))
 
+    def test_observation_plan_loader_ignores_pre_value_v4_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "output"
+            output.mkdir()
+            rows_by_date = {
+                "2026-07-17": {
+                    "strategy_version": "value-v3",
+                    "match_id": "legacy-observation",
+                },
+                "2026-07-18": {
+                    "strategy_version": "value-v4",
+                    "match_id": "canonical-observation",
+                },
+            }
+            for date_text, row in rows_by_date.items():
+                with (output / f"observation_plan_{date_text}.csv").open(
+                    "w", encoding="utf-8-sig", newline=""
+                ) as handle:
+                    writer = csv.DictWriter(handle, fieldnames=list(row))
+                    writer.writeheader()
+                    writer.writerow(row)
+
+            with patch.object(strategy, "OUTPUT_DIR", output):
+                rows = strategy.load_all_observation_plans()
+
+        self.assertEqual(
+            ["canonical-observation"],
+            [row["match_id"] for row in rows],
+        )
+
     def test_settle_only_without_observation_plans_writes_valid_empty_ledger(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

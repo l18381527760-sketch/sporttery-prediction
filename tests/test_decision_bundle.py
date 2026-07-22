@@ -414,6 +414,85 @@ class DecisionBundleTest(unittest.TestCase):
         self.assertEqual("sporttery", bundle["decision_snapshot"]["source"])
         self.assertEqual("live", bundle["decision_snapshot"]["payload"]["fetch_mode"])
 
+    def test_live_bundle_allows_matches_started_before_capture_to_be_absent(self):
+        fixtures = [
+            {
+                "date": "2026-07-16",
+                "match_id": "1000",
+                "match_num": "000",
+                "team_a": "Started A",
+                "team_b": "Started B",
+                "kickoff_at": "2026-07-16T14:00:00+08:00",
+            },
+            {
+                "date": "2026-07-16",
+                "match_id": "1001",
+                "match_num": "001",
+                "team_a": "Team A",
+                "team_b": "Team B",
+                "kickoff_at": "2026-07-16T20:00:00+08:00",
+            },
+        ]
+        extract_path = (
+            self.root / "data" / "import_extracts" / "2026-07-16" / "fixtures.csv"
+        )
+        self._write_csv("data/import_extracts/2026-07-16/fixtures.csv", fixtures)
+        manifest = json.loads(self.import_manifest_path.read_text(encoding="utf-8"))
+        manifest["fixtures"] = self._file_record(extract_path)
+        self._write_json("data/import_manifests/2026-07-16.json", manifest)
+        self._write_csv(
+            "output/predictions_2026-07-16.csv",
+            [
+                {
+                    **fixture,
+                    "p_a": "0.5",
+                    "p_draw": "0.3",
+                    "p_b": "0.2",
+                    "xg_a": "1.4",
+                    "xg_b": "1.0",
+                }
+                for fixture in fixtures
+            ],
+        )
+        write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
+        captured_at = datetime(2026, 7, 16, 15, 0, tzinfo=BJT)
+        live_path = live_odds.capture_live_snapshot(
+            self.root,
+            TARGET_DATE,
+            captured_at,
+            sporttery_fetcher=lambda day: [{
+                "matchId": "1001",
+                "matchNumStr": "001",
+                "homeTeam": "Team A",
+                "awayTeam": "Team B",
+                "matchStatus": "Selling",
+                "kickoff_at": "2026-07-16T20:00:00+08:00",
+                "isSingleHad": True,
+                "isSingleHhad": False,
+                "isSingleTtg": False,
+            }],
+            sporttery_odds_fetcher=lambda match_id: {
+                "had": {"h": "2.10", "d": "3.20", "a": "3.40"},
+                "hhad": {},
+                "ttg": {},
+            },
+        )
+
+        bundle = create_decision_bundle(
+            self.root,
+            TARGET_DATE,
+            captured_at + timedelta(minutes=1),
+            decision_snapshot_path=live_path,
+        )
+
+        self.assertEqual(
+            ["1001"],
+            [
+                row["match_id"]
+                for row in bundle["decision_snapshot"]["match_identities"]
+            ],
+        )
+
     def test_live_bundle_reread_rejects_embedded_payload_reclassified_as_legacy(self):
         self._prepare_live_identity_fields()
         write_prediction_metadata(self.root, TARGET_DATE, GENERATED_AT)
