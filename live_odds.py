@@ -153,7 +153,7 @@ def _normalize_zgzcw(
     fixtures = _manifest_fixture_identities(root, target_date)
     normalized = []
     for item in matches:
-        identity = _source_identity(item, captured)
+        identity = _source_identity(item, captured, assume_naive_beijing=True)
         if identity is None:
             continue
         source_record_id, match_num, team_a, team_b, kickoff, sales_state, eligibility = identity
@@ -178,7 +178,9 @@ def _normalize_zgzcw(
     return normalized
 
 
-def _source_identity(item: object, captured: datetime):
+def _source_identity(
+    item: object, captured: datetime, *, assume_naive_beijing: bool = False
+):
     if not isinstance(item, dict):
         raise ValueError("live source match is invalid")
     source_record_id = _required_text(item.get("matchId"), "source record ID")
@@ -186,7 +188,11 @@ def _source_identity(item: object, captured: datetime):
     team_a = _required_text(item.get("homeTeam"), "home team")
     team_b = _required_text(item.get("awayTeam"), "away team")
     sales_state = _required_text(item.get("matchStatus"), "market sales state")
-    kickoff = _aware_datetime(item.get("kickoff_at"), "kickoff_at").astimezone(BEIJING)
+    kickoff = (
+        _beijing_datetime(item.get("kickoff_at"), "kickoff_at")
+        if assume_naive_beijing
+        else _aware_datetime(item.get("kickoff_at"), "kickoff_at").astimezone(BEIJING)
+    )
     if kickoff <= captured:
         return None
     return (
@@ -230,7 +236,7 @@ def _manifest_fixture_identities(root: Path, target_date: date) -> dict[tuple[st
         if row.get("date") != target_date.isoformat():
             continue
         match_id = _required_text(row.get("match_id"), "fixture match_id")
-        kickoff = _aware_datetime(row.get("kickoff_at"), "fixture kickoff_at").astimezone(BEIJING)
+        kickoff = _beijing_datetime(row.get("kickoff_at"), "fixture kickoff_at")
         key = (
             _required_text(row.get("match_num"), "fixture match number"),
             _required_text(row.get("team_a"), "fixture team_a"),
@@ -387,6 +393,21 @@ def _aware_datetime(value: object, name: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError(f"{name} must include a timezone")
     return parsed
+
+
+def _beijing_datetime(value: object, name: str) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"{name} must be ISO-8601") from exc
+    else:
+        raise ValueError(f"{name} must be ISO-8601")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=BEIJING)
+    return parsed.astimezone(BEIJING)
 
 
 def _require_within_root(root: Path, path: Path) -> None:

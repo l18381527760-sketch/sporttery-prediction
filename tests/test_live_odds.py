@@ -80,6 +80,30 @@ class LiveOddsTest(TestCase):
         self.assertEqual("2026-07-19T22:00:00+08:00", match["kickoff_at"])
         self.assertEqual(had_odds()["had"], match["markets"]["had"])
 
+    def test_zgzcw_fallback_treats_naive_domestic_kickoffs_as_beijing_local(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_manifest_fixture(root, kickoff_at="2026-07-19 22:00")
+            manifest = {"fixtures": {"path": "data/import_extracts/2026-07-19/fixtures.csv"}}
+            with patch("live_odds.read_valid_import_manifest", return_value=manifest):
+                path = live_odds.capture_live_snapshot(
+                    root,
+                    DAY,
+                    NOW,
+                    preferred_source="zgzcw",
+                    zgzcw_match_fetcher=lambda day: [
+                        sporttery_match(
+                            matchId="zg-9",
+                            matchStatus="ZGZCW",
+                            kickoff_at="2026-07-19 22:00",
+                        )
+                    ],
+                    zgzcw_odds_fetcher=lambda day: {"zg-9": had_odds()},
+                )
+            payload = live_odds.read_valid_live_snapshot(root, path, DAY, NOW)
+
+        self.assertEqual("2026-07-19T22:00:00+08:00", payload["matches"][0]["kickoff_at"])
+
     def test_zgzcw_fallback_rejects_any_fixture_identity_mismatch(self):
         variants = (
             {"matchNumStr": "Sunday002"},
@@ -148,7 +172,9 @@ class LiveOddsTest(TestCase):
                     sporttery_odds_fetcher=lambda match_id: had_odds(),
                 )
 
-    def _write_manifest_fixture(self, root: Path) -> None:
+    def _write_manifest_fixture(
+        self, root: Path, kickoff_at: str = "2026-07-19T22:00:00+08:00"
+    ) -> None:
         path = root / "data" / "import_extracts" / DAY.isoformat() / "fixtures.csv"
         path.parent.mkdir(parents=True)
         with path.open("w", encoding="utf-8", newline="") as handle:
@@ -160,5 +186,5 @@ class LiveOddsTest(TestCase):
                 "match_num": "Sunday001",
                 "team_a": "Home",
                 "team_b": "Away",
-                "kickoff_at": "2026-07-19T22:00:00+08:00",
+                "kickoff_at": kickoff_at,
             })
