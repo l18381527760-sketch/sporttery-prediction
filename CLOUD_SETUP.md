@@ -8,8 +8,8 @@
 
 | 组件 | 北京时间 | 作用 |
 | --- | --- | --- |
-| `.github/workflows/daily-forecast.yml` | cron 12:15；也可由 Apps Script dispatch | 导入 Sporttery 数据，生成预测、主方案、第一版平局预警、网页与日报图片。 |
-| `.github/workflows/draw-alert-refresh.yml` | cron 13:30；也可由 Apps Script dispatch | 刷新决策快照、市场数据和平局预警，并重建报告。 |
+| `.github/workflows/daily-forecast.yml` | cron 12:15；也可由 Apps Script dispatch | 导入 Sporttery 数据，生成预测、第一版平局预警、网页与基础日报图片。 |
+| `.github/workflows/draw-alert-refresh.yml` | cron 13:30；也可由 Apps Script dispatch | 抓取实时国内赔率，绑定 decision bundle，生成 provisional 初选并重建报告。 |
 | `.github/workflows/noon-settlement.yml` | cron 13:45、14:05；也可由 Apps Script dispatch | 结算前一天的 90 分钟结果、更新指标、训练模型并重建报告。 |
 | `.github/workflows/pre-kickoff-revalidation.yml` | 每 10 分钟；到期时也由 Apps Script 优先 dispatch | 对当前或前一业务日的候选执行 T-90/T-30 复核，发布凭证、状态和不可变更新图片。 |
 | `apps-script/Code.gs` 的 `runAutomation` | 每 10 分钟 | 按 `Asia/Shanghai` 判断日期，触发缺失工作流，读取 `web/report-status.json`，下载并校验 PNG，然后发送邮件。 |
@@ -31,13 +31,13 @@ Apps Script 需要一个 fine-grained token 来调用工作流。它只能授权
 ## 可靠日报路径
 
 1. 仓库路径 `web/report-status.json` 发布后对应公开地址 `https://l18381527760-sketch.github.io/sporttery-prediction/report-status.json`；`runAutomation` 按北京时间读取这个公开地址。仓库路径 `web/daily-report.png` 对应 `https://l18381527760-sketch.github.io/sporttery-prediction/daily-report.png`，报告首页对应 `https://l18381527760-sketch.github.io/sporttery-prediction/`。公共地址绝不能插入 `/web/`。
-2. 若当天 forecast、decision 或 settlement 阶段缺失，Apps Script 通过相应工作流的 `workflow_dispatch` 和 `target_date` 发起运行。
-3. 从 14:00 起，Apps Script 只接受 `report_date` 为当天、所有就绪字段有效、时间顺序有效且构建信息完整的状态。
+2. Apps Script 只接受 schema 2 状态：若当天 `forecast_ready`、`initial_report_ready` 或 `settlement_ready` 对应阶段缺失，就通过相应工作流的 `workflow_dispatch` 和 `target_date` 发起运行；旧 schema 1 不能跳过阶段。
+3. 从 14:00 起，Apps Script 只接受 `report_date` 为当天，且 `forecast_ready`、`initial_report_ready`、`settlement_ready`、`revalidation_ready`、provisional SHA-256、数据质量和构建信息全部有效的状态。
 4. Apps Script 使用状态中的 `build_id` 下载 `web/daily-report.png`，计算实际 SHA-256，并与 `image_sha256` 比较。
 5. 只有状态和哈希都通过才由 Apps Script 发送正常附件；不匹配时继续等待或重跑生成阶段，不会发送旧附件。
 6. 18:00 做最后一次检查。报告完整时仍可发送正常日报；否则只发送当天唯一一封无附件失败通知。
 
-现有 cron 定时运行与 Apps Script dispatch 彼此独立。Apps Script 在 Pages 更新前可能仍读到旧状态，于是两者可能为同一阶段各入队一次，出现额外的排队运行。它们共享并发队列；有效的方案锁保护决策计划，同日状态更新具备幂等性，所以重复阶段运行是安全的，但会增加排队时间。不要删除现有 cron。
+现有 cron 定时运行与 Apps Script dispatch 彼此独立。Apps Script 在 Pages 更新前可能仍读到旧状态，于是两者可能为同一阶段各入队一次，出现额外的排队运行。它们共享并发队列；不可变导入清单、初选 generation 指针、单调候选状态和幂等账本写入保证重复运行不会把旧赔率或 provisional 金额当成已确认模拟投入，但会增加排队时间。不要删除现有 cron。
 
 ## 赛前复核契约
 
@@ -51,13 +51,13 @@ Apps Script 需要一个 fine-grained token 来调用工作流。它只能授权
 
 上线时保持 `pre_kickoff_revalidation.mode="shadow"`，完整观察一个包含错峰开赛的业务日，核对实时来源时间、两阶段凭证顺序、取消原因、跨午夜状态和邮件去重。只有这些证据全部通过，才允许用单独的审查提交切换为 `active`；`value_strategy.activation_mode` 仍独立保持 shadow，`real_money_automation` 必须保持 `false`。
 
-### Plan/odds 写入前锁检查
+### Schema 2 阶段契约
 
-两个会写方案的工作流先派生 `TARGET_DATE` 和锁路径 `output/plan_lock_${TARGET_DATE}.json`。在任何 plan/odds writer 之前，必须先执行锁检查；受保护的命令包括 `import_sporttery.py`、`predict_today.py`、`generate_betting_plan.py` 以及依赖锁定赔率的 opening/decision capture。
-
-- 锁文件存在并通过 `plan_lock.py is-locked`：有效锁要求工作流跳过全部 plan/odds writer，原有方案与赔率字节保持不变；随后只运行不会改写这些锁定产物的可选证据、构建与状态步骤。
-- 锁文件存在但 `plan_lock.py is-locked` 校验失败：必须立即失败，并保证 writer 尚未运行。不能把无效锁当成没有锁，维护者也不应删除锁来强行重跑。
-- 锁文件不存在：forecast 保留正常导入、预测和方案生成；decision 流程还会捕获决策赔率并创建新锁。
+- 基础预测完成时发布 `forecast_ready=true`。它要求当天不可变导入清单有效，当前赛程、国内赔率和评级文件与清单字节及 SHA-256 完全一致，并在非零比赛日达到 100% 官方场次赔率覆盖；同时要求预测、网站和带构建元数据的图片有效。它不要求旧的日期级方案或决策文件。
+- 刷新流程必须使用新抓取的竞彩网赔率或经过赛程身份精确映射的中国足彩网赔率，生成不可变 decision bundle 和 provisional generation；完成标志是 `initial_report_ready=true`。
+- 结算流程只处理已经过 T-30 确认并成功导入模拟账本的候选。provisional 金额不进入盈亏，也不创建日期级方案锁。
+- 初始邮件还必须看到 `settlement_ready=true`、`revalidation_ready=true`、当前结算日期、结算阶段重新绑定的当前 provisional SHA-256、完整官方赔率覆盖、全部新阶段数据质量标志、可下载且通过校验的公开复核索引和精确匹配的图片哈希。有 provisional 候选时，索引必须包含当天条目；只有零候选日才允许规范空索引。
+- 两个获准的国内临场来源都不可用时必须失败关闭；不得把中午导入赔率、缓存或外部分析赔率伪装成实时国内赔率。
 
 预测、刷新、结算和赔率快照仍共享 `sporttery-repository` 并发队列，避免多个写入任务互相覆盖。可选市场来源失败时，采集器记录错误并保留仍通过验证的来源；独立可选步骤失败不会补造数据。状态文件和图片哈希在发送前提供最终的一致性检查。
 

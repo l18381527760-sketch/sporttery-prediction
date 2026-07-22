@@ -11,6 +11,7 @@ from PIL import Image, UnidentifiedImageError
 
 from betting_ledger import resolve_ledger_path
 from decision_bundle import read_valid_decision_bundle
+from import_sporttery import read_valid_import_manifest
 from plan_lock import read_valid_lock
 from provisional_plan import read_valid_provisional_state
 
@@ -59,6 +60,7 @@ def base_status(report_date: date) -> dict:
         "report_stage": "forecast",
         "initial_report_ready": False,
         "provisional_plan_sha256": "",
+        "provisional_candidate_count": 0,
         "confirmed_stake": 0,
         "provisional_stake": 0,
         "revalidation_ready": False,
@@ -239,6 +241,26 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _manifest_compatibility_outputs_match(
+    root: Path, report_date: date, manifest: dict
+) -> bool:
+    data = root / "data"
+    live_paths = {
+        "fixtures": data / "fixtures.csv",
+        "odds": data / f"sporttery_odds_{report_date.isoformat()}.json",
+        "ratings": data / "team_ratings.csv",
+    }
+    for key, path in live_paths.items():
+        record = manifest.get(key, {})
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return False
+        if size != record.get("bytes") or _sha256_file(path) != record.get("sha256"):
+            return False
+    return True
+
+
 def _verified_report_image(
     path: Path,
     report_date: date,
@@ -272,6 +294,14 @@ def artifact_state(
     data = root / "data"
     output = root / "output"
     web = root / "web"
+
+    try:
+        import_manifest = read_valid_import_manifest(root, report_date)
+        import_manifest_ready = _manifest_compatibility_outputs_match(
+            root, report_date, import_manifest
+        )
+    except ValueError:
+        import_manifest_ready = False
 
     source_status = _read_json(data / "source_status.json")
     source_ready = isinstance(source_status, dict) and source_status.get("target_date") == date_text
@@ -313,6 +343,17 @@ def artifact_state(
         official_odds_coverage = 1.0
     else:
         official_odds_coverage = 0.0
+    official_odds_complete = (
+        zero_fixture_verified
+        and official_fixture_count == 0
+        and official_covered == 0
+        and official_odds_coverage == 1.0
+    ) or (
+        type(official_fixture_count) is int
+        and official_fixture_count > 0
+        and official_covered == official_fixture_count
+        and official_odds_coverage == 1.0
+    )
 
     predictions_ready, prediction_count = _csv_with_header(
         output / f"predictions_{date_text}.csv", PREDICTION_REQUIRED_FIELDS
@@ -361,6 +402,7 @@ def artifact_state(
     return {
         "source_ready": source_ready,
         "fixtures_ready": fixtures_ready,
+        "import_manifest_ready": import_manifest_ready,
         "zero_fixture_verified": zero_fixture_verified,
         "fixture_count": fixture_count,
         "official_fixture_count": official_fixture_count,
@@ -369,6 +411,7 @@ def artifact_state(
         "official_odds_count": official_covered,
         "odds_coverage": odds_coverage,
         "official_odds_coverage_ratio": official_odds_coverage,
+        "official_odds_complete": official_odds_complete,
         "predictions_ready": predictions_ready,
         "prediction_count": prediction_count,
         "plan_csv_ready": plan_csv_ready,
@@ -413,8 +456,10 @@ def _data_quality(state: dict) -> dict:
         for key in (
             "source_ready",
             "fixtures_ready",
+            "import_manifest_ready",
             "zero_fixture_verified",
             "odds_ready",
+            "official_odds_complete",
             "predictions_ready",
             "plan_csv_ready",
             "decision_ready",
@@ -482,8 +527,8 @@ def publish_status(
     forecast_ready = all(
         state[key]
         for key in (
-            "source_ready", "fixtures_ready", "predictions_ready", "plan_csv_ready",
-            "decision_ready", "site_ready", "image_ready",
+            "source_ready", "fixtures_ready", "import_manifest_ready", "odds_ready",
+            "official_odds_complete", "predictions_ready", "site_ready", "image_ready",
         )
     )
     snapshot_ready = state["decision_snapshot_ready"]
@@ -542,6 +587,18 @@ def publish_status(
             and state["site_ready"]
             and state["image_ready"]
         )
+        current_initial_ready = (
+            bool(status["initial_report_ready"]) and initial_report_ready
+        )
+        status["initial_report_ready"] = current_initial_ready
+        if not current_initial_ready:
+            status["revalidation_ready"] = False
+        status["provisional_plan_sha256"] = (
+            state["provisional_plan_sha256"] if current_initial_ready else ""
+        )
+        status["provisional_stake"] = (
+            state["provisional_stake"] if current_initial_ready else 0
+        )
 
     if phase != "decision":
         status["decision_snapshot_ready"] = (
@@ -580,6 +637,9 @@ def publish_status(
             "official_odds_count": state["official_odds_count"],
             "odds_coverage": state["odds_coverage"],
             "official_odds_coverage_ratio": state["official_odds_coverage_ratio"],
+            "provisional_candidate_count": (
+                state["provisional_plan_count"] + state["provisional_shadow_count"]
+            ),
             "data_quality": _data_quality(state),
             "source_status": state["source_status"],
         }

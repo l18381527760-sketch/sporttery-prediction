@@ -869,14 +869,16 @@ class DeploymentDocumentationTest(unittest.TestCase):
             "同一阶段",
             "额外的排队运行",
             "共享并发队列",
-            "有效的方案锁",
-            "同日状态更新具备幂等性",
+            "不可变导入清单",
+            "初选 generation 指针",
+            "单调候选状态",
+            "幂等账本写入",
         ):
             self.assertIn(literal, combined)
         for misleading in ("cron 后备", "后备触发", "cron fallback", "补调度"):
             self.assertNotIn(misleading, combined)
 
-    def test_docs_define_the_fail_closed_prewrite_plan_lock_guard(self):
+    def test_docs_define_the_schema_two_stage_contract(self):
         apps_readme = self.read_doc(self.APPS_SCRIPT_README)
         cloud_setup = self.read_doc(ROOT / "CLOUD_SETUP.md")
         self.assertIn(
@@ -885,19 +887,16 @@ class DeploymentDocumentationTest(unittest.TestCase):
         )
         for text in (apps_readme, cloud_setup):
             for literal in (
-                "`output/plan_lock_${TARGET_DATE}.json`",
-                "在任何 plan/odds writer 之前",
-                "`import_sporttery.py`",
-                "`predict_today.py`",
-                "`generate_betting_plan.py`",
-                "有效锁",
-                "跳过全部 plan/odds writer",
-                "原有方案与赔率字节保持不变",
-                "锁文件存在但 `plan_lock.py is-locked` 校验失败",
-                "立即失败",
-                "不能把无效锁当成没有锁",
+                "schema 2",
+                "`forecast_ready`",
+                "`initial_report_ready`",
+                "`settlement_ready`",
+                "`revalidation_ready`",
+                "provisional 金额不进入盈亏",
+                "不得把中午导入赔率",
             ):
                 self.assertIn(literal, text)
+            self.assertNotIn("`output/plan_lock_${TARGET_DATE}.json`", text)
 
     def test_test_mode_and_gmail_recovery_docs_match_mail_state_code(self):
         text = self.read_doc(self.APPS_SCRIPT_README)

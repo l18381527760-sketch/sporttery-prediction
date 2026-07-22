@@ -8,6 +8,7 @@
 
 - `runAutomation` 每 10 分钟运行一次，项目时区必须是 `Asia/Shanghai`。
 - `runAutomation` 按北京时间判断业务日期，并在缺少阶段产物时调用 `daily-forecast.yml`、`draw-alert-refresh.yml` 或 `noon-settlement.yml` 的 `workflow_dispatch`。
+- 日常阶段只接受 schema 2 的 `web/report-status.json`：`forecast_ready=true` 表示基础预测完成，`initial_report_ready=true` 表示临场赔率已绑定且初选报告完成，`settlement_ready=true` 表示前一日模拟账本结算完成。旧 schema 1 和旧的 `decision_snapshot_ready + plan_ready` 组合不能跳过任何阶段。
 - 到期的 `pre-kickoff-revalidation.yml` 高于日常阶段调度；每次执行最多 dispatch 一个工作流。赛前复核传入业务日 `target_date` 和带 `+08:00` 时区的 `now_bjt`，因此北京零点后仍可处理前一业务日。
 - Apps Script 仅接受规范 UTF-8 JSON 字节、最多两个业务日的索引、与索引 SHA-256 一致的 `status.json`，以及与状态 SHA-256 一致的不可变 revision PNG。任一字节、schema、路径、日期、revision 或哈希不匹配都不发送更新。
 - 赛前更新只有在同一 `report_date` 的初始日报已发送时才能发送。同一 revision 中的新终态候选会合并成一封邮件；即使确认时赔率和金额未变，也仍发一封最终确认。这是模拟报告，不会执行任何投注操作。
@@ -17,17 +18,15 @@
 
 14:00 初选是 provisional，provisional 金额不计入盈亏。T-90 只做筛查，T-30 才做最终确认；最终金额只能保持或降低，错过窗口必须取消。更新允许跨北京时间午夜，并继续使用原 `report_date`。预测证据、执行赔率、provisional candidates、confirmed simulated bets 和 observation-only shadow rows 是五类不同数据，不能互相替代；只有已成功导入账本的 confirmed active 候选才进入模拟盈亏。
 
-现有 cron 定时运行与 Apps Script dispatch 彼此独立。Apps Script 在 Pages 更新前可能仍看到阶段缺失，此时 cron 和 dispatch 可以为同一阶段各入队一次，造成额外的排队运行。它们共享并发队列；有效的方案锁防止决策计划被重写，同日状态更新具备幂等性，因此额外运行是安全的，但可能增加等待时间。部署时不要删除现有 cron。
+现有 cron 定时运行与 Apps Script dispatch 彼此独立。Apps Script 在 Pages 更新前可能仍看到阶段缺失，此时 cron 和 dispatch 可以为同一阶段各入队一次，造成额外的排队运行。它们共享并发队列；不可变导入清单、初选 generation 指针、单调候选状态和幂等账本写入保证额外运行不会把旧赔率或 provisional 金额当作已确认模拟投入，但可能增加等待时间。部署时不要删除现有 cron。
 
-### Plan/odds 写入前锁检查
+### Schema 2 阶段契约
 
-`daily-forecast.yml` 和 `draw-alert-refresh.yml` 都先计算 `TARGET_DATE`，再得到锁路径 `output/plan_lock_${TARGET_DATE}.json`。在任何 plan/odds writer 之前，包括 `import_sporttery.py`、`predict_today.py`、`generate_betting_plan.py` 以及依赖赔率文件的 opening/decision capture，都必须先检查这个路径。
-
-- 锁文件存在且 `plan_lock.py is-locked --date "$TARGET_DATE"` 返回成功：这是有效锁。工作流跳过全部 plan/odds writer，原有方案与赔率字节保持不变，然后继续不会改写锁定产物的可选证据、报告构建和状态发布步骤。
-- 锁文件存在但 `plan_lock.py is-locked` 校验失败：工作流立即失败，且必须发生在任何 writer 运行之前。不能把无效锁当成没有锁，也不能重新生成或覆盖现有方案与赔率。
-- 锁文件不存在：按原顺序导入赔率、生成预测与方案；decision 流程完成后创建锁。opening capture 仍是可选步骤，但也只能在没有锁时运行。
-
-Decision refresh uses one explicit lock timestamp for plan generation and lock publication, then idempotently ingests the immutable locked plan. A valid existing lock skips plan and odds writers but still performs ingestion, so a retry can recover if an earlier run stopped after publication. An invalid lock fails closed and is never replaced.
+- `daily-forecast.yml` 只完成当天不可变数据导入、历史特征和概率预测。`forecast_ready` 要求不可变导入清单有效，且当前赛程、赔率、评级文件与清单记录的字节数和 SHA-256 完全一致；非零比赛日还要求所有官方场次都有有效国内竞彩赔率。它不再要求本阶段不会生成的 `betting_plan_DATE.csv` 或 `daily_decision_DATE.json`。
+- `draw-alert-refresh.yml` 必须重新抓取真实的国内临场赔率，绑定不可变 decision bundle，并发布 provisional generation。刷新完成的唯一调度标志是 `initial_report_ready=true`；旧 `plan_ready`、旧 `decision_snapshot_ready` 和 `plan_locked_at_bjt` 不再作为完成条件。
+- `noon-settlement.yml` 只结算已经过 T-30 确认并成功导入模拟账本的候选。provisional 金额不进入盈亏，也不创建日期级方案锁。
+- 初始邮件要求 schema 2、`forecast_ready`、`initial_report_ready`、`settlement_ready`、`revalidation_ready`、当前结算日期、有效且在结算阶段重新绑定的 provisional SHA-256、完整官方赔率覆盖、全部新阶段数据质量标志、可下载且通过校验的公开复核索引和日报图片哈希同时通过。有 provisional 候选时，索引必须包含当天 `report_date`；零候选日允许规范空索引。任一条件失败都不附带旧图。
+- 竞彩网和经身份映射验证的中国足彩网临场源都不可用时，刷新流程必须失败关闭；不得把中午导入赔率或其他缓存伪装成实时赔率。
 
 Settlement retries may update only pending ledger rows; terminal outcomes remain immutable. The 5000 monthly stake cap and 5000 realized-loss stop are separate controls, even though the stake cap usually triggers first.
 
