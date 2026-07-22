@@ -280,7 +280,7 @@ class WorkflowScheduleTest(unittest.TestCase):
             'python import_sporttery.py --date "$TARGET_DATE"',
             'LIVE_PATH="$(python capture_odds_snapshot.py --date "$TARGET_DATE" --phase decision --live --print-path)"',
             'python predict_today.py --date "$TARGET_DATE"',
-            'PROVISIONAL_AT_BJT="$(date --iso-8601=seconds)"',
+            'PROVISIONAL_AT_BJT="$(date --iso-8601=ns)"',
             'python decision_bundle.py --date "$TARGET_DATE" --locked-at "$PROVISIONAL_AT_BJT" --decision-snapshot "$LIVE_PATH"',
             'python provisional_plan.py --date "$TARGET_DATE" --generated-at "$PROVISIONAL_AT_BJT"',
         ]
