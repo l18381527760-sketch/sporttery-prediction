@@ -80,34 +80,64 @@ function revalidationIndex(records = [], generatedAt = "2026-07-20T00:10:00+08:0
 }
 
 function readyStatus(overrides = {}) {
-  return {
-    schema_version: 1,
+  const quality = {
+    source_ready: true,
+    fixtures_ready: true,
+    zero_fixture_verified: false,
+    import_manifest_ready: true,
+    odds_ready: true,
+    official_odds_complete: true,
+    predictions_ready: true,
+    decision_bundle_ready: true,
+    provisional_plan_ready: true,
+    provisional_shadow_ready: true,
+    provisional_state_ready: true,
+    ledger_ready: true,
+    site_ready: true,
+    image_ready: true,
+  };
+  const status = {
+    schema_version: 2,
     report_date: REPORT_DATE,
     forecast_ready: true,
-    decision_snapshot_ready: true,
-    plan_ready: true,
+    decision_snapshot_ready: false,
+    plan_ready: false,
+    initial_report_ready: true,
     settlement_ready: true,
+    revalidation_ready: true,
     settled_through: "2026-07-15",
-    decision_odds_at_bjt: "2026-07-16T13:30:00+08:00",
-    plan_locked_at_bjt: "2026-07-16T13:31:00+08:00",
+    decision_odds_at_bjt: "",
+    plan_locked_at_bjt: "",
+    provisional_plan_sha256: "a".repeat(64),
+    provisional_candidate_count: 0,
+    report_stage: "settlement",
     generated_at_bjt: "2026-07-16T13:46:00+08:00",
     build_id: "run-42-settlement",
     image_sha256: IMAGE_HASH,
     source_commit_sha: "0123456789abcdef",
-    data_quality: {
-      predictions_ready: true,
-      plan_csv_ready: true,
-      plan_lock_ready: true,
-      decision_snapshot_ready: true,
-      ledger_ready: true,
-    },
-    ...overrides,
+    fixture_count: 2,
+    official_fixture_count: 2,
+    official_odds_count: 2,
+    official_odds_coverage_ratio: 1,
+    data_quality: quality,
   };
+  return {
+    ...status,
+    ...overrides,
+    data_quality: Object.prototype.hasOwnProperty.call(overrides, "data_quality") ? overrides.data_quality : quality,
+  };
+}
+
+function schema2ReadyStatus(overrides = {}) {
+  return readyStatus(overrides);
 }
 
 function zeroFixtureReadyStatus(overrides = {}) {
   return readyStatus({
     fixture_count: 0,
+    official_fixture_count: 0,
+    official_odds_count: 0,
+    official_odds_coverage_ratio: 1,
     decision_odds_at_bjt: "",
     source_status: {
       source: "竞彩网",
@@ -119,7 +149,6 @@ function zeroFixtureReadyStatus(overrides = {}) {
       ...readyStatus().data_quality,
       fixtures_ready: true,
       zero_fixture_verified: true,
-      decision_snapshot_ready: true,
     },
     ...overrides,
   });
@@ -127,9 +156,10 @@ function zeroFixtureReadyStatus(overrides = {}) {
 
 function dispatchStatus(overrides = {}) {
   return {
-    schema_version: 1,
+    schema_version: 2,
     report_date: REPORT_DATE,
     forecast_ready: false,
+    initial_report_ready: false,
     decision_snapshot_ready: false,
     plan_ready: false,
     settlement_ready: false,
@@ -343,11 +373,42 @@ test("13:30 waits for forecast before refresh", () => {
   assert.equal(context.chooseDispatch_(clockAt(13, 30), dispatchStatus({ forecast_ready: true }), {}), "draw-alert-refresh.yml");
 });
 
-test("13:45 waits for decision before settlement", () => {
+test("13:45 waits for provisional report before settlement", () => {
   const { context } = makeHarness();
   const forecastOnly = dispatchStatus({ forecast_ready: true });
   assert.equal(context.chooseDispatch_(clockAt(13, 45), forecastOnly, {}), "draw-alert-refresh.yml");
-  assert.equal(context.chooseDispatch_(clockAt(13, 45), { ...forecastOnly, decision_snapshot_ready: true, plan_ready: true, settlement_ready: false }, {}), "noon-settlement.yml");
+  assert.equal(context.chooseDispatch_(clockAt(13, 45), { ...forecastOnly, initial_report_ready: true, settlement_ready: false }, {}), "noon-settlement.yml");
+});
+
+test("schema 2 advances from provisional readiness to settlement", () => {
+  const { context } = makeHarness();
+  const status = {
+    ...dispatchStatus(),
+    schema_version: 2,
+    forecast_ready: true,
+    initial_report_ready: true,
+    decision_snapshot_ready: false,
+    plan_ready: false,
+    settlement_ready: false,
+  };
+
+  assert.equal(context.phaseReady_(status, "refresh"), true);
+  assert.equal(context.chooseDispatch_(clockAt(13, 45), status, {}), "noon-settlement.yml");
+});
+
+test("legacy schema 1 cannot skip schema 2 dispatch phases", () => {
+  const { context } = makeHarness();
+  const legacy = {
+    ...dispatchStatus(),
+    schema_version: 1,
+    forecast_ready: true,
+    initial_report_ready: true,
+    decision_snapshot_ready: true,
+    plan_ready: true,
+    settlement_ready: false,
+  };
+
+  assert.equal(context.chooseDispatch_(clockAt(13, 45), legacy, {}), "daily-forecast.yml");
 });
 
 test("same phase dispatches respect the 30-minute cooldown", () => {
@@ -372,18 +433,17 @@ test("partial true flags without exact status identity cannot skip dispatch phas
   const { context } = makeHarness();
   const laterFlags = {
     forecast_ready: true,
-    decision_snapshot_ready: true,
-    plan_ready: true,
+    initial_report_ready: true,
     settlement_ready: false,
   };
   const invalidStatuses = [
     laterFlags,
-    { ...laterFlags, schema_version: 1 },
+    { ...laterFlags, schema_version: 2 },
     { ...laterFlags, report_date: REPORT_DATE },
-    { ...laterFlags, schema_version: 1, report_date: "" },
-    { ...laterFlags, schema_version: 1, report_date: "not-a-date" },
+    { ...laterFlags, schema_version: 2, report_date: "" },
+    { ...laterFlags, schema_version: 2, report_date: "not-a-date" },
     { ...laterFlags, schema_version: "", report_date: REPORT_DATE },
-    { ...laterFlags, schema_version: 2, report_date: REPORT_DATE },
+    { ...laterFlags, schema_version: 1, report_date: REPORT_DATE },
     null,
     [],
     "malformed",
@@ -405,15 +465,46 @@ test("reportReadiness_ accepts only the complete current report with exact hash"
   assert.equal(context.reportReadiness_(readyStatus(), REPORT_DATE, "0".repeat(64)).ready, false);
 });
 
-test("reportReadiness_ accepts a strictly proven zero-fixture report without decision timestamp", () => {
+test("schema 2 report readiness accepts the provisional and settlement contract", () => {
   const { context } = makeHarness();
-  assert.equal(context.reportReadiness_(zeroFixtureReadyStatus(), REPORT_DATE, IMAGE_HASH).ready, true);
-  assert.equal(context.reportReadiness_(zeroFixtureReadyStatus({
-    decision_odds_at_bjt: "2026-07-16T13:30:00+08:00",
-  }), REPORT_DATE, IMAGE_HASH).ready, true);
+  const status = schema2ReadyStatus();
+
+  assert.equal(context.reportReadiness_(status, REPORT_DATE, IMAGE_HASH).ready, true);
+  assert.equal(context.reportReadiness_(status, REPORT_DATE, "0".repeat(64)).ready, false);
 });
 
-test("reportReadiness_ rejects forged or incomplete zero-fixture timestamp exemptions", () => {
+test("schema 2 report readiness requires initial evidence and revalidation publication", () => {
+  const { context } = makeHarness();
+  const cases = [
+    schema2ReadyStatus({ initial_report_ready: false }),
+    schema2ReadyStatus({ revalidation_ready: false }),
+    schema2ReadyStatus({ provisional_plan_sha256: "" }),
+    schema2ReadyStatus({ report_stage: "provisional" }),
+  ];
+
+  for (const status of cases) {
+    assert.equal(context.reportReadiness_(status, REPORT_DATE, IMAGE_HASH).ready, false);
+  }
+});
+
+test("schema 2 report readiness ignores obsolete plan lock flags and timestamps", () => {
+  const { context } = makeHarness();
+  const status = schema2ReadyStatus({
+    decision_snapshot_ready: false,
+    plan_ready: false,
+    decision_odds_at_bjt: "",
+    plan_locked_at_bjt: "",
+  });
+
+  assert.equal(context.reportReadiness_(status, REPORT_DATE, IMAGE_HASH).ready, true);
+});
+
+test("reportReadiness_ accepts a strictly proven zero-fixture report", () => {
+  const { context } = makeHarness();
+  assert.equal(context.reportReadiness_(zeroFixtureReadyStatus(), REPORT_DATE, IMAGE_HASH).ready, true);
+});
+
+test("reportReadiness_ rejects forged or incomplete zero-fixture proof", () => {
   const { context } = makeHarness();
   const invalidStatuses = [
     zeroFixtureReadyStatus({ fixture_count: 1 }),
@@ -421,43 +512,49 @@ test("reportReadiness_ rejects forged or incomplete zero-fixture timestamp exemp
     zeroFixtureReadyStatus({ source_status: { source: "竞彩网", target_date: "2026-07-15", fixture_count: 0, no_fixtures: true } }),
     zeroFixtureReadyStatus({ source_status: { source: "ESPN", target_date: REPORT_DATE, fixture_count: 0, no_fixtures: true } }),
     zeroFixtureReadyStatus({ source_status: { source: "test", target_date: REPORT_DATE, fixture_count: 0, no_fixtures: true } }),
+    zeroFixtureReadyStatus({ official_odds_count: 1 }),
+    zeroFixtureReadyStatus({ official_odds_coverage_ratio: 0 }),
     zeroFixtureReadyStatus({ data_quality: { ...zeroFixtureReadyStatus().data_quality, zero_fixture_verified: false } }),
-    zeroFixtureReadyStatus({ decision_snapshot_ready: false }),
-    zeroFixtureReadyStatus({ data_quality: { ...zeroFixtureReadyStatus().data_quality, decision_snapshot_ready: false } }),
+    zeroFixtureReadyStatus({ data_quality: { ...zeroFixtureReadyStatus().data_quality, fixtures_ready: false } }),
   ];
   for (const status of invalidStatuses) {
     assert.equal(context.reportReadiness_(status, REPORT_DATE, IMAGE_HASH).ready, false);
   }
 });
 
-test("zero-fixture decision timestamp accepts only empty text or valid ISO text", () => {
+test("legacy decision timestamps do not affect zero-fixture readiness", () => {
   const { context } = makeHarness();
-  const invalidValues = [undefined, null, 0, false, {}, []];
-  for (const value of invalidValues) {
+  const legacyValues = [undefined, null, 0, false, {}, [], "not-a-date"];
+  for (const value of legacyValues) {
     const status = zeroFixtureReadyStatus({ decision_odds_at_bjt: value });
     const readiness = context.reportReadiness_(status, REPORT_DATE, IMAGE_HASH);
-    assert.equal(readiness.ready, false, String(value));
-    assert.ok(readiness.reasons.includes("decision timestamp invalid"), String(value));
+    assert.equal(readiness.ready, true, String(value));
   }
 });
 
 test("reportReadiness_ fails closed for every required contract field", () => {
   const { context } = makeHarness();
   const invalidCases = [
-    ["schema", { schema_version: 2 }],
+    ["schema", { schema_version: 1 }],
     ["date", { report_date: "2026-07-15" }],
     ["forecast flag", { forecast_ready: false }],
-    ["decision flag", { decision_snapshot_ready: false }],
-    ["plan flag", { plan_ready: false }],
+    ["initial flag", { initial_report_ready: false }],
     ["settlement flag", { settlement_ready: false }],
+    ["revalidation flag", { revalidation_ready: false }],
+    ["report stage", { report_stage: "provisional" }],
     ["settled through", { settled_through: "2026-07-14" }],
     ["generated timestamp missing", { generated_at_bjt: "" }],
     ["generated timestamp invalid", { generated_at_bjt: "not-a-date" }],
-    ["decision timestamp invalid", { decision_odds_at_bjt: "not-a-date" }],
-    ["lock timestamp missing", { plan_locked_at_bjt: "" }],
-    ["lock timestamp invalid", { plan_locked_at_bjt: "not-a-date" }],
-    ["timestamp order", { plan_locked_at_bjt: "2026-07-16T14:01:00+08:00", generated_at_bjt: "2026-07-16T14:00:00+08:00" }],
+    ["provisional hash blank", { provisional_plan_sha256: "" }],
+    ["provisional hash malformed", { provisional_plan_sha256: "abc" }],
+    ["candidate count missing", { provisional_candidate_count: undefined }],
+    ["candidate count negative", { provisional_candidate_count: -1 }],
+    ["fixture count missing", { fixture_count: undefined }],
+    ["fixture count negative", { fixture_count: -1 }],
+    ["official odds count", { official_odds_count: 1 }],
+    ["official odds ratio", { official_odds_coverage_ratio: 0.5 }],
     ["build id", { build_id: "  " }],
+    ["source commit", { source_commit_sha: "" }],
     ["hash blank", { image_sha256: "" }],
     ["hash malformed", { image_sha256: "abc" }],
   ];
@@ -470,11 +567,19 @@ test("reportReadiness_ fails closed for every required contract field", () => {
 test("reportReadiness_ fails closed when current proving artifacts are invalid", () => {
   const { context } = makeHarness();
   const requiredQualityFields = [
+    "source_ready",
+    "fixtures_ready",
+    "import_manifest_ready",
+    "odds_ready",
+    "official_odds_complete",
     "predictions_ready",
-    "plan_csv_ready",
-    "plan_lock_ready",
-    "decision_snapshot_ready",
+    "decision_bundle_ready",
+    "provisional_plan_ready",
+    "provisional_shadow_ready",
+    "provisional_state_ready",
     "ledger_ready",
+    "site_ready",
+    "image_ready",
   ];
 
   assert.equal(context.reportReadiness_(readyStatus({ data_quality: undefined }), REPORT_DATE, IMAGE_HASH).ready, false);
@@ -486,7 +591,7 @@ test("reportReadiness_ fails closed when current proving artifacts are invalid",
   }
 });
 
-test("reportReadiness_ rejects impossible and out-of-range ISO timestamps", () => {
+test("reportReadiness_ rejects impossible report generation timestamps", () => {
   const { context } = makeHarness();
   const invalidTimestamps = [
     "2026-02-30T13:30:00+08:00",
@@ -500,56 +605,38 @@ test("reportReadiness_ rejects impossible and out-of-range ISO timestamps", () =
     "",
   ];
   for (const timestamp of invalidTimestamps) {
-    const status = readyStatus({ decision_odds_at_bjt: timestamp });
+    const status = readyStatus({ generated_at_bjt: timestamp });
     assert.equal(context.reportReadiness_(status, REPORT_DATE, IMAGE_HASH).ready, false, timestamp || "blank");
   }
 });
 
-test("reportReadiness_ enforces decision then lock then generation ordering", () => {
-  const { context } = makeHarness();
-  const invalidOrders = [
-    {
-      decision_odds_at_bjt: "2026-07-16T14:01:00+08:00",
-      plan_locked_at_bjt: "2026-07-16T13:31:00+08:00",
-      generated_at_bjt: "2026-07-16T14:00:00+08:00",
-    },
-    {
-      decision_odds_at_bjt: "2026-07-16T13:31:00+08:00",
-      plan_locked_at_bjt: "2026-07-16T13:30:00+08:00",
-      generated_at_bjt: "2026-07-16T14:00:00+08:00",
-    },
-    {
-      decision_odds_at_bjt: "2026-07-16T13:30:00+08:00",
-      plan_locked_at_bjt: "2026-07-16T14:01:00+08:00",
-      generated_at_bjt: "2026-07-16T14:00:00+08:00",
-    },
-  ];
-  for (const timestamps of invalidOrders) {
-    assert.equal(context.reportReadiness_(readyStatus(timestamps), REPORT_DATE, IMAGE_HASH).ready, false);
-  }
-});
-
-test("reportReadiness_ accepts valid offsets, fractional seconds, and equal causal times", () => {
+test("reportReadiness_ ignores obsolete decision and plan-lock timestamps", () => {
   const { context } = makeHarness();
   const status = readyStatus({
-    decision_odds_at_bjt: "2026-07-16T11:00:00.123456+05:30",
-    plan_locked_at_bjt: "2026-07-16T05:31:00.123456Z",
+    decision_odds_at_bjt: "not-a-date",
+    plan_locked_at_bjt: { legacy: true },
+  });
+
+  assert.equal(context.reportReadiness_(status, REPORT_DATE, IMAGE_HASH).ready, true);
+});
+
+test("reportReadiness_ accepts valid offsets and fractional report generation times", () => {
+  const { context } = makeHarness();
+  const status = readyStatus({
     generated_at_bjt: "2026-07-16T13:31:00.123456+08:00",
   });
   assert.equal(context.reportReadiness_(status, REPORT_DATE, IMAGE_HASH).ready, true);
-  const equal = "2026-07-16T13:31:00.5+08:00";
   assert.equal(context.reportReadiness_(readyStatus({
-    decision_odds_at_bjt: equal,
-    plan_locked_at_bjt: equal,
-    generated_at_bjt: equal,
+    generated_at_bjt: "2026-07-16T11:01:00.5+05:30",
   }), REPORT_DATE, IMAGE_HASH).ready, true);
 });
 
 test("missingReasons_ identifies incomplete phases and malformed status", () => {
   const { context } = makeHarness();
-  const reasons = context.missingReasons_({ schema_version: 1, report_date: REPORT_DATE, forecast_ready: true }, REPORT_DATE);
-  assert.ok(reasons.includes("decision not ready"));
+  const reasons = context.missingReasons_({ schema_version: 2, report_date: REPORT_DATE, forecast_ready: true }, REPORT_DATE);
+  assert.ok(reasons.includes("initial report not ready"));
   assert.ok(reasons.includes("settlement not ready"));
+  assert.ok(reasons.includes("revalidation status not ready"));
   assert.ok(context.missingReasons_(null, REPORT_DATE).includes("status unavailable"));
 });
 
@@ -913,6 +1000,48 @@ test("normal email cannot send before 14:00", () => {
   context.runAutomation();
   assert.equal(calls.mail.length, 0);
   assert.equal(calls.fetch.some((call) => call.url.includes("daily-report.png")), false);
+});
+
+test("initial email waits when the revalidation index is unavailable", () => {
+  const { context, calls, properties } = makeHarness({
+    now: "2026-07-16T06:00:00.000Z",
+    fetchHandler: (url) => {
+      if (url.startsWith("https://example.test/revalidation-index.json?ts=")) return response({ code: 503 });
+      if (url.startsWith("https://example.test/report-status.json?ts=")) return response({ json: readyStatus() });
+      if (url.startsWith("https://example.test/daily-report.png?build_id=")) return response({ bytes: IMAGE_BYTES });
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  });
+
+  context.runAutomation();
+
+  assert.equal(calls.mail.length, 0);
+  assert.equal(calls.fetch.some((call) => call.url.includes("daily-report.png")), false);
+  assert.equal(properties.has("LAST_INITIAL_SENT_DATE"), false);
+});
+
+test("initial email requires today's revalidation entry when provisional candidates exist", () => {
+  const { context, calls, properties } = makeHarness({
+    now: "2026-07-16T06:00:00.000Z",
+    status: readyStatus({ provisional_candidate_count: 1 }),
+    revalidationIndexValue: revalidationIndex(),
+  });
+
+  context.runAutomation();
+
+  assert.equal(calls.mail.length, 0);
+  assert.equal(calls.fetch.some((call) => call.url.includes("daily-report.png")), false);
+  assert.equal(properties.has("LAST_INITIAL_SENT_DATE"), false);
+});
+
+test("revalidation coverage accepts zero candidates or today's entry, never a prior-only index", () => {
+  const { context } = makeHarness();
+  const current = revalidationFixture(REPORT_DATE).index;
+  const priorOnly = revalidationFixture("2026-07-15").index;
+
+  assert.equal(context.revalidationIndexCoversReport_(revalidationIndex(), readyStatus()), true);
+  assert.equal(context.revalidationIndexCoversReport_(current, readyStatus({ provisional_candidate_count: 1 })), true);
+  assert.equal(context.revalidationIndexCoversReport_(priorOnly, readyStatus({ provisional_candidate_count: 1 })), false);
 });
 
 test("ready status plus matching image hash sends once and persists after Gmail", () => {

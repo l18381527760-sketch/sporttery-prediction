@@ -7,11 +7,19 @@ var DISPATCH_COOLDOWN_MS_ = 30 * 60 * 1000;
 var SENT_REVALIDATION_RETENTION_DATES_ = 30;
 var OFFICIAL_FIXTURE_SOURCES_ = ["竞彩网", "中国足彩网", "sporttery", "zgzcw"];
 var REQUIRED_REPORT_QUALITY_FIELDS_ = [
+  "source_ready",
+  "fixtures_ready",
+  "import_manifest_ready",
+  "odds_ready",
+  "official_odds_complete",
   "predictions_ready",
-  "plan_csv_ready",
-  "plan_lock_ready",
-  "decision_snapshot_ready",
+  "decision_bundle_ready",
+  "provisional_plan_ready",
+  "provisional_shadow_ready",
+  "provisional_state_ready",
   "ledger_ready",
+  "site_ready",
+  "image_ready",
 ];
 
 function pad2_(value) {
@@ -102,8 +110,7 @@ function verifiedZeroFixtureDay_(status, expectedDate) {
     OFFICIAL_FIXTURE_SOURCES_.indexOf(source.source) !== -1 &&
     source.target_date === expectedDate && source.fixture_count === 0 && source.no_fixtures === true &&
     quality && typeof quality === "object" && !Array.isArray(quality) &&
-    quality.fixtures_ready === true && quality.zero_fixture_verified === true &&
-    status.decision_snapshot_ready === true && quality.decision_snapshot_ready === true;
+    quality.fixtures_ready === true && quality.zero_fixture_verified === true;
 }
 
 function missingReasons_(status, expectedDate) {
@@ -111,28 +118,42 @@ function missingReasons_(status, expectedDate) {
   if (!status || typeof status !== "object" || Array.isArray(status)) {
     return ["status unavailable"];
   }
-  if (status.schema_version !== 1) reasons.push("unsupported schema version");
+  if (status.schema_version !== 2) reasons.push("unsupported schema version");
   if (status.report_date !== expectedDate) reasons.push("report date mismatch");
   if (status.forecast_ready !== true) reasons.push("forecast not ready");
-  if (status.decision_snapshot_ready !== true || status.plan_ready !== true) reasons.push("decision not ready");
+  if (status.initial_report_ready !== true) reasons.push("initial report not ready");
   if (status.settlement_ready !== true) reasons.push("settlement not ready");
+  if (status.revalidation_ready !== true) reasons.push("revalidation status not ready");
+  if (status.report_stage !== "settlement") reasons.push("report stage is not settlement");
   if (!validDateText_(status.settled_through) || status.settled_through < previousDate_(expectedDate)) {
     reasons.push("settlement is not current");
   }
 
   var generatedAt = timestampMillis_(status.generated_at_bjt);
-  var decisionAt = timestampMillis_(status.decision_odds_at_bjt);
-  var lockedAt = timestampMillis_(status.plan_locked_at_bjt);
-  var zeroFixtureDay = verifiedZeroFixtureDay_(status, expectedDate);
   if (!isFinite(generatedAt)) reasons.push("generated timestamp invalid");
-  if (!zeroFixtureDay && !isFinite(decisionAt)) reasons.push("decision timestamp invalid");
-  if (zeroFixtureDay && status.decision_odds_at_bjt !== "" && (
-      typeof status.decision_odds_at_bjt !== "string" || !isFinite(decisionAt)
-  )) reasons.push("decision timestamp invalid");
-  if (!isFinite(lockedAt)) reasons.push("plan lock timestamp invalid");
-  if (isFinite(decisionAt) && isFinite(lockedAt) && decisionAt > lockedAt) reasons.push("decision timestamp is later than plan lock");
-  if (isFinite(decisionAt) && isFinite(generatedAt) && decisionAt > generatedAt) reasons.push("decision timestamp is later than report generation");
-  if (isFinite(generatedAt) && isFinite(lockedAt) && lockedAt > generatedAt) reasons.push("plan lock is later than report generation");
+  if (!validDigest_(status.provisional_plan_sha256)) reasons.push("provisional plan hash invalid");
+  if (!integerAtLeast_(status.fixture_count, 0)) reasons.push("fixture count invalid");
+  if (!integerAtLeast_(status.provisional_candidate_count, 0)) reasons.push("provisional candidate count invalid");
+  if (status.fixture_count > 0 && (
+      !integerAtLeast_(status.official_fixture_count, 1) ||
+      status.official_odds_count !== status.official_fixture_count ||
+      status.official_odds_coverage_ratio !== 1)) {
+    reasons.push("official odds coverage incomplete");
+  }
+  if (status.fixture_count === 0 && (
+      status.official_fixture_count !== 0 || status.official_odds_count !== 0 ||
+      status.official_odds_coverage_ratio !== 1)) {
+    reasons.push("zero fixture odds coverage invalid");
+  }
+  var source = status.source_status;
+  if (source && typeof source === "object" && !Array.isArray(source) &&
+      source.target_date === expectedDate && integerAtLeast_(source.fixture_count, 0) &&
+      source.fixture_count !== status.fixture_count) {
+    reasons.push("source fixture count mismatch");
+  }
+  if (status.fixture_count === 0 && !verifiedZeroFixtureDay_(status, expectedDate)) {
+    reasons.push("zero fixture proof invalid");
+  }
 
   if (typeof status.build_id !== "string" || !status.build_id.trim()) reasons.push("build id missing");
   if (typeof status.source_commit_sha !== "string" || !status.source_commit_sha.trim()) reasons.push("source commit missing");
@@ -159,7 +180,7 @@ function reportReadiness_(status, expectedDate, imageSha256) {
 function phaseReady_(status, phase) {
   if (!status || typeof status !== "object") return false;
   if (phase === "forecast") return status.forecast_ready === true;
-  if (phase === "refresh") return status.decision_snapshot_ready === true && status.plan_ready === true;
+  if (phase === "refresh") return status.initial_report_ready === true;
   return status.settlement_ready === true;
 }
 
@@ -181,7 +202,7 @@ function cooldownElapsed_(clock, state, dateKey, atKey) {
 
 function chooseDispatch_(clock, status, state) {
   var trustedStatus = status !== null && typeof status === "object" && !Array.isArray(status) &&
-    status.schema_version === 1 && status.report_date === clock.date;
+    status.schema_version === 2 && status.report_date === clock.date;
   var current = trustedStatus ? status : {};
   var saved = state || {};
   if (clock.minutes >= 18 * 60) return null;
@@ -416,6 +437,15 @@ function revalidationIndex_(config) {
     dates: verifiedDates,
     index_url: indexUrl,
   };
+}
+
+function revalidationIndexCoversReport_(index, status) {
+  if (!index || !Array.isArray(index.dates) || !status ||
+      !integerAtLeast_(status.provisional_candidate_count, 0)) return false;
+  if (status.provisional_candidate_count === 0) return true;
+  return index.dates.some(function (entry) {
+    return entry && entry.report_date === status.report_date;
+  });
 }
 
 function requiredProperty_(properties, key) {
@@ -688,10 +718,12 @@ function runAutomation() {
     var clock = beijingClock_(new Date());
     var state = properties.getProperties();
     var revalidationIndex = null;
+    var revalidationIndexReason = "";
     try {
       revalidationIndex = revalidationIndex_({ properties: properties, clock: clock });
     } catch (error) {
-      Logger.log("revalidation index unavailable");
+      revalidationIndexReason = "revalidation index unavailable";
+      Logger.log(revalidationIndexReason);
     }
 
     var revalidationDispatch = chooseRevalidationDispatch_(clock, revalidationIndex, state);
@@ -716,8 +748,16 @@ function runAutomation() {
 
     var fetched = fetchStatus_(properties, clock);
     var status = fetched.status;
+    var revalidationCoversReport = revalidationIndexCoversReport_(revalidationIndex, status);
+    var revalidationCoverageReason = revalidationIndex && status && !revalidationCoversReport ?
+      "revalidation index missing report date" : "";
     if (clock.minutes >= 18 * 60) {
-      var finalAttempt = status ? tryVerifiedSend_(properties, clock, status) : { sent: false, reasons: fetched.reasons };
+      var finalAttempt = status && revalidationIndex && revalidationCoversReport ?
+        tryVerifiedSend_(properties, clock, status) :
+        { sent: false, reasons: fetched.reasons.concat(
+          revalidationIndexReason ? [revalidationIndexReason] : [],
+          revalidationCoverageReason ? [revalidationCoverageReason] : []
+        ) };
       if (!finalAttempt.sent) sendFailureNotice_(properties, clock, uniqueReasons_(fetched.reasons.concat(finalAttempt.reasons)), status);
       return;
     }
@@ -725,7 +765,9 @@ function runAutomation() {
     var workflow = revalidationDispatch ? null : chooseDispatch_(clock, status, state);
     if (workflow) dispatchWorkflow_(properties, workflow, clock);
 
-    if (clock.minutes >= 14 * 60 && status) tryVerifiedSend_(properties, clock, status);
+    if (clock.minutes >= 14 * 60 && status && revalidationIndex && revalidationCoversReport) {
+      tryVerifiedSend_(properties, clock, status);
+    }
   } finally {
     lock.releaseLock();
   }

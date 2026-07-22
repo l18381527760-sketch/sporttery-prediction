@@ -163,6 +163,37 @@ class ReportStatusTest(unittest.TestCase):
         (data / "team_ratings.csv").write_text(
             "team,elo\nA,1500\nB,1490\n", encoding="utf-8"
         )
+        def manifest_record(path: Path) -> dict:
+            payload = path.read_bytes()
+            return {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
+            }
+        extracts = data / "import_extracts" / REPORT_DATE.isoformat()
+        extracts.mkdir(parents=True)
+        extract_fixtures = extracts / "fixtures.csv"
+        extract_odds = extracts / "odds.json"
+        extract_ratings = extracts / "ratings.csv"
+        extract_fixtures.write_bytes((data / "fixtures.csv").read_bytes())
+        extract_odds.write_bytes(
+            (data / f"sporttery_odds_{REPORT_DATE.isoformat()}.json").read_bytes()
+        )
+        extract_ratings.write_bytes((data / "team_ratings.csv").read_bytes())
+        manifests = data / "import_manifests"
+        manifests.mkdir()
+        (manifests / f"{REPORT_DATE.isoformat()}.json").write_text(
+            json.dumps({
+                "schema_version": 2,
+                "target_date": REPORT_DATE.isoformat(),
+                "source": "sporttery",
+                "imported_at_bjt": "2026-07-16T13:29:00+08:00",
+                "fixtures": manifest_record(extract_fixtures),
+                "odds": manifest_record(extract_odds),
+                "ratings": manifest_record(extract_ratings),
+            }),
+            encoding="utf-8",
+        )
         (output / "observation_ledger.csv").write_text(
             "placeholder\n", encoding="utf-8"
         )
@@ -351,6 +382,7 @@ class ReportStatusTest(unittest.TestCase):
                 "report_stage": "forecast",
                 "initial_report_ready": False,
                 "provisional_plan_sha256": "",
+                "provisional_candidate_count": 0,
                 "confirmed_stake": 0,
                 "provisional_stake": 0,
                 "revalidation_ready": False,
@@ -1038,6 +1070,113 @@ class ReportStatusTest(unittest.TestCase):
             status = self.publish(root, "decision")
 
             self.assertFalse(status["plan_ready"])
+
+    def test_forecast_readiness_uses_prediction_phase_artifacts_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            (root / "output" / "betting_plan_2026-07-16.csv").unlink()
+            (root / "output" / "daily_decision_2026-07-16.json").unlink()
+
+            status = self.publish(root, "forecast")
+
+            self.assertTrue(status["forecast_ready"])
+            self.assertFalse(status["data_quality"]["plan_csv_ready"])
+            self.assertFalse(status["data_quality"]["decision_ready"])
+
+    def test_forecast_readiness_requires_domestic_odds_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            (root / "data" / "sporttery_odds_2026-07-16.json").unlink()
+
+            status = self.publish(root, "forecast")
+
+            self.assertFalse(status["forecast_ready"])
+            self.assertFalse(status["data_quality"]["odds_ready"])
+
+    def test_forecast_readiness_requires_an_immutable_import_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            (root / "data" / "import_manifests" / "2026-07-16.json").unlink()
+
+            status = self.publish(root, "forecast")
+
+            self.assertFalse(status["forecast_ready"])
+            self.assertFalse(status["data_quality"]["import_manifest_ready"])
+
+    def test_forecast_readiness_rejects_empty_domestic_odds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            (root / "data" / "sporttery_odds_2026-07-16.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
+
+            status = self.publish(root, "forecast")
+
+            self.assertFalse(status["forecast_ready"])
+            self.assertEqual(0, status["official_odds_count"])
+
+    def test_forecast_readiness_requires_full_official_odds_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            odds_path = root / "data" / "sporttery_odds_2026-07-16.json"
+            odds = json.loads(odds_path.read_text(encoding="utf-8"))
+            odds.pop("002")
+            odds_path.write_text(json.dumps(odds), encoding="utf-8")
+
+            status = self.publish(root, "forecast")
+
+            self.assertFalse(status["forecast_ready"])
+            self.assertEqual(0.5, status["official_odds_coverage_ratio"])
+
+    def test_settlement_rebinds_the_current_validated_provisional_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            self.write_report_image(
+                root, REPORT_DATE, "settlement", "123456-1-settlement"
+            )
+            state = artifact_state(
+                root,
+                REPORT_DATE,
+                expected_report_stage="settlement",
+                expected_build_id="123456-1-settlement",
+            )
+            state.update({
+                "decision_bundle_ready": True,
+                "provisional_plan_ready": True,
+                "provisional_shadow_ready": True,
+                "provisional_state_ready": True,
+                "provisional_plan_count": 1,
+                "provisional_shadow_count": 1,
+                "provisional_plan_sha256": "b" * 64,
+                "provisional_stake": 55,
+            })
+            (root / "web" / "report-status.json").write_text(
+                json.dumps({
+                    **base_status(REPORT_DATE),
+                    "forecast_ready": True,
+                    "initial_report_ready": True,
+                    "revalidation_ready": True,
+                    "provisional_plan_sha256": "a" * 64,
+                    "provisional_candidate_count": 1,
+                    "provisional_stake": 30,
+                }),
+                encoding="utf-8",
+            )
+
+            with patch("report_status.artifact_state", return_value=state):
+                status = self.publish(
+                    root, "settlement", settled_through=date(2026, 7, 15)
+                )
+
+            self.assertEqual("b" * 64, status["provisional_plan_sha256"])
+            self.assertEqual(2, status["provisional_candidate_count"])
+            self.assertEqual(55, status["provisional_stake"])
 
     def test_same_phase_rerun_invalidates_forecast_readiness_when_predictions_disappear(self):
         with tempfile.TemporaryDirectory() as tmp:
