@@ -33,6 +33,7 @@ jobs:
 
       - name: Capture live monitoring snapshot
         run: |
+          set -euo pipefail
           TARGET_DATE="$(date +%F)"
           python capture_odds_snapshot.py --date "$TARGET_DATE" --phase monitoring --live
 

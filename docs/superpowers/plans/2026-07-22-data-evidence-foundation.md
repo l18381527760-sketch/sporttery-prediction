@@ -986,6 +986,10 @@ git commit -m "feat: publish evidence health gates"
 - Settlement must reconcile results before history features, ledger settlement, metrics, or training.
 - Replay test uses only temporary immutable artifacts and no network.
 
+Task 5 compatibility clarification: replay fixtures must use the strict live
+snapshot v2 contract and its canonical immutable filename. Historical v1
+snapshots remain readable but cannot be used to synthesize phase evidence.
+
 - [ ] **Step 1: Add failing ordering and replay tests**
 
 ```python
@@ -1045,7 +1049,7 @@ def write_live_snapshot(root: Path, phase: str, captured_at: str) -> None:
     directory = root / "data" / "live_odds_snapshots" / "2026-07-21"
     directory.mkdir(parents=True, exist_ok=True)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "target_date": "2026-07-21",
         "captured_at": captured_at,
         "capture_phase": phase,

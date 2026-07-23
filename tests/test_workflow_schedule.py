@@ -229,6 +229,7 @@ class WorkflowScheduleTest(unittest.TestCase):
             'TODAY="$TARGET_DATE"',
             'SETTLEMENT_DATE="$(date -d "$TODAY - 1 day" +%F)"',
             'python update_sporttery_results.py --date "$SETTLEMENT_DATE" --reconcile-days 7',
+            "python build_historical_features.py",
             "python generate_betting_plan.py --settle-only",
             'python draw_model_learning.py --train --date "$TODAY"',
             'python build_site.py --date "$TODAY" --stage settlement',
@@ -240,6 +241,121 @@ class WorkflowScheduleTest(unittest.TestCase):
             self.assertNotEqual(-1, cursor, command)
             cursor += len(command)
         self.assertNotIn('update_sporttery_results.py --date "$TODAY"', step)
+
+    def test_required_evidence_workflow_steps_are_explicitly_fail_fast(self):
+        required_steps = (
+            (
+                "daily-forecast.yml",
+                "forecast",
+                "Generate required daily forecast",
+            ),
+            (
+                "daily-forecast.yml",
+                "forecast",
+                "Build base website and image",
+            ),
+            (
+                "odds-snapshot.yml",
+                "snapshot",
+                "Capture live monitoring snapshot",
+            ),
+            (
+                "noon-settlement.yml",
+                "settlement",
+                "Update results and settle confirmed canonical rows",
+            ),
+        )
+        for workflow, job, step_name in required_steps:
+            with self.subTest(workflow=workflow, step=step_name):
+                text = self.read_workflow(workflow)
+                step = self.step_block(text, job, step_name)
+                body = self.multiline_step_body(text, job, step_name)
+                self.assertTrue(
+                    body.startswith("set -euo pipefail\n"),
+                    f"{workflow}: {step_name} must fail before downstream evidence work",
+                )
+                self.assertNotIn("continue-on-error: true", step)
+                self.assertNotIn("|| true", body)
+
+    def test_evidence_commands_precede_readiness_publication_and_commits(self):
+        daily = self.read_workflow("daily-forecast.yml")
+        daily_commands = (
+            'python import_sporttery.py --date "$TARGET_DATE"',
+            "python build_historical_features.py",
+            'python predict_today.py --date "$TARGET_DATE"',
+            'python report_status.py --date "$TARGET_DATE" --phase forecast',
+            "      - name: Commit generated files",
+        )
+        cursor = 0
+        for command in daily_commands:
+            cursor = daily.find(command, cursor)
+            self.assertNotEqual(-1, cursor, command)
+            cursor += len(command)
+
+        settlement = self.read_workflow("noon-settlement.yml")
+        settlement_commands = (
+            'python update_sporttery_results.py --date "$SETTLEMENT_DATE" --reconcile-days 7',
+            "python build_historical_features.py",
+            "python generate_betting_plan.py --settle-only",
+            'python draw_model_learning.py --train --date "$TODAY"',
+            'python report_status.py --date "$TODAY" --phase settlement',
+            "      - name: Commit settlement files",
+        )
+        cursor = 0
+        for command in settlement_commands:
+            cursor = settlement.find(command, cursor)
+            self.assertNotEqual(-1, cursor, command)
+            cursor += len(command)
+
+    def test_settlement_failure_stops_before_history_settlement_and_training(self):
+        body = self.multiline_step_body(
+            self.read_workflow("noon-settlement.yml"),
+            "settlement",
+            "Update results and settle confirmed canonical rows",
+        )
+        stub = '''import sys
+from pathlib import Path
+
+name = Path(sys.argv[0]).name
+with Path("calls.log").open("a", encoding="utf-8") as handle:
+    handle.write(name + "\\n")
+if name == "update_sporttery_results.py":
+    raise SystemExit(41)
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for script in (
+                "update_sporttery_results.py",
+                "build_historical_features.py",
+                "generate_betting_plan.py",
+                "draw_model_learning.py",
+                "build_site.py",
+                "build_daily_image.py",
+                "report_status.py",
+            ):
+                (root / script).write_text(stub, encoding="utf-8")
+            env = os.environ.copy()
+            env["REQUESTED_TARGET_DATE"] = "2026-07-22"
+            env["PATH"] = (
+                str(Path(sys.executable).parent)
+                + os.pathsep
+                + env.get("PATH", "")
+            )
+
+            result = subprocess.run(
+                [self.bash_executable(), "-c", body],
+                cwd=root,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(41, result.returncode, result.stderr)
+            self.assertEqual(
+                ["update_sporttery_results.py"],
+                (root / "calls.log").read_text(encoding="utf-8").splitlines(),
+            )
 
     def test_report_workflows_install_required_dependencies_and_do_not_dispatch_email(self):
         for workflow, job in (
@@ -813,6 +929,20 @@ class DeploymentDocumentationTest(unittest.TestCase):
         self.assertEqual("shadow", config["value_strategy"]["activation_mode"])
         self.assertEqual("simulation", config["simulation_account"]["mode"])
         self.assertFalse(config["simulation_account"]["real_money_automation"])
+
+    def test_operator_docs_define_evidence_first_retry_contract(self):
+        for path in (ROOT / "README.md", ROOT / "CLOUD_SETUP.md"):
+            with self.subTest(path=path.name):
+                text = self.read_doc(path)
+                for literal in (
+                    "`--reconcile-days 7`",
+                    "oldest-first",
+                    "strict live snapshot schema 2",
+                    "canonical immutable filenames",
+                    "GitHub Actions retries do not duplicate canonical results",
+                    "Apps Script remains the sole email sender",
+                ):
+                    self.assertIn(literal, text)
 
     def test_docs_match_manifest_timezone_workflow_crons_and_pages_artifact_root(self):
         apps_readme = self.read_doc(self.APPS_SCRIPT_README)

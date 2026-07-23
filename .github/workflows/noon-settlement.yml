@@ -55,6 +55,7 @@ jobs:
         env:
           REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
         run: |
+          set -euo pipefail
           TARGET_DATE="$REQUESTED_TARGET_DATE"
           TARGET_DATE="${TARGET_DATE:-$(date +%F)}"
           NORMALIZED_TARGET_DATE="$(date -d "$TARGET_DATE" +%F)"
