@@ -50,6 +50,9 @@ GitHub Actions retries do not duplicate canonical results, simulated ledger
 entries, or mail. Apps Script remains the sole email sender in the Beijing
 14:00-18:00 window; `.github/workflows/email-report.yml` remains disabled.
 
+Phase 1 acceptance requires seven successful daily production runs before Project 2 planning.
+Broader 30-day evidence maturity remains required before model or profitability claims.
+
 ## 赛前复核契约
 
 14:00 初选是 provisional，provisional 金额不计入盈亏。系统按候选最早开赛时间执行 T-90 和 T-30 两个窗口；最终金额只能保持或降低，错过窗口必须取消。复核允许跨北京时间午夜，`target_date` 始终使用初选业务日，`now_bjt` 必须是含 `+08:00` 的时区感知时间。

@@ -118,7 +118,7 @@ def snapshot(*, odds="2.50", kickoff="2026-07-20T02:00:00+08:00"):
         "captured_at": "2026-07-20T00:30:00+08:00",
         "source": "sporttery",
         "fetch_mode": "live",
-        "capture_phase": "monitoring",
+        "capture_phase": "pre_kickoff_90",
         "source_response_sha256": "0" * 64,
         "matches": [{
             "match_id": "match-1", "source_record_id": "source-1", "match_num": "Monday001",
@@ -215,7 +215,7 @@ def actual_snapshot(
     *,
     second_goal_line="+1",
     captured_at="2026-07-20T00:30:00+08:00",
-    phase="monitoring",
+    phase="pre_kickoff_90",
 ):
     captured = datetime.fromisoformat(captured_at)
     first_kickoff = "2026-07-20T02:00:00+08:00"
@@ -273,6 +273,16 @@ def write_actual_snapshot(root, payload=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
     return path
+
+
+def requested_snapshot_provider(root, _target_date, checked, *, phase):
+    return write_actual_snapshot(
+        root,
+        actual_snapshot(
+            captured_at=checked.isoformat(),
+            phase=phase,
+        ),
+    )
 
 
 def runtime_entry(value, *, state=None, ledger_status="not_applicable"):
@@ -499,6 +509,83 @@ class RevalidationTest(TestCase):
                     evaluate_candidate(value, fresh, "t90", checked, config())["decision"],
                 )
 
+    def test_new_transition_requires_strict_v2_phase_evidence(self):
+        checked = datetime(2026, 7, 20, 0, 30, tzinfo=BJT)
+        value = actual_candidate()
+
+        with self.assertRaisesRegex(ValueError, "schema 2"):
+            evaluate_candidate(
+                value,
+                legacy_v1_snapshot(),
+                "t90",
+                checked,
+                config(),
+            )
+
+        wrong_requested_phase = actual_snapshot(phase="pre_kickoff_30")
+        with self.assertRaisesRegex(ValueError, "phase"):
+            evaluate_candidate(
+                value,
+                wrong_requested_phase,
+                "t90",
+                checked,
+                config(),
+            )
+
+        wrong_match_phase = actual_snapshot()
+        wrong_match_phase["matches"][0]["capture_phase"] = "decision"
+        with self.assertRaisesRegex(ValueError, "match phase"):
+            evaluate_candidate(
+                value,
+                wrong_match_phase,
+                "t90",
+                checked,
+                config(),
+            )
+
+    def test_scheduler_requests_explicit_phase_for_each_due_transition(self):
+        value = actual_candidate()
+        source = {"report_date": DAY.isoformat(), "candidates": [value]}
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "betting_config.json").write_text(
+                json.dumps({"pre_kickoff_revalidation": config()}),
+                encoding="utf-8",
+            )
+            requests = []
+
+            def provider(_root, _target_date, checked, *, phase):
+                requests.append((checked.isoformat(), phase))
+                return write_actual_snapshot(
+                    root,
+                    actual_snapshot(
+                        captured_at=checked.isoformat(),
+                        phase=phase,
+                    ),
+                )
+
+            with patch("revalidation.read_valid_provisional_state", return_value=source):
+                run_due_revalidation(
+                    root,
+                    datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
+                    target_dates=[DAY],
+                    snapshot_provider=provider,
+                )
+                run_due_revalidation(
+                    root,
+                    datetime(2026, 7, 20, 1, 35, tzinfo=BJT),
+                    target_dates=[DAY],
+                    snapshot_provider=provider,
+                )
+
+        self.assertEqual(
+            [
+                ("2026-07-20T00:30:00+08:00", "pre_kickoff_90"),
+                ("2026-07-20T01:35:00+08:00", "pre_kickoff_30"),
+            ],
+            requests,
+        )
+
     def test_production_value_v4_candidate_passes_matching_fresh_evidence_end_to_end(self):
         row = production_value_v4_row()
         self.assertNotIn("match_num", row)
@@ -597,17 +684,18 @@ class RevalidationTest(TestCase):
                         root,
                         checked_at,
                         target_dates=[DAY],
-                        snapshot_provider=lambda *_args: write_actual_snapshot(root),
+                        snapshot_provider=requested_snapshot_provider,
                     )
                     t30_snapshot = actual_snapshot(
-                        captured_at="2026-07-20T01:35:00+08:00"
+                        captured_at="2026-07-20T01:35:00+08:00",
+                        phase="pre_kickoff_30",
                     )
                     confirmed = run_due_revalidation(
                         root,
                         datetime(2026, 7, 20, 1, 35, tzinfo=BJT),
                         target_dates=[DAY],
-                        snapshot_provider=lambda *_args: write_actual_snapshot(
-                            root, t30_snapshot
+                        snapshot_provider=lambda *_args, **_kwargs: (
+                            write_actual_snapshot(root, t30_snapshot)
                         ),
                     )
 
@@ -696,7 +784,7 @@ class RevalidationTest(TestCase):
                         root,
                         datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
                         target_dates=[DAY],
-                        snapshot_provider=lambda *_args: write_actual_snapshot(root),
+                        snapshot_provider=requested_snapshot_provider,
                     )
 
     def test_actual_single_hhad_requires_exact_live_goal_line(self):
@@ -789,7 +877,7 @@ class RevalidationTest(TestCase):
                 json.dumps({"pre_kickoff_revalidation": config()}), encoding="utf-8"
             )
             with patch("revalidation.read_valid_provisional_state", return_value=source):
-                provider = lambda *_args: write_actual_snapshot(root)
+                provider = requested_snapshot_provider
                 run_due_revalidation(
                     root, datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
                     target_dates=[DAY], snapshot_provider=provider,
@@ -856,9 +944,14 @@ class RevalidationTest(TestCase):
             )
             captures = []
 
-            def provider(_root, target_date, checked):
-                captures.append((target_date, checked))
-                return write_actual_snapshot(root)
+            def provider(_root, target_date, checked, *, phase):
+                captures.append((target_date, checked, phase))
+                return requested_snapshot_provider(
+                    _root,
+                    target_date,
+                    checked,
+                    phase=phase,
+                )
 
             with patch("revalidation.read_valid_provisional_state", return_value=source):
                 with patch("revalidation._write_state_atomic", side_effect=OSError("disk full")):
@@ -892,22 +985,48 @@ class RevalidationTest(TestCase):
             (root / "betting_config.json").write_text(
                 json.dumps({"pre_kickoff_revalidation": config()}), encoding="utf-8"
             )
-            captured = []
-
-            def provider(_root, _target_date, _checked):
-                path = write_actual_snapshot(root, legacy_v1_snapshot())
-                captured.append(path)
-                return path
-
+            checked = datetime(2026, 7, 20, 0, 30, tzinfo=BJT)
+            snapshot_path = write_actual_snapshot(root, legacy_v1_snapshot())
+            snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            receipt = evaluate_candidate(
+                value,
+                actual_snapshot(),
+                "t90",
+                checked,
+                config(),
+            )["receipt"]
+            receipt["live_odds_snapshot_path"] = snapshot_path.relative_to(root).as_posix()
+            receipt["live_odds_snapshot_sha256"] = hashlib.sha256(
+                (
+                    json.dumps(
+                        snapshot_payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            ).hexdigest()
+            receipt_path = (
+                root
+                / "output"
+                / "revalidation_receipts"
+                / DAY.isoformat()
+                / f"{value['candidate_id']}-t90.json"
+            )
+            receipt_path.parent.mkdir(parents=True)
+            receipt_path.write_bytes(
+                (
+                    json.dumps(
+                        receipt,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            )
             with patch("revalidation.read_valid_provisional_state", return_value=source):
-                with patch("revalidation._write_state_atomic", side_effect=OSError("disk full")):
-                    with self.assertRaisesRegex(OSError, "disk full"):
-                        run_due_revalidation(
-                            root,
-                            datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
-                            target_dates=[DAY],
-                            snapshot_provider=provider,
-                        )
                 replayed = run_due_revalidation(
                     root,
                     datetime(2026, 7, 20, 0, 31, tzinfo=BJT),
@@ -915,7 +1034,7 @@ class RevalidationTest(TestCase):
                     snapshot_provider=lambda *_args: self.fail("replay must not refetch"),
                 )
 
-            payload = json.loads(captured[0].read_text(encoding="utf-8"))
+            payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
             self.assertEqual(1, payload["schema_version"])
             self.assertNotIn("capture_phase", payload)
             self.assertNotIn("minutes_to_kickoff", payload["matches"][0])
@@ -1034,10 +1153,11 @@ class RevalidationTest(TestCase):
                     root,
                     datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
                     target_dates=[DAY],
-                    snapshot_provider=lambda *_args: write_actual_snapshot(root),
+                    snapshot_provider=requested_snapshot_provider,
                 )
                 final_snapshot = actual_snapshot(
-                    captured_at="2026-07-20T01:35:00+08:00"
+                    captured_at="2026-07-20T01:35:00+08:00",
+                    phase="pre_kickoff_30",
                 )
                 with patch(
                     "betting_ledger._commit_ledger_generation_locked",
@@ -1047,8 +1167,8 @@ class RevalidationTest(TestCase):
                         root,
                         datetime(2026, 7, 20, 1, 35, tzinfo=BJT),
                         target_dates=[DAY],
-                        snapshot_provider=lambda *_args: write_actual_snapshot(
-                            root, final_snapshot
+                        snapshot_provider=lambda *_args, **_kwargs: (
+                            write_actual_snapshot(root, final_snapshot)
                         ),
                     )
                 pending = json.loads(
@@ -1092,9 +1212,14 @@ class RevalidationTest(TestCase):
             )
             snapshot_path = None
 
-            def provider(_root, target_date, checked):
+            def provider(_root, target_date, checked, *, phase):
                 nonlocal snapshot_path
-                snapshot_path = write_actual_snapshot(root)
+                snapshot_path = requested_snapshot_provider(
+                    _root,
+                    target_date,
+                    checked,
+                    phase=phase,
+                )
                 return snapshot_path
 
             with patch("revalidation.read_valid_provisional_state", return_value=source):
@@ -1126,7 +1251,7 @@ class RevalidationTest(TestCase):
                         run_due_revalidation(
                             root, datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
                             target_dates=[DAY],
-                            snapshot_provider=lambda *_args: write_actual_snapshot(root),
+                            snapshot_provider=requested_snapshot_provider,
                         )
                 receipt_path = next((root / "output" / "revalidation_receipts").rglob("*.json"))
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -1150,7 +1275,7 @@ class RevalidationTest(TestCase):
                 json.dumps({"pre_kickoff_revalidation": config()}), encoding="utf-8"
             )
             with patch("revalidation.read_valid_provisional_state", return_value=source):
-                provider = lambda *_args: write_actual_snapshot(root)
+                provider = requested_snapshot_provider
                 run_due_revalidation(
                     root, datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
                     target_dates=[DAY], snapshot_provider=provider,
@@ -1172,8 +1297,9 @@ class RevalidationTest(TestCase):
             root = Path(temporary)
             (root / "betting_config.json").write_text(json.dumps({"pre_kickoff_revalidation": config()}), encoding="utf-8")
             captured_dates = []
-            def provider(_root, target_date, now):
+            def provider(_root, target_date, now, *, phase):
                 captured_dates.append(target_date)
+                self.assertEqual("pre_kickoff_90", phase)
                 return _root / "snapshots" / f"{target_date}.json"
             def reader(_root, path, target_date, not_after):
                 value = snapshot()

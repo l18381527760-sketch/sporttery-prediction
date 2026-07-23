@@ -40,6 +40,7 @@ from tests.test_revalidation import (
     production_task2_bundle,
     production_value_v4_row,
     production_value_v4_parlay_row,
+    requested_snapshot_provider,
     write_actual_snapshot,
 )
 
@@ -271,18 +272,20 @@ class BettingLedgerTest(unittest.TestCase):
                 self.root,
                 datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
                 target_dates=[REVALIDATION_DAY],
-                snapshot_provider=lambda *_args: write_actual_snapshot(self.root),
+                snapshot_provider=requested_snapshot_provider,
             )
             final_snapshot = actual_snapshot(
-                captured_at="2026-07-20T01:35:00+08:00"
+                captured_at="2026-07-20T01:35:00+08:00",
+                phase="pre_kickoff_30",
             )
             final_snapshot["matches"][0]["markets"]["had"]["h"] = final_odds
             run_due_revalidation(
                 self.root,
                 datetime(2026, 7, 20, 1, 35, tzinfo=BJT),
                 target_dates=[REVALIDATION_DAY],
-                snapshot_provider=lambda *_args: write_actual_snapshot(
-                    self.root, final_snapshot
+                snapshot_provider=lambda *_args, **_kwargs: write_actual_snapshot(
+                    self.root,
+                    final_snapshot,
                 ),
             )
         state = json.loads(

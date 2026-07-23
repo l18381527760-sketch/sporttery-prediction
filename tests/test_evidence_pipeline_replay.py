@@ -7,14 +7,29 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import generate_betting_plan as betting_plan
 import update_sporttery_results as results
+from draw_model_learning import build_training_samples
 from evidence_health import build_evidence_health
 from live_odds import capture_live_snapshot, read_valid_live_snapshot
 from result_evidence import proven_90_minute_result
+import tests.test_report_status as report_status_fixture
 
 
 BEIJING = timezone(timedelta(hours=8))
 REPLAY_DATE = date(2026, 7, 21)
+DRAW_FEATURES = {
+    "base_draw_probability": 0.32,
+    "market_draw_probability": 0.25,
+    "favorite_probability": 0.54,
+    "win_probability_gap": 0.42,
+    "xg_total": 2.30,
+    "favorite_movement": -0.05,
+    "regional_gap": 0.06,
+    "source_count": 2,
+    "is_knockout": 0,
+    "is_balanced": 1,
+}
 
 
 def write_import_manifest_fixture(
@@ -96,6 +111,116 @@ def capture_replay_snapshot(
         sporttery_fetcher=lambda _target: [source_match],
         sporttery_odds_fetcher=lambda _source_id: source_odds,
     )
+
+
+def write_draw_feature_snapshot(root: Path, row: dict) -> Path:
+    target_date = date.fromisoformat(row["date"])
+    captured_at = datetime.combine(
+        target_date,
+        datetime.min.time(),
+        tzinfo=BEIJING,
+    ).replace(hour=13)
+    kickoff_at = datetime.fromisoformat(
+        f"{target_date.isoformat()}T18:00:00+08:00"
+    )
+    payload = {
+        "snapshot_schema_version": 1,
+        "date": target_date.isoformat(),
+        "match_id": row["match_id"],
+        "team_a": row["team_a"],
+        "team_b": row["team_b"],
+        "stage": "replay",
+        "captured_at": captured_at.isoformat(),
+        "kickoff_at": kickoff_at.isoformat(),
+        "domestic_draw_odds": 3.2,
+        "features": DRAW_FEATURES,
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    timestamp = captured_at.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    directory = root / "data" / "draw_feature_snapshots"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{timestamp}-{digest}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def append_result_rows(path: Path, rows: list[dict]) -> None:
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        existing = list(reader)
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows([*existing, *rows])
+
+
+def make_ambiguous_report_identity(root: Path) -> None:
+    helper = report_status_fixture.ReportStatusTest()
+    helper.make_artifacts(root)
+    fixture_paths = (
+        root / "data" / "fixtures.csv",
+        root
+        / "data"
+        / "import_extracts"
+        / report_status_fixture.REPORT_DATE.isoformat()
+        / "fixtures.csv",
+    )
+    for path in fixture_paths:
+        with path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = reader.fieldnames
+            rows = list(reader)
+        for row in rows:
+            if (
+                row["date"] == report_status_fixture.REPORT_DATE.isoformat()
+                and row["match_id"] == "002"
+            ):
+                row["team_a"] = "A-001"
+                row["team_b"] = "B-001"
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    predictions = (
+        root
+        / "output"
+        / f"predictions_{report_status_fixture.REPORT_DATE.isoformat()}.csv"
+    )
+    with predictions.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    for row in rows:
+        if row["match_id"] == "002":
+            row["team_a"] = "A-001"
+            row["team_b"] = "B-001"
+    with predictions.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    manifest_path = (
+        root
+        / "data"
+        / "import_manifests"
+        / f"{report_status_fixture.REPORT_DATE.isoformat()}.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    extract = fixture_paths[1]
+    payload = extract.read_bytes()
+    manifest["fixtures"].update(
+        sha256=hashlib.sha256(payload).hexdigest(),
+        bytes=len(payload),
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
 class EvidencePipelineReplayTest(unittest.TestCase):
@@ -181,6 +306,54 @@ class EvidencePipelineReplayTest(unittest.TestCase):
             self.assertEqual("unavailable", result_rows[anonymous_date]["result_status"])
             self.assertFalse(proven_90_minute_result(result_rows[anonymous_date]))
 
+            conflict_row = result_rows[
+                (REPLAY_DATE - timedelta(days=1)).isoformat()
+            ]
+            ambiguous_row = result_rows[
+                (REPLAY_DATE - timedelta(days=2)).isoformat()
+            ]
+            anonymous_row = result_rows[anonymous_date]
+            for row in (conflict_row, ambiguous_row, anonymous_row):
+                write_draw_feature_snapshot(root, row)
+            append_result_rows(
+                result_path,
+                [
+                    {**conflict_row, "home_goals": "2"},
+                    {
+                        **ambiguous_row,
+                        "source_record_id": (
+                            ambiguous_row["source_record_id"] + "-other"
+                        ),
+                    },
+                ],
+            )
+
+            with patch.object(betting_plan, "DATA_DIR", data):
+                settlement_ingress = betting_plan.load_results()
+            self.assertNotIn(conflict_row["match_id"], settlement_ingress)
+            self.assertNotIn(ambiguous_row["match_id"], settlement_ingress)
+            self.assertEqual(
+                [],
+                build_training_samples(root, as_of=REPLAY_DATE),
+            )
+
+            write_draw_feature_snapshot(root, replay_row)
+            samples = build_training_samples(root, as_of=REPLAY_DATE)
+            self.assertEqual(1, len(samples))
+            self.assertEqual(replay_row["match_id"], samples[0]["match_id"])
+            self.assertNotIn(
+                conflict_row["match_id"],
+                {sample["match_id"] for sample in samples},
+            )
+            self.assertNotIn(
+                ambiguous_row["match_id"],
+                {sample["match_id"] for sample in samples},
+            )
+            self.assertNotIn(
+                anonymous_row["match_id"],
+                {sample["match_id"] for sample in samples},
+            )
+
             snapshots = (
                 capture_replay_snapshot(
                     root,
@@ -223,3 +396,28 @@ class EvidencePipelineReplayTest(unittest.TestCase):
             self.assertEqual(1, health["snapshot_coverage"]["phases"]["pre_kickoff_90"])
             self.assertEqual(1, health["snapshot_coverage"]["phases"]["pre_kickoff_30"])
             self.assertEqual([], health["hard_blockers"])
+
+    def test_real_hard_blocker_forces_actual_report_readiness_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_ambiguous_report_identity(root)
+            helper = report_status_fixture.ReportStatusTest()
+
+            status = helper.publish(root, "forecast")
+
+        self.assertIn(
+            "identity_not_unique",
+            status["evidence_health"]["hard_blockers"],
+        )
+        for key in (
+            "source_ready",
+            "fixtures_ready",
+            "import_manifest_ready",
+            "odds_ready",
+            "official_odds_complete",
+            "predictions_ready",
+            "site_ready",
+            "image_ready",
+        ):
+            self.assertTrue(status["data_quality"][key], key)
+        self.assertFalse(status["forecast_ready"])

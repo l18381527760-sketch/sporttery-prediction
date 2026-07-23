@@ -277,6 +277,24 @@ class WorkflowScheduleTest(unittest.TestCase):
                 self.assertNotIn("continue-on-error: true", step)
                 self.assertNotIn("|| true", body)
 
+    def test_live_snapshot_workflow_stages_the_actual_immutable_destination(self):
+        text = self.read_workflow("odds-snapshot.yml")
+        capture = self.step_block(
+            text,
+            "snapshot",
+            "Capture live monitoring snapshot",
+        )
+        commit = self.step_block(text, "snapshot", "Commit snapshot")
+
+        self.assertIn(
+            'capture_odds_snapshot.py --date "$TARGET_DATE" --phase monitoring --live',
+            capture,
+        )
+        self.assertIn('file_pattern: "data/live_odds_snapshots"', commit)
+        self.assertNotIn('file_pattern: "data/odds_snapshots"', commit)
+        self.assertIn("uses: stefanzweifel/git-auto-commit-action@v5", commit)
+        self.assertNotIn("git commit", text)
+
     def test_evidence_commands_precede_readiness_publication_and_commits(self):
         daily = self.read_workflow("daily-forecast.yml")
         daily_commands = (
@@ -941,6 +959,18 @@ class DeploymentDocumentationTest(unittest.TestCase):
                     "canonical immutable filenames",
                     "GitHub Actions retries do not duplicate canonical results",
                     "Apps Script remains the sole email sender",
+                ):
+                    self.assertIn(literal, text)
+
+    def test_operator_docs_gate_project_two_and_claims_on_observed_maturity(self):
+        for path in (ROOT / "README.md", ROOT / "CLOUD_SETUP.md"):
+            with self.subTest(path=path.name):
+                text = self.read_doc(path)
+                for literal in (
+                    "seven successful daily production runs",
+                    "before Project 2 planning",
+                    "30-day evidence maturity",
+                    "before model or profitability claims",
                 ):
                     self.assertIn(literal, text)
 
