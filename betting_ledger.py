@@ -12,6 +12,7 @@ from pathlib import Path
 
 from official_markets import THREE_WAY_SELECTIONS, TOTAL_GOALS_SELECTIONS, parse_handicap
 from plan_lock import read_valid_lock
+from result_evidence import proven_90_minute_result, proven_result_provenance
 
 
 PENDING = "未结算"
@@ -2539,37 +2540,19 @@ def _result_for(match_id: object, results: dict) -> dict | None:
 
 
 def _is_proven_result(result: dict | None) -> bool:
-    if not isinstance(result, dict) or not _has_provenance(result):
+    if not isinstance(result, dict):
         return False
-    status = result.get("result_status")
-    if status == "refunded":
-        return True
-    return (
-        status == "finished"
-        and result.get("score_scope") == "regular_time_90"
-        and str(result.get("settlement_minutes", "")).strip() == "90"
-        and _goal(result.get("home_goals")) is not None
-        and _goal(result.get("away_goals")) is not None
-    )
+    if result.get("result_status") == "refunded":
+        return proven_result_provenance(result)
+    return proven_90_minute_result(result)
 
 
 def _is_invalid_with_provenance(result: dict | None) -> bool:
-    return isinstance(result, dict) and result.get("result_status") == "invalid" and _has_provenance(result)
-
-
-def _has_provenance(result: dict) -> bool:
-    if not all(
-        isinstance(result.get(field), str) and result[field].strip()
-        for field in ("result_source", "source_record_id", "captured_at_bjt")
-    ):
-        return False
-    if result["result_source"].strip().lower() not in DOMESTIC_ODDS_SOURCES:
-        return False
-    try:
-        _aware_iso(result["captured_at_bjt"], "captured_at_bjt")
-    except ValueError:
-        return False
-    return True
+    return (
+        isinstance(result, dict)
+        and result.get("result_status") == "invalid"
+        and proven_result_provenance(result)
+    )
 
 
 def _result_fields(result: dict) -> dict:

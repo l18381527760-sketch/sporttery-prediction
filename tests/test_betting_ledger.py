@@ -2315,6 +2315,18 @@ class SettlementTest(unittest.TestCase):
                     settle_pending(pending, {"1001": result}, SETTLED_AT),
                 )
 
+        unproven_refund = {
+            "match_id": "1001",
+            "result_status": "refunded",
+            "result_source": "external",
+            "source_record_id": "refund-1001",
+            "captured_at_bjt": "2026-07-17T11:00:00+08:00",
+        }
+        self.assertEqual(
+            pending,
+            settle_pending(pending, {"1001": unproven_refund}, SETTLED_AT),
+        )
+
     def test_existing_canonical_paid_corruption_fails_before_account_math(self):
         canonical = ingest_locked_plan([], [plan_row()], lock())[0]
         settled = settle_pending(

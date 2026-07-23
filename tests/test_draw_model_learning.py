@@ -428,11 +428,7 @@ class DrawModelLearningTest(unittest.TestCase):
             self.temp_root / "data" / "bet_results.csv",
             [
                 {
-                    "date": "2026-01-02",
-                    "team_a": "A",
-                    "team_b": "B",
-                    "home_goals": "1",
-                    "away_goals": "1",
+                    **self._result(),
                     "half_home_goals": "0",
                     "half_away_goals": "1",
                     "post_match_xg": "9.9",
@@ -455,6 +451,27 @@ class DrawModelLearningTest(unittest.TestCase):
         self.assertNotIn("half_home_goals", rows[0])
         self.assertNotIn("post_match_xg", rows[0])
 
+    def test_training_matches_only_proven_results_by_canonical_match_id(self):
+        self._write_snapshot("canonical", match_id="1")
+        legacy = {
+            **self._result("1"),
+            "match_id": "",
+            "result_status": "",
+            "result_source": "",
+            "source_record_id": "",
+            "captured_at_bjt": "",
+            "score_scope": "",
+            "settlement_minutes": "",
+        }
+        self._write_csv(
+            self.temp_root / "data" / "bet_results.csv",
+            [legacy, self._result("2")],
+        )
+
+        self.assertEqual(
+            [], build_training_samples(self.temp_root, as_of=date(2026, 1, 2))
+        )
+
     def test_training_skips_snapshots_without_proven_prematch_timestamps(self):
         self._write_snapshot("missing.json", captured_at="", kickoff_at="2026-01-02T12:00:00Z")
         self._write_snapshot(
@@ -465,7 +482,7 @@ class DrawModelLearningTest(unittest.TestCase):
         self._write_snapshot("bad.json", captured_at="not-a-time", kickoff_at="also-bad")
         self._write_csv(
             self.temp_root / "data" / "bet_results.csv",
-            [{"date": "2026-01-02", "team_a": "A", "team_b": "B", "home_goals": "1", "away_goals": "1"}],
+            [self._result()],
         )
 
         self.assertEqual([], build_training_samples(self.temp_root, as_of=date(2026, 1, 2)))
@@ -491,13 +508,7 @@ class DrawModelLearningTest(unittest.TestCase):
                 )
                 self._write_csv(
                     self.temp_root / "data" / "bet_results.csv",
-                    [{
-                        "date": "2026-01-02",
-                        "team_a": "A",
-                        "team_b": "B",
-                        "home_goals": "1",
-                        "away_goals": "1",
-                    }],
+                    [self._result()],
                 )
 
                 self.assertEqual(
@@ -514,7 +525,7 @@ class DrawModelLearningTest(unittest.TestCase):
         valid_path.write_text(json.dumps(payload), encoding="utf-8")
         self._write_csv(
             self.temp_root / "data" / "bet_results.csv",
-            [{"date": "2026-01-02", "team_a": "A", "team_b": "B", "home_goals": "1", "away_goals": "1"}],
+            [self._result()],
         )
 
         self.assertEqual([], build_training_samples(self.temp_root, as_of=date(2026, 1, 2)))
@@ -525,7 +536,7 @@ class DrawModelLearningTest(unittest.TestCase):
         valid_path.replace(renamed)
         self._write_csv(
             self.temp_root / "data" / "bet_results.csv",
-            [{"date": "2026-01-02", "team_a": "A", "team_b": "B", "home_goals": "1", "away_goals": "1"}],
+            [self._result()],
         )
 
         self.assertEqual([], build_training_samples(self.temp_root, as_of=date(2026, 1, 2)))
@@ -535,7 +546,7 @@ class DrawModelLearningTest(unittest.TestCase):
         self._write_snapshot("retry", base_probability=0.36)
         self._write_csv(
             self.temp_root / "data" / "bet_results.csv",
-            [{"date": "2026-01-02", "team_a": "A", "team_b": "B", "home_goals": "1", "away_goals": "1"}],
+            [self._result()],
         )
 
         self.assertEqual([], build_training_samples(self.temp_root, as_of=date(2026, 1, 2)))
@@ -1374,6 +1385,25 @@ class DrawModelLearningTest(unittest.TestCase):
             "p_draw": "0.32",
             "p_b": "0.23",
         }
+
+    @staticmethod
+    def _result(match_id="1", **overrides):
+        row = {
+            "date": "2026-01-02",
+            "match_id": match_id,
+            "team_a": "A",
+            "team_b": "B",
+            "home_goals": "1",
+            "away_goals": "1",
+            "result_status": "finished",
+            "result_source": "sporttery",
+            "source_record_id": f"result-{match_id}",
+            "captured_at_bjt": "2026-01-02T20:00:00+08:00",
+            "score_scope": "regular_time_90",
+            "settlement_minutes": "90",
+        }
+        row.update(overrides)
+        return row
 
     @staticmethod
     def _write_csv(path, rows):

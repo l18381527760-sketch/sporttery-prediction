@@ -4,6 +4,8 @@ from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
 
+from result_evidence import proven_90_minute_result
+
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -19,7 +21,11 @@ def load_results() -> list[dict]:
     if not path.exists():
         return []
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        return [row for row in csv.DictReader(handle) if row.get("home_goals") != "" and row.get("away_goals") != ""]
+        return [
+            row
+            for row in csv.DictReader(handle)
+            if proven_90_minute_result(row)
+        ]
 
 
 def build_features() -> Path:

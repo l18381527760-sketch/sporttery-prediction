@@ -23,6 +23,8 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from result_evidence import normalized_result
+
 
 ROOT = Path(__file__).resolve().parent
 BEIJING = timezone(timedelta(hours=8))
@@ -206,11 +208,11 @@ def predict_draw_probability(features: dict, *, root: Path = ROOT) -> float:
 def build_training_samples(root: Path = ROOT, as_of: date | None = None) -> list[dict]:
     root = Path(root)
     cutoff = as_of or date.today()
-    results = _read_csv(root / "data" / "bet_results.csv")
-    result_by_match = {
-        (str(row.get("date", "")), str(row.get("team_a", "")), str(row.get("team_b", ""))): row
-        for row in results
-    }
+    result_by_match = {}
+    for source_row in _read_csv(root / "data" / "bet_results.csv"):
+        result = normalized_result(source_row)
+        if result is not None:
+            result_by_match[result["match_id"]] = result
     snapshots = {}
     snapshot_dir = root / "data" / "draw_feature_snapshots"
     for path in sorted(snapshot_dir.glob("*.json")) if snapshot_dir.exists() else []:
@@ -227,13 +229,11 @@ def build_training_samples(root: Path = ROOT, as_of: date | None = None) -> list
 
     samples = []
     for key, captures in snapshots.items():
-        result = result_by_match.get(key[:3])
+        result = result_by_match.get(key[3])
         if result is None:
             continue
-        home_goals = _goal(result.get("home_goals"))
-        away_goals = _goal(result.get("away_goals"))
-        if home_goals is None or away_goals is None:
-            continue
+        home_goals = result["home_goals"]
+        away_goals = result["away_goals"]
         captured_times = [item["captured_time"] for item in captures]
         if len(set(captured_times)) != len(captured_times):
             continue
@@ -1134,16 +1134,6 @@ def _timestamp(value):
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=BEIJING)
-
-
-def _goal(value):
-    if isinstance(value, bool):
-        return None
-    try:
-        number = int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-    return number if number >= 0 and str(value).strip() == str(number) else None
 
 
 def _binary_outcome(value):
