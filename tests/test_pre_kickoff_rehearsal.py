@@ -54,9 +54,14 @@ def snapshot(captured_at, odds):
     minutes_to_kickoff = int(
         (datetime.fromisoformat(KICKOFF) - datetime.fromisoformat(captured_at)).total_seconds() // 60
     )
-    capture_phase = "pre_kickoff_30" if minutes_to_kickoff <= 45 else "pre_kickoff_90"
+    if minutes_to_kickoff <= 45:
+        capture_phase = "pre_kickoff_30"
+    elif minutes_to_kickoff <= 105:
+        capture_phase = "pre_kickoff_90"
+    else:
+        capture_phase = "monitoring"
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "target_date": REPORT_DATE.isoformat(),
         "captured_at": captured_at,
         "source": "sporttery",
@@ -112,6 +117,12 @@ def read_csv(path):
 
 
 class PreKickoffCrossMidnightRehearsalTest(unittest.TestCase):
+    def test_snapshot_helper_keeps_requested_phase_above_t90_window(self):
+        payload = snapshot("2026-07-19T20:00:00+08:00", "2.50")
+
+        self.assertEqual(300, payload["matches"][0]["minutes_to_kickoff"])
+        self.assertEqual("monitoring", payload["matches"][0]["capture_phase"])
+
     def test_active_rehearsal_is_ordered_bounded_idempotent_and_cross_midnight_safe(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

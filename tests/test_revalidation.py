@@ -113,7 +113,7 @@ def snapshot(*, odds="2.50", kickoff="2026-07-20T02:00:00+08:00"):
         (datetime.fromisoformat(kickoff) - datetime(2026, 7, 20, 0, 30, tzinfo=BJT)).total_seconds() // 60
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "target_date": DAY.isoformat(),
         "captured_at": "2026-07-20T00:30:00+08:00",
         "source": "sporttery",
@@ -223,7 +223,7 @@ def actual_snapshot(
     first_minutes = int((datetime.fromisoformat(first_kickoff) - captured).total_seconds() // 60)
     second_minutes = int((datetime.fromisoformat(second_kickoff) - captured).total_seconds() // 60)
     return {
-        "schema_version": 1, "target_date": DAY.isoformat(),
+        "schema_version": 2, "target_date": DAY.isoformat(),
         "captured_at": captured_at,
         "source": "sporttery", "fetch_mode": "live",
         "capture_phase": phase,
@@ -249,6 +249,16 @@ def actual_snapshot(
             },
         ],
     }
+
+
+def legacy_v1_snapshot():
+    value = actual_snapshot()
+    value["schema_version"] = 1
+    value.pop("capture_phase")
+    for match in value["matches"]:
+        match.pop("capture_phase")
+        match.pop("minutes_to_kickoff")
+    return value
 
 
 def write_actual_snapshot(root, payload=None):
@@ -873,6 +883,43 @@ class RevalidationTest(TestCase):
             )
             self.assertEqual("screened", published["candidates"][0]["state"])
             self.assertTrue(published["candidates"][0]["t90_receipt_path"])
+
+    def test_v1_live_snapshot_replays_existing_revalidation_receipt(self):
+        value = actual_candidate()
+        source = {"report_date": DAY.isoformat(), "candidates": [value]}
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "betting_config.json").write_text(
+                json.dumps({"pre_kickoff_revalidation": config()}), encoding="utf-8"
+            )
+            captured = []
+
+            def provider(_root, _target_date, _checked):
+                path = write_actual_snapshot(root, legacy_v1_snapshot())
+                captured.append(path)
+                return path
+
+            with patch("revalidation.read_valid_provisional_state", return_value=source):
+                with patch("revalidation._write_state_atomic", side_effect=OSError("disk full")):
+                    with self.assertRaisesRegex(OSError, "disk full"):
+                        run_due_revalidation(
+                            root,
+                            datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
+                            target_dates=[DAY],
+                            snapshot_provider=provider,
+                        )
+                replayed = run_due_revalidation(
+                    root,
+                    datetime(2026, 7, 20, 0, 31, tzinfo=BJT),
+                    target_dates=[DAY],
+                    snapshot_provider=lambda *_args: self.fail("replay must not refetch"),
+                )
+
+            payload = json.loads(captured[0].read_text(encoding="utf-8"))
+            self.assertEqual(1, payload["schema_version"])
+            self.assertNotIn("capture_phase", payload)
+            self.assertNotIn("minutes_to_kickoff", payload["matches"][0])
+            self.assertEqual("screened", replayed[0]["state"])
 
     def test_state_writer_ignores_stale_fixed_temp_and_cleans_interrupted_temp(self):
         value = candidate()

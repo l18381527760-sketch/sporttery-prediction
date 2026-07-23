@@ -19,7 +19,8 @@ from import_sporttery import (
 
 
 BEIJING = timezone(timedelta(hours=8))
-LIVE_SCHEMA_VERSION = 1
+LIVE_SCHEMA_V1 = 1
+LIVE_SCHEMA_VERSION = 2
 DOMESTIC_SOURCES = frozenset({"sporttery", "zgzcw"})
 LIVE_PHASES = frozenset({
     "opening", "decision", "monitoring", "pre_kickoff_90", "pre_kickoff_30"
@@ -358,14 +359,33 @@ def _filename(captured: datetime, source: str, raw: bytes) -> str:
 
 
 def _validate_payload(payload: object, target_date: date, not_after: datetime | None) -> datetime:
-    if not isinstance(payload, dict) or payload.get("schema_version") != LIVE_SCHEMA_VERSION:
+    if not isinstance(payload, dict):
         raise ValueError("live snapshot schema is invalid")
+    if payload.get("schema_version") == LIVE_SCHEMA_V1:
+        return _validate_v1_payload(payload, target_date, not_after)
+    if payload.get("schema_version") == LIVE_SCHEMA_VERSION:
+        return _validate_v2_payload(payload, target_date, not_after)
+    raise ValueError("live snapshot schema is invalid")
+
+
+def _validate_v1_payload(payload: dict, target_date: date, not_after: datetime | None) -> datetime:
+    return _validate_common_payload(payload, target_date, not_after, phase=None)
+
+
+def _validate_v2_payload(payload: dict, target_date: date, not_after: datetime | None) -> datetime:
+    return _validate_common_payload(
+        payload, target_date, not_after, phase=_capture_phase(payload.get("capture_phase"))
+    )
+
+
+def _validate_common_payload(
+    payload: dict, target_date: date, not_after: datetime | None, phase: str | None
+) -> datetime:
     if payload.get("target_date") != target_date.isoformat() or payload.get("fetch_mode") != "live":
         raise ValueError("live snapshot metadata is invalid")
     source = payload.get("source")
     if not isinstance(source, str) or source not in DOMESTIC_SOURCES:
         raise ValueError("live snapshot source is invalid")
-    phase = _capture_phase(payload.get("capture_phase"))
     captured = _aware_datetime(payload.get("captured_at"), "live snapshot captured_at").astimezone(BEIJING)
     if not_after is not None and captured > _aware_datetime(not_after, "not_after").astimezone(BEIJING):
         raise ValueError("live snapshot was captured after the allowed time")
@@ -392,17 +412,18 @@ def _validate_payload(payload: object, target_date: date, not_after: datetime | 
         kickoff = _aware_datetime(row.get("kickoff_at"), "live kickoff_at").astimezone(BEIJING)
         if kickoff <= captured:
             raise ValueError("live snapshot kickoff is not future")
-        minutes_to_kickoff = row.get("minutes_to_kickoff")
-        if (
-            not isinstance(minutes_to_kickoff, int)
-            or isinstance(minutes_to_kickoff, bool)
-            or minutes_to_kickoff < 0
-        ):
-            raise ValueError("live snapshot minutes to kickoff is invalid")
-        if minutes_to_kickoff != _minutes_to_kickoff(kickoff, captured):
-            raise ValueError("live snapshot minutes to kickoff is invalid")
-        if _capture_phase(row.get("capture_phase")) != _match_phase(phase, minutes_to_kickoff):
-            raise ValueError("live snapshot match capture phase is invalid")
+        if phase is not None:
+            minutes_to_kickoff = row.get("minutes_to_kickoff")
+            if (
+                not isinstance(minutes_to_kickoff, int)
+                or isinstance(minutes_to_kickoff, bool)
+                or minutes_to_kickoff < 0
+            ):
+                raise ValueError("live snapshot minutes to kickoff is invalid")
+            if minutes_to_kickoff != _minutes_to_kickoff(kickoff, captured):
+                raise ValueError("live snapshot minutes to kickoff is invalid")
+            if _capture_phase(row.get("capture_phase")) != _match_phase(phase, minutes_to_kickoff):
+                raise ValueError("live snapshot match capture phase is invalid")
         _required_text(row.get("sales_state"), "live market sales state")
         markets = row.get("markets")
         if not isinstance(markets, dict) or set(markets) != set(_SUPPORTED_MARKETS):
