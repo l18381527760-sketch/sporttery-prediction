@@ -577,6 +577,74 @@ class ResultProvenanceTest(unittest.TestCase):
             self.assertEqual(("1", "0", "conflict"), (row["home_goals"], row["away_goals"], row["result_status"]))
             self.assertEqual("2026-07-17T10:00:00+08:00", row["captured_at_bjt"])
 
+    def test_verified_immutable_zero_fixture_day_is_a_successful_no_op(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            existing = data / "bet_results.csv"
+            existing.write_text(
+                "date,match_id,result_status\n2026-07-15,old,finished\n",
+                encoding="utf-8",
+            )
+            before = existing.read_bytes()
+            fixture_bytes = (
+                b"date,team_a,team_b,match_id,match_num,kickoff_at\n"
+            )
+            with patch.object(import_sporttery, "DATA_DIR", data):
+                import_sporttery.publish_import_manifest(
+                    "sporttery",
+                    date(2026, 7, 16),
+                    fixture_bytes,
+                    b"{}\n",
+                    b"team,elo\n",
+                )
+
+            with (
+                patch.object(results, "ROOT", root),
+                patch.object(results, "DATA_DIR", data),
+                patch.object(results, "official_result_rows", return_value=[]),
+                patch.object(results, "fetch_zgzcw_results", return_value=[]),
+            ):
+                path = results.update_results(date(2026, 7, 16))
+
+            self.assertEqual(existing, path)
+            self.assertEqual(before, existing.read_bytes())
+
+    def test_unproven_empty_result_day_still_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            with (
+                patch.object(results, "ROOT", root),
+                patch.object(results, "DATA_DIR", data),
+                patch.object(results, "official_result_rows", return_value=[]),
+                patch.object(results, "fetch_zgzcw_results", return_value=[]),
+            ):
+                with self.assertRaises(RuntimeError):
+                    results.update_results(date(2026, 7, 16))
+
+    def test_atomic_write_failure_preserves_prior_canonical_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bet_results.csv"
+            original = b"known-good-canonical-results\n"
+            path.write_bytes(original)
+
+            with patch(
+                "update_sporttery_results.os.fsync",
+                side_effect=OSError("simulated disk failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "simulated disk failure"):
+                    results._write_rows(path, [{
+                        "date": "2026-07-16",
+                        "match_id": "1001",
+                        "result_status": "finished",
+                    }])
+
+            self.assertEqual(original, path.read_bytes())
+            self.assertEqual([], list(path.parent.glob(".bet_results.csv.*.tmp")))
+
 
 class ResultCliTest(unittest.TestCase):
     def test_reconcile_days_defaults_to_one_update_of_the_requested_date(self):

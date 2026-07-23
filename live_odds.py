@@ -32,12 +32,13 @@ def capture_live_snapshot(
     root: Path,
     target_date: date,
     captured_at: datetime,
-    phase: str = "monitoring",
     preferred_source: str | None = None,
     sporttery_fetcher=None,
     sporttery_odds_fetcher=None,
     zgzcw_match_fetcher=None,
     zgzcw_odds_fetcher=None,
+    *,
+    phase: str = "monitoring",
 ) -> Path:
     root = Path(root).resolve()
     captured = _aware_datetime(captured_at, "captured_at").astimezone(BEIJING)
@@ -312,6 +313,8 @@ def _match_phase(requested: str, minutes: int) -> str:
         return "pre_kickoff_30"
     if minutes <= 105:
         return "pre_kickoff_90"
+    if requested in {"pre_kickoff_90", "pre_kickoff_30"}:
+        return "monitoring"
     return requested
 
 
@@ -331,6 +334,7 @@ def _publish(
     matches: list[dict],
     phase: str,
 ) -> Path:
+    _require_requested_phase_evidence(phase, matches)
     payload = {
         "schema_version": LIVE_SCHEMA_VERSION,
         "target_date": target_date.isoformat(),
@@ -351,6 +355,19 @@ def _publish(
         if path.read_bytes() != raw:
             raise ValueError("conflicting live snapshot already exists")
     return path
+
+
+def _require_requested_phase_evidence(
+    phase: str,
+    matches: list[dict],
+) -> None:
+    if (
+        phase in {"pre_kickoff_90", "pre_kickoff_30"}
+        and not any(row.get("capture_phase") == phase for row in matches)
+    ):
+        raise ValueError(
+            "requested pre-kickoff phase is outside its timing window"
+        )
 
 
 def _filename(captured: datetime, source: str, raw: bytes) -> str:
@@ -439,6 +456,8 @@ def _validate_common_payload(
             raise ValueError("live snapshot eligibility is invalid")
         if any(not isinstance(eligibility[name], bool) for name in _SUPPORTED_MARKETS):
             raise ValueError("live snapshot eligibility is invalid")
+    if phase is not None:
+        _require_requested_phase_evidence(phase, matches)
     return captured
 
 

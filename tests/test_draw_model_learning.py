@@ -486,6 +486,21 @@ class DrawModelLearningTest(unittest.TestCase):
             [], build_training_samples(self.temp_root, as_of=date(2026, 1, 2))
         )
 
+    def test_training_rejects_result_captured_after_beijing_as_of_cutoff(self):
+        self._write_snapshot("future-result", match_id="1")
+        self._write_csv(
+            self.temp_root / "data" / "bet_results.csv",
+            [self._result(
+                "1",
+                captured_at_bjt="2026-01-03T00:00:00+08:00",
+            )],
+        )
+
+        self.assertEqual(
+            [],
+            build_training_samples(self.temp_root, as_of=date(2026, 1, 2)),
+        )
+
     def test_training_skips_snapshots_without_proven_prematch_timestamps(self):
         self._write_snapshot("missing.json", captured_at="", kickoff_at="2026-01-02T12:00:00Z")
         self._write_snapshot(

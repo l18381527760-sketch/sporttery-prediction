@@ -684,6 +684,8 @@ def _require_strict_phase_snapshot(
             match_phase = "pre_kickoff_30"
         elif minutes <= 105:
             match_phase = "pre_kickoff_90"
+        elif expected_phase in {"pre_kickoff_90", "pre_kickoff_30"}:
+            match_phase = "monitoring"
         else:
             match_phase = expected_phase
         if row.get("capture_phase") != match_phase:

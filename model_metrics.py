@@ -213,6 +213,7 @@ def snapshot_coverage(
     snapshot_dir: Path = SNAPSHOT_DIR,
     live_snapshot_dir: Path = LIVE_SNAPSHOT_DIR,
     target_date: date | None = None,
+    not_after: datetime | None = None,
 ) -> dict:
     records = []
     file_captures = []
@@ -229,9 +230,19 @@ def snapshot_coverage(
     files = 0
     for kind, path in sorted(set(paths), key=lambda item: str(item[1])):
         parsed = (
-            _legacy_snapshot_records(legacy_root, path, target_date)
+            _legacy_snapshot_records(
+                legacy_root,
+                path,
+                target_date,
+                not_after,
+            )
             if kind == "legacy"
-            else _live_snapshot_records(live_root, path, target_date)
+            else _live_snapshot_records(
+                live_root,
+                path,
+                target_date,
+                not_after,
+            )
         )
         if parsed is None:
             continue
@@ -258,9 +269,14 @@ def snapshot_coverage(
 
     bindings = {record["identity"] for record in valid_records}
     phase_ids = {phase: set() for phase in SNAPSHOT_PHASES}
+    phase_observations = {phase: 0 for phase in SNAPSHOT_PHASES}
     requested_ids: dict[str, set[tuple[str, str, str, str]]] = {}
     latest_by_phase: dict[str, datetime] = {}
     latest_by_requested_phase: dict[str, datetime] = {}
+    latest_by_binding_by_requested_phase: dict[
+        str,
+        dict[tuple[str, str, str, str], datetime],
+    ] = {}
     for record in valid_records:
         binding = record["identity"]
         captured = record["captured"]
@@ -268,21 +284,44 @@ def snapshot_coverage(
         requested = record["requested"]
         if phase is not None:
             phase_ids[phase].add(binding)
+            phase_observations[phase] += 1
             latest_by_phase[phase] = max(
                 latest_by_phase.get(phase, captured),
                 captured,
             )
         if requested is not None:
             requested_ids.setdefault(requested, set()).add(binding)
+            by_binding = latest_by_binding_by_requested_phase.setdefault(
+                requested,
+                {},
+            )
+            by_binding[binding] = max(
+                by_binding.get(binding, captured),
+                captured,
+            )
             latest_by_requested_phase[requested] = max(
                 latest_by_requested_phase.get(requested, captured),
                 captured,
             )
 
     return {
+        "coverage_schema_version": 2,
+        "counting_units": {
+            "files": "validated_snapshot_files",
+            "matches": "validated_match_observations",
+            "phases": "validated_match_observations",
+            "unique_fixture_bindings": "full_fixture_bindings",
+            "unique_phases": "full_fixture_bindings",
+            "requested_phases": "full_fixture_bindings",
+        },
         "files": files,
-        "matches": len(bindings),
+        "matches": len(valid_records),
         "phases": {
+            phase: phase_observations[phase]
+            for phase in SNAPSHOT_PHASES
+        },
+        "unique_fixture_bindings": len(bindings),
+        "unique_phases": {
             phase: len(phase_ids[phase])
             for phase in SNAPSHOT_PHASES
         },
@@ -303,6 +342,18 @@ def snapshot_coverage(
             phase: [list(binding) for binding in sorted(ids)]
             for phase, ids in sorted(requested_ids.items())
         },
+        "latest_by_binding_by_requested_phase": {
+            phase: [
+                {
+                    "binding": list(binding),
+                    "captured_at": captured.isoformat(),
+                }
+                for binding, captured in sorted(by_binding.items())
+            ]
+            for phase, by_binding in sorted(
+                latest_by_binding_by_requested_phase.items()
+            )
+        },
     }
 
 
@@ -310,6 +361,7 @@ def _legacy_snapshot_records(
     root: Path | None,
     path: Path,
     target_date: date | None,
+    not_after: datetime | None,
 ) -> tuple[datetime, list[dict]] | None:
     if root is None:
         return None
@@ -318,6 +370,7 @@ def _legacy_snapshot_records(
             root,
             path,
             target_date,
+            not_after,
         )
     except (OSError, ValueError):
         return None
@@ -342,6 +395,7 @@ def _live_snapshot_records(
     root: Path | None,
     path: Path,
     target_date: date | None,
+    not_after: datetime | None,
 ) -> tuple[datetime, list[dict]] | None:
     if root is None:
         return None
@@ -352,7 +406,12 @@ def _live_snapshot_records(
         except ValueError:
             return None
     try:
-        payload = read_valid_live_snapshot(root, path, candidate_date)
+        payload = read_valid_live_snapshot(
+            root,
+            path,
+            candidate_date,
+            not_after,
+        )
     except ValueError:
         return None
     captured = _snapshot_datetime(payload.get("captured_at"))
@@ -366,6 +425,12 @@ def _live_snapshot_records(
         if match_id is None:
             continue
         phase = row.get("capture_phase") if phase_bearing else None
+        effective_requested = requested
+        if (
+            requested in {"pre_kickoff_90", "pre_kickoff_30"}
+            and phase != requested
+        ):
+            effective_requested = None
         records.append(
             _snapshot_record(
                 row,
@@ -373,7 +438,7 @@ def _live_snapshot_records(
                 match_id,
                 captured,
                 phase,
-                requested,
+                effective_requested,
             )
         )
     return captured, records

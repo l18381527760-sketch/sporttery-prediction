@@ -208,7 +208,8 @@ class ModelMetricsTest(unittest.TestCase):
             )
 
         self.assertEqual(2, coverage["files"])
-        self.assertEqual(1, coverage["matches"])
+        self.assertEqual(2, coverage["matches"])
+        self.assertEqual(1, coverage["unique_fixture_bindings"])
         self.assertEqual(1, coverage["phases"]["pre_kickoff_90"])
         self.assertEqual(1, coverage["phases"]["pre_kickoff_30"])
         self.assertEqual(1, coverage["requested_phases"]["decision"])
@@ -216,6 +217,79 @@ class ModelMetricsTest(unittest.TestCase):
             [[DAY.isoformat(), "Home", "Away", "m1"]],
             coverage["bindings_by_requested_phase"]["decision"],
         )
+        self.assertEqual(2, coverage["coverage_schema_version"])
+        self.assertEqual(
+            "validated_match_observations",
+            coverage["counting_units"]["matches"],
+        )
+
+    def test_snapshot_coverage_excludes_files_captured_after_as_of(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for captured_at in (
+                datetime(2026, 7, 21, 13, 45, tzinfo=BJT),
+                datetime(2026, 7, 21, 14, 5, tzinfo=BJT),
+            ):
+                live_odds.capture_live_snapshot(
+                    root,
+                    DAY,
+                    captured_at,
+                    phase="decision",
+                    sporttery_fetcher=lambda target_date: [live_match()],
+                    sporttery_odds_fetcher=lambda match_id: live_odds_payload(),
+                )
+
+            coverage = snapshot_coverage(
+                root / "legacy",
+                root / "data" / "live_odds_snapshots",
+                DAY,
+                not_after=datetime(2026, 7, 21, 14, 0, tzinfo=BJT),
+            )
+
+        self.assertEqual(1, coverage["files"])
+        self.assertEqual(1, coverage["matches"])
+        self.assertEqual(
+            "2026-07-21T13:45:00+08:00",
+            coverage["latest_by_requested_phase"]["decision"],
+        )
+        self.assertEqual(
+            [{
+                "binding": [DAY.isoformat(), "Home", "Away", "m1"],
+                "captured_at": "2026-07-21T13:45:00+08:00",
+            }],
+            coverage["latest_by_binding_by_requested_phase"]["decision"],
+        )
+
+    def test_legacy_matches_and_phases_remain_observation_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture = {
+                "date": DAY.isoformat(),
+                "team_a": "Home",
+                "team_b": "Away",
+                "match_id": "m1",
+                "kickoff_at": "2026-07-21T18:00:00+08:00",
+            }
+            write_import_contract(root, [fixture])
+            write_legacy_snapshot(
+                root,
+                fixture,
+                datetime(2026, 7, 21, 13, 30, tzinfo=BJT),
+                "decision",
+            )
+            write_legacy_snapshot(
+                root,
+                fixture,
+                datetime(2026, 7, 21, 13, 45, tzinfo=BJT),
+                "decision",
+            )
+
+            coverage = snapshot_coverage(root / "data" / "odds_snapshots")
+
+        self.assertEqual(2, coverage["matches"])
+        self.assertEqual(2, coverage["phases"]["decision"])
+        self.assertEqual(1, coverage["unique_fixture_bindings"])
+        self.assertEqual(1, coverage["unique_phases"]["decision"])
 
     def test_valid_v1_live_snapshot_does_not_synthesize_phase_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:

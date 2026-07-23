@@ -40,6 +40,7 @@ def build_evidence_health(
         root / "data" / "odds_snapshots",
         root / "data" / "live_odds_snapshots",
         target_date,
+        not_after=now_bjt,
     )
 
     identity_rate = (
@@ -53,20 +54,29 @@ def build_evidence_health(
     if identity_rate < 1.0:
         forecast_blockers.append("identity_not_unique")
 
-    decision_count = _decision_coverage_count(
-        coverage,
-        expected_bindings,
+    decision_bindings = _decision_coverage_bindings(coverage)
+    decision_captures = _decision_capture_times(coverage)
+    covered_bindings = (
+        expected_bindings
+        & decision_bindings
+        & set(decision_captures)
     )
+    decision_count = len(covered_bindings)
     if total and decision_count < total:
         decision_blockers.append("decision_snapshot_incomplete")
-    decision_at = _aware(
-        coverage.get("latest_by_requested_phase", {}).get("decision")
-    )
-    if total and decision_at is not None and decision_at > now_bjt:
+    capture_times = [
+        decision_captures[binding]
+        for binding in covered_bindings
+    ]
+    has_future = any(captured > now_bjt for captured in capture_times)
+    if has_future:
         decision_blockers.append("decision_odds_from_future")
-    if total and (
-        decision_at is None
-        or now_bjt - decision_at > timedelta(minutes=30)
+    if total and not has_future and (
+        len(capture_times) < total
+        or any(
+            now_bjt - captured > timedelta(minutes=30)
+            for captured in capture_times
+        )
     ):
         decision_blockers.append("decision_odds_stale")
     hard_blockers = list(dict.fromkeys(
@@ -126,10 +136,9 @@ def _fixture_evidence(
     return confirmed, len(identities), bindings
 
 
-def _decision_coverage_count(
+def _decision_coverage_bindings(
     coverage: dict,
-    expected_bindings: set[tuple[str, str, str, str]],
-) -> int:
+) -> set[tuple[str, str, str, str]]:
     by_phase = coverage.get("bindings_by_requested_phase")
     raw_bindings = (
         by_phase.get("decision")
@@ -137,7 +146,7 @@ def _decision_coverage_count(
         else None
     )
     if not isinstance(raw_bindings, list):
-        return 0
+        return set()
     proven_bindings = set()
     for raw in raw_bindings:
         if (
@@ -151,7 +160,44 @@ def _decision_coverage_count(
             )
         ):
             proven_bindings.add(tuple(raw))
-    return len(expected_bindings & proven_bindings)
+    return proven_bindings
+
+
+def _decision_capture_times(
+    coverage: dict,
+) -> dict[tuple[str, str, str, str], datetime]:
+    by_phase = coverage.get("latest_by_binding_by_requested_phase")
+    raw_records = (
+        by_phase.get("decision")
+        if isinstance(by_phase, dict)
+        else None
+    )
+    if not isinstance(raw_records, list):
+        return {}
+    captures = {}
+    for raw in raw_records:
+        if not isinstance(raw, dict):
+            continue
+        binding = raw.get("binding")
+        captured = _aware(raw.get("captured_at"))
+        if (
+            not isinstance(binding, list)
+            or len(binding) != 4
+            or not all(
+                isinstance(value, str)
+                and value
+                and value == value.strip()
+                for value in binding
+            )
+            or captured is None
+        ):
+            continue
+        canonical = tuple(binding)
+        captures[canonical] = max(
+            captures.get(canonical, captured),
+            captured,
+        )
+    return captures
 
 
 def _aware(value: object) -> datetime | None:

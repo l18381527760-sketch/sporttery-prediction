@@ -70,6 +70,7 @@ jobs:
           # The revalidation workflow is the only path that ingests confirmed rows.
           python generate_betting_plan.py --settle-only
           python draw_model_learning.py --train --date "$TODAY"
+          python model_metrics.py
           REPORT_BUILD_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-settlement"
           export REPORT_BUILD_ID
           python build_site.py --date "$TODAY" --stage settlement

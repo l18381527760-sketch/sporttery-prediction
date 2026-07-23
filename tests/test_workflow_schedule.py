@@ -536,6 +536,17 @@ if name == "update_sporttery_results.py":
         self.assertIn("python generate_betting_plan.py --settle-only", settlement)
         self.assertIn("only path that ingests confirmed rows", settlement)
         self.assertNotIn("draw_alert_ledger.py", settlement)
+        ordered_commands = (
+            'python update_sporttery_results.py --date "$SETTLEMENT_DATE" --reconcile-days 7',
+            "python build_historical_features.py",
+            "python generate_betting_plan.py --settle-only",
+            'python draw_model_learning.py --train --date "$TODAY"',
+            "python model_metrics.py",
+            'python build_site.py --date "$TODAY" --stage settlement',
+            'python build_daily_image.py --date "$TODAY" --stage settlement',
+        )
+        positions = [settlement.index(command) for command in ordered_commands]
+        self.assertEqual(sorted(positions), positions)
 
     def test_email_is_manual_diagnostic_only(self):
         text = self.read_workflow("email-report.yml")

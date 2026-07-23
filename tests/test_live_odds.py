@@ -100,6 +100,104 @@ class LiveOddsTest(TestCase):
             with self.subTest(minutes=minutes):
                 self.assertEqual(phase, live_odds._match_phase("decision", minutes))
 
+    def test_pre_kickoff_request_cannot_assert_a_phase_outside_its_window(self):
+        cases = (
+            ("pre_kickoff_30", 46),
+            ("pre_kickoff_30", 106),
+            ("pre_kickoff_90", 45),
+            ("pre_kickoff_90", 106),
+        )
+        for phase, minutes in cases:
+            with self.subTest(phase=phase, minutes=minutes):
+                kickoff = NOW + timedelta(minutes=minutes)
+                with TemporaryDirectory() as tmp:
+                    with self.assertRaisesRegex(ValueError, "timing window"):
+                        live_odds.capture_live_snapshot(
+                            Path(tmp),
+                            DAY,
+                            NOW,
+                            phase=phase,
+                            sporttery_fetcher=lambda day, value=kickoff: [
+                                sporttery_match(kickoff_at=value.isoformat())
+                            ],
+                            sporttery_odds_fetcher=lambda match_id: had_odds(),
+                        )
+
+    def test_pre_kickoff_requests_accept_exact_window_boundaries(self):
+        cases = (
+            ("pre_kickoff_30", 45),
+            ("pre_kickoff_90", 46),
+            ("pre_kickoff_90", 105),
+        )
+        for phase, minutes in cases:
+            with self.subTest(phase=phase, minutes=minutes):
+                kickoff = NOW + timedelta(minutes=minutes)
+                with TemporaryDirectory() as tmp:
+                    path = live_odds.capture_live_snapshot(
+                        Path(tmp),
+                        DAY,
+                        NOW,
+                        phase=phase,
+                        sporttery_fetcher=lambda day, value=kickoff: [
+                            sporttery_match(kickoff_at=value.isoformat())
+                        ],
+                        sporttery_odds_fetcher=lambda match_id: had_odds(),
+                    )
+                    payload = live_odds.read_valid_live_snapshot(
+                        Path(tmp), path, DAY, NOW
+                    )
+                self.assertEqual(
+                    phase,
+                    payload["matches"][0]["capture_phase"],
+                )
+
+    def test_pre_kickoff_request_allows_other_matches_outside_requested_window(self):
+        with TemporaryDirectory() as tmp:
+            path = live_odds.capture_live_snapshot(
+                Path(tmp),
+                DAY,
+                NOW,
+                phase="pre_kickoff_90",
+                sporttery_fetcher=lambda day: [
+                    sporttery_match(
+                        kickoff_at=(NOW + timedelta(minutes=90)).isoformat(),
+                    ),
+                    sporttery_match(
+                        matchId="m2",
+                        matchNumStr="Sunday002",
+                        homeTeam="Alpha",
+                        awayTeam="Beta",
+                        kickoff_at=(NOW + timedelta(minutes=150)).isoformat(),
+                    ),
+                ],
+                sporttery_odds_fetcher=lambda match_id: had_odds(),
+            )
+            payload = live_odds.read_valid_live_snapshot(
+                Path(tmp), path, DAY, NOW
+            )
+
+        self.assertEqual("pre_kickoff_90", payload["capture_phase"])
+        self.assertEqual(
+            ["pre_kickoff_90", "monitoring"],
+            [match["capture_phase"] for match in payload["matches"]],
+        )
+
+    def test_fourth_positional_argument_remains_preferred_source(self):
+        with TemporaryDirectory() as tmp:
+            path = live_odds.capture_live_snapshot(
+                Path(tmp),
+                DAY,
+                NOW,
+                "sporttery",
+                lambda day: [sporttery_match()],
+                lambda match_id: had_odds(),
+            )
+            payload = live_odds.read_valid_live_snapshot(
+                Path(tmp), path, DAY, NOW
+            )
+
+        self.assertEqual("sporttery", payload["source"])
+
     def test_capture_derives_minutes_from_aware_cross_offset_timestamps(self):
         with TemporaryDirectory() as tmp:
             path = live_odds.capture_live_snapshot(

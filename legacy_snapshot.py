@@ -28,6 +28,7 @@ def read_valid_legacy_snapshot(
     root: Path,
     path: Path,
     target_date: date | None = None,
+    not_after: datetime | None = None,
 ) -> tuple[dict, datetime]:
     root = Path(root).resolve()
     snapshot_path = Path(path).resolve()
@@ -68,6 +69,11 @@ def read_valid_legacy_snapshot(
         or captured.strftime("%H%M%S") != filename.group("time")
     ):
         raise ValueError("legacy snapshot captured_at differs from filename")
+    if (
+        not_after is not None
+        and captured > _aware_boundary(not_after, "not_after")
+    ):
+        raise ValueError("legacy snapshot was captured after the allowed time")
 
     source = payload.get("source")
     if (
@@ -173,6 +179,21 @@ def _aware_beijing(value: object, name: str) -> datetime:
         or parsed.utcoffset() != timedelta(hours=8)
     ):
         raise ValueError(f"{name} must use the Beijing offset")
+    return parsed.astimezone(BEIJING)
+
+
+def _aware_boundary(value: object, name: str) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be ISO-8601") from exc
+    else:
+        raise ValueError(f"{name} must be ISO-8601")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{name} must include a timezone")
     return parsed.astimezone(BEIJING)
 
 

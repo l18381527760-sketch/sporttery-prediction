@@ -18,12 +18,19 @@ def coverage(
     decision_bindings=None,
     decision_count=2,
     decision_at="2026-07-21T13:45:00+08:00",
+    decision_captures=None,
 ):
     if decision_bindings is None:
         decision_bindings = (
             [DAY.isoformat(), "Home 1", "Away 1", "1"],
             [DAY.isoformat(), "Home 2", "Away 2", "2"],
         )
+    if decision_captures is None:
+        decision_captures = [
+            {"binding": list(binding), "captured_at": decision_at}
+            for binding in decision_bindings
+            if decision_at is not None
+        ]
     return {
         "files": 1,
         "matches": len(decision_bindings),
@@ -38,6 +45,9 @@ def coverage(
         "latest_by_requested_phase": {"decision": decision_at},
         "bindings_by_requested_phase": {
             "decision": list(decision_bindings),
+        },
+        "latest_by_binding_by_requested_phase": {
+            "decision": decision_captures,
         },
     }
 
@@ -284,6 +294,46 @@ class EvidenceHealthTest(unittest.TestCase):
             ["decision_odds_stale"],
             health["decision_blockers"],
         )
+
+    def test_each_expected_fixture_must_have_fresh_decision_evidence(self):
+        mixed = coverage(
+            decision_bindings=(
+                [DAY.isoformat(), "Home 1", "Away 1", "1"],
+                [DAY.isoformat(), "Home 2", "Away 2", "2"],
+            ),
+            decision_count=2,
+            decision_at="2026-07-21T13:50:00+08:00",
+            decision_captures=[
+                {
+                    "binding": [DAY.isoformat(), "Home 1", "Away 1", "1"],
+                    "captured_at": "2026-07-21T13:50:00+08:00",
+                },
+                {
+                    "binding": [DAY.isoformat(), "Home 2", "Away 2", "2"],
+                    "captured_at": "2026-07-21T13:20:00+08:00",
+                },
+            ],
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("evidence_health.fixture_match_ids", return_value={
+                (DAY.isoformat(), "Home 1", "Away 1"): frozenset({"1"}),
+                (DAY.isoformat(), "Home 2", "Away 2"): frozenset({"2"}),
+            }),
+            patch(
+                "evidence_health.snapshot_coverage",
+                return_value=mixed,
+            ) as snapshot_health,
+        ):
+            health = build_evidence_health(
+                Path(tmp),
+                DAY,
+                NOW,
+                zero_fixture_verified=False,
+            )
+
+        self.assertIn("decision_odds_stale", health["decision_blockers"])
+        self.assertEqual(NOW, snapshot_health.call_args.kwargs["not_after"])
 
     def test_now_must_include_a_timezone(self):
         with self.assertRaisesRegex(ValueError, "timezone"):

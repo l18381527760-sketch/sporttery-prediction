@@ -249,6 +249,9 @@ class EvidencePipelineReplayTest(unittest.TestCase):
                     "awayTeam": away,
                     "score": "1:1",
                     "source_record_id": "" if offset == 6 else f"source-{suffix}",
+                    "captured_at_bjt": (
+                        f"{target.isoformat()}T20:00:00+08:00"
+                    ),
                 }]
 
             data = root / "data"
@@ -270,6 +273,21 @@ class EvidencePipelineReplayTest(unittest.TestCase):
                     results,
                     "fetch_zgzcw_results",
                     side_effect=lambda target: fallback_by_date[target],
+                ),
+                patch.object(
+                    results,
+                    "_fallback_result_row",
+                    side_effect=lambda item: {
+                        **item,
+                        "full": results.parse_score(item["score"]),
+                        "half": None,
+                        "match_id": "",
+                        "result_source": "zgzcw",
+                        "source_record_id": item["source_record_id"],
+                        "captured_at_bjt": item["captured_at_bjt"],
+                        "score_scope": "regular_time_90",
+                        "settlement_minutes": "90",
+                    },
                 ),
             ):
                 self.assertEqual(
@@ -376,26 +394,145 @@ class EvidencePipelineReplayTest(unittest.TestCase):
                 self.assertEqual(2, payload["schema_version"])
                 self.assertEqual("live", payload["fetch_mode"])
 
-            health = build_evidence_health(
+            decision_health = build_evidence_health(
                 root,
                 REPLAY_DATE,
                 datetime(2026, 7, 21, 14, 0, tzinfo=BEIJING),
                 zero_fixture_verified=False,
             )
-            self.assertEqual(1.0, health["identity_confirmation_rate"])
-            self.assertEqual(1.0, health["result_provenance_rate"])
+            self.assertEqual(1.0, decision_health["identity_confirmation_rate"])
+            self.assertEqual(1.0, decision_health["result_provenance_rate"])
+            self.assertEqual(
+                {"decision": 1},
+                decision_health["snapshot_coverage"]["requested_phases"],
+            )
+            self.assertEqual(
+                1,
+                decision_health["snapshot_coverage"]["phases"]["decision"],
+            )
+            self.assertEqual(
+                0,
+                decision_health["snapshot_coverage"]["phases"]["pre_kickoff_90"],
+            )
+            self.assertEqual(
+                0,
+                decision_health["snapshot_coverage"]["phases"]["pre_kickoff_30"],
+            )
+            self.assertEqual([], decision_health["hard_blockers"])
+
+            post_capture_health = build_evidence_health(
+                root,
+                REPLAY_DATE,
+                datetime(2026, 7, 21, 17, 31, tzinfo=BEIJING),
+                zero_fixture_verified=False,
+            )
             self.assertEqual(
                 {
                     "decision": 1,
                     "pre_kickoff_30": 1,
                     "pre_kickoff_90": 1,
                 },
-                health["snapshot_coverage"]["requested_phases"],
+                post_capture_health["snapshot_coverage"]["requested_phases"],
             )
-            self.assertEqual(1, health["snapshot_coverage"]["phases"]["decision"])
-            self.assertEqual(1, health["snapshot_coverage"]["phases"]["pre_kickoff_90"])
-            self.assertEqual(1, health["snapshot_coverage"]["phases"]["pre_kickoff_30"])
-            self.assertEqual([], health["hard_blockers"])
+
+    def test_fallback_corroborated_by_sporttery_remains_settleable_and_trainable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            write_import_manifest_fixture(
+                root,
+                target_date=REPLAY_DATE,
+                match_id="2040580",
+                match_num="Tuesday001",
+                home="Team A",
+                away="Team B",
+                kickoff="2026-07-21T18:00:00+08:00",
+            )
+            fallback_source = [{
+                "homeTeam": "Team A",
+                "awayTeam": "Team B",
+                "score": "1:1",
+                "source_record_id": "zg-88",
+            }]
+            fallback_observation = {
+                "homeTeam": "Team A",
+                "awayTeam": "Team B",
+                "full": ("1", "1"),
+                "half": None,
+                "match_id": "",
+                "result_status": "finished",
+                "result_source": "zgzcw",
+                "source_record_id": "zg-88",
+                "captured_at_bjt": "2026-07-21T20:00:00+08:00",
+                "score_scope": "regular_time_90",
+                "settlement_minutes": "90",
+            }
+            official_observation = {
+                **fallback_observation,
+                "match_id": "2040580",
+                "result_source": "sporttery",
+                "source_record_id": "2040580",
+                "captured_at_bjt": "2026-07-21T20:05:00+08:00",
+            }
+            with (
+                patch.object(results, "ROOT", root),
+                patch.object(results, "DATA_DIR", data),
+                patch.object(
+                    results,
+                    "official_result_rows",
+                    side_effect=RuntimeError("official pending"),
+                ),
+                patch.object(
+                    results,
+                    "fetch_zgzcw_results",
+                    return_value=fallback_source,
+                ),
+                patch.object(
+                    results,
+                    "_fallback_result_row",
+                    return_value=fallback_observation,
+                ),
+            ):
+                result_path = results.update_results(REPLAY_DATE)
+            with (
+                patch.object(results, "ROOT", root),
+                patch.object(results, "DATA_DIR", data),
+                patch.object(
+                    results,
+                    "official_result_rows",
+                    return_value=[official_observation],
+                ),
+            ):
+                results.update_results(REPLAY_DATE)
+
+            with result_path.open(
+                encoding="utf-8-sig",
+                newline="",
+            ) as handle:
+                row = next(csv.DictReader(handle))
+            observations = json.loads(row["result_observations_json"])
+            self.assertEqual("sporttery", row["result_source"])
+            self.assertEqual("2040580", row["source_record_id"])
+            self.assertNotIn("|", row["captured_at_bjt"])
+            self.assertEqual(
+                {"sporttery", "zgzcw"},
+                {
+                    item["result_source"]
+                    for item in observations["observations"]
+                },
+            )
+            self.assertTrue(proven_90_minute_result(row))
+
+            with patch.object(betting_plan, "DATA_DIR", data):
+                settlement_ingress = betting_plan.load_results()
+            self.assertIn("2040580", settlement_ingress)
+
+            write_draw_feature_snapshot(root, row)
+            samples = build_training_samples(root, as_of=REPLAY_DATE)
+            self.assertEqual(["2040580"], [
+                sample["match_id"] for sample in samples
+            ])
 
     def test_real_hard_blocker_forces_actual_report_readiness_false(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -207,12 +207,22 @@ def predict_draw_probability(features: dict, *, root: Path = ROOT) -> float:
 
 def build_training_samples(root: Path = ROOT, as_of: date | None = None) -> list[dict]:
     root = Path(root)
-    cutoff = as_of or date.today()
+    cutoff = as_of or datetime.now(BEIJING).date()
+    result_cutoff = datetime.combine(
+        cutoff + timedelta(days=1),
+        time.min,
+        tzinfo=BEIJING,
+    )
     result_by_match = {}
     source_rows = _read_csv(root / "data" / "bet_results.csv")
     for source_row in resolve_result_batch(source_rows).values():
         result = normalized_result(source_row)
-        if result is not None:
+        if (
+            result is not None
+            and datetime.fromisoformat(
+                result["captured_at_bjt"]
+            ).astimezone(BEIJING) < result_cutoff
+        ):
             result_by_match[result["match_id"]] = result
     snapshots = {}
     snapshot_dir = root / "data" / "draw_feature_snapshots"

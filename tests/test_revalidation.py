@@ -208,6 +208,8 @@ def _match_phase(minutes_to_kickoff, requested_phase="monitoring"):
         return "pre_kickoff_30"
     if minutes_to_kickoff <= 105:
         return "pre_kickoff_90"
+    if requested_phase in {"pre_kickoff_90", "pre_kickoff_30"}:
+        return "monitoring"
     return requested_phase
 
 

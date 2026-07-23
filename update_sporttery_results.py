@@ -1,12 +1,21 @@
 import argparse
 import csv
+import json
+import os
+import tempfile
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
 from fixture_identity import fixture_match_ids
-from import_sporttery import ZGZCW_HAD_URL, fetch_matches, fetch_text
+from import_sporttery import (
+    ZGZCW_HAD_URL,
+    fetch_matches,
+    fetch_text,
+    read_valid_import_manifest,
+)
+from result_evidence import proven_result_provenance
 
 
 ROOT = Path(__file__).resolve().parent
@@ -24,8 +33,9 @@ BASE_FIELDS = (
     "date", "team_a", "team_b", "home_goals", "away_goals",
     "half_home_goals", "half_away_goals", "match_id", "result_status",
     "result_source", "source_record_id", "captured_at_bjt", "score_scope",
-    "settlement_minutes",
+    "settlement_minutes", "result_observations_json",
 )
+RESULT_OBSERVATIONS_SCHEMA_VERSION = 1
 
 
 def parse_score(value: str) -> tuple[str, str] | None:
@@ -156,6 +166,12 @@ def update_results(target_date: date) -> Path:
         print(f"WARNING: 竞彩网赛果接口不可用（{type(exc).__name__}），切换中国足彩网历史赛果。")
         result_rows = [_fallback_result_row(item) for item in fetch_zgzcw_results(target_date) if parse_score(item.get("score", ""))]
 
+    if not result_rows and _verified_zero_fixture_import(target_date):
+        print(
+            f"Data source: {source}; verified zero-fixture day: "
+            f"{target_date.isoformat()}"
+        )
+        return path
     if not result_rows:
         raise RuntimeError(f"{target_date.isoformat()} 暂未抓到任何已完场赛果，稍后自动重试")
 
@@ -194,6 +210,21 @@ def update_results(target_date: date) -> Path:
         already_observed = bool(existing) and _observation_seen(existing, item)
         if already_observed and prior_score:
             if existing.get("result_status") == "conflict" or tuple(full) == prior_score:
+                if (
+                    tuple(full) == prior_score
+                    and existing.get("result_status") == "finished"
+                    and not proven_result_provenance(existing)
+                ):
+                    repaired = dict(existing)
+                    repaired.update(
+                        _corroborated_provenance(
+                            existing,
+                            item,
+                            "finished",
+                            full,
+                        )
+                    )
+                    rows[row_index] = repaired
                 updated += 1
                 continue
             revised = dict(existing)
@@ -212,9 +243,22 @@ def update_results(target_date: date) -> Path:
             "half_away_goals": half[1] if half else existing.get("half_away_goals", ""),
             "match_id": match_id,
         })
-        provenance = _result_provenance(item, result_status)
+        provenance = _result_provenance(item, result_status, full)
         if existing and not already_observed:
-            provenance = _merged_provenance(existing, provenance)
+            if (
+                prior_score
+                and tuple(full) == prior_score
+                and existing.get("result_status") == "finished"
+                and result_status == "finished"
+            ):
+                provenance = _corroborated_provenance(
+                    existing,
+                    item,
+                    result_status,
+                    full,
+                )
+            else:
+                provenance = _merged_provenance(existing, provenance)
         incoming.update(provenance)
 
         score_changed = bool(prior_score) and tuple(full) != prior_score
@@ -318,6 +362,12 @@ def _observation_seen(existing: dict, item: dict) -> bool:
         return False
     if not isinstance(record_id, str) or not record_id.strip():
         return False
+    if any(
+        observation.get("result_source") == source.strip()
+        and observation.get("source_record_id") == record_id.strip()
+        for observation in _structured_observations(existing)
+    ):
+        return True
     return (
         source.strip() in _provenance_tokens(existing.get("result_source", ""))
         and record_id.strip() in _provenance_tokens(existing.get("source_record_id", ""))
@@ -359,9 +409,13 @@ def _fixture_match_ids(target_date: date) -> dict[tuple[str, str, str], set[str]
     }
 
 
-def _result_provenance(item: dict, status: str) -> dict:
+def _result_provenance(
+    item: dict,
+    status: str,
+    full: tuple[str, str] | None = None,
+) -> dict:
     source = item.get("result_source", "sporttery")
-    return {
+    provenance = {
         "result_status": status,
         "result_source": source,
         "source_record_id": item.get("source_record_id", "") or item.get("match_id", ""),
@@ -369,6 +423,148 @@ def _result_provenance(item: dict, status: str) -> dict:
         "score_scope": item.get("score_scope", ""),
         "settlement_minutes": item.get("settlement_minutes", ""),
     }
+    observation = _observation_from_provenance(provenance, full)
+    provenance["result_observations_json"] = _serialize_observations(
+        [observation] if observation is not None else []
+    )
+    return provenance
+
+
+def _corroborated_provenance(
+    existing: dict,
+    item: dict,
+    status: str,
+    full: tuple[str, str],
+) -> dict:
+    observations = _structured_observations(existing)
+    existing_observation = _observation_from_provenance(
+        existing,
+        parse_score(
+            f"{existing.get('home_goals', '')}:"
+            f"{existing.get('away_goals', '')}"
+        ),
+    )
+    if not observations and existing_observation is not None:
+        observations.append(existing_observation)
+    incoming = _result_provenance(item, status, full)
+    observations.extend(_structured_observations(incoming))
+    unique = {
+        _observation_key(observation): observation
+        for observation in observations
+    }
+    ordered = sorted(unique.values(), key=_observation_sort_key)
+    canonical = ordered[0]
+    return {
+        "result_status": status,
+        "result_source": canonical["result_source"],
+        "source_record_id": canonical["source_record_id"],
+        "captured_at_bjt": canonical["captured_at_bjt"],
+        "score_scope": canonical["score_scope"],
+        "settlement_minutes": canonical["settlement_minutes"],
+        "result_observations_json": _serialize_observations(ordered),
+    }
+
+
+def _observation_from_provenance(
+    provenance: dict,
+    full: tuple[str, str] | None,
+) -> dict | None:
+    source = provenance.get("result_source")
+    record_id = provenance.get("source_record_id")
+    captured = provenance.get("captured_at_bjt")
+    score_scope = provenance.get("score_scope")
+    minutes = str(provenance.get("settlement_minutes") or "")
+    if (
+        full is None
+        or not isinstance(source, str)
+        or source not in {"sporttery", "zgzcw"}
+        or not isinstance(record_id, str)
+        or not record_id.strip()
+        or not isinstance(captured, str)
+        or not captured.strip()
+        or score_scope != "regular_time_90"
+        or minutes != "90"
+    ):
+        return None
+    try:
+        parsed = datetime.fromisoformat(captured.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(hours=8):
+        return None
+    return {
+        "result_source": source,
+        "source_record_id": record_id.strip(),
+        "captured_at_bjt": parsed.isoformat(),
+        "home_goals": full[0],
+        "away_goals": full[1],
+        "score_scope": "regular_time_90",
+        "settlement_minutes": "90",
+    }
+
+
+def _structured_observations(row: dict) -> list[dict]:
+    raw = row.get("result_observations_json")
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != RESULT_OBSERVATIONS_SCHEMA_VERSION
+        or not isinstance(payload.get("observations"), list)
+    ):
+        return []
+    observations = []
+    for value in payload["observations"]:
+        if not isinstance(value, dict):
+            return []
+        full = parse_score(
+            f"{value.get('home_goals', '')}:{value.get('away_goals', '')}"
+        )
+        normalized = _observation_from_provenance(value, full)
+        if normalized is None or set(value) != set(normalized):
+            return []
+        observations.append(normalized)
+    return observations
+
+
+def _serialize_observations(observations: list[dict]) -> str:
+    return json.dumps(
+        {
+            "schema_version": RESULT_OBSERVATIONS_SCHEMA_VERSION,
+            "observations": observations,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _observation_key(observation: dict) -> tuple:
+    return tuple(
+        observation[field]
+        for field in (
+            "result_source",
+            "source_record_id",
+            "captured_at_bjt",
+            "home_goals",
+            "away_goals",
+            "score_scope",
+            "settlement_minutes",
+        )
+    )
+
+
+def _observation_sort_key(observation: dict) -> tuple:
+    source_order = {"sporttery": 0, "zgzcw": 1}
+    return (
+        source_order.get(observation["result_source"], 99),
+        observation["captured_at_bjt"],
+        observation["source_record_id"],
+    )
 
 
 def _joined_provenance(first: str, second: str) -> str:
@@ -386,11 +582,67 @@ def _index_rows(rows: list[dict]) -> dict[tuple[str, str, str], list[int]]:
 def _write_rows(path: Path, rows: list[dict]) -> None:
     unknown = sorted({field for row in rows for field in row} - set(BASE_FIELDS))
     fields = [*BASE_FIELDS, *unknown]
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fields})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(
+            descriptor,
+            "w",
+            encoding="utf-8-sig",
+            newline="",
+        ) as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=fields,
+                extrasaction="ignore",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({
+                    field: row.get(field, "")
+                    for field in fields
+                })
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _verified_zero_fixture_import(target_date: date) -> bool:
+    try:
+        manifest = read_valid_import_manifest(ROOT, target_date)
+        if manifest.get("source") != "sporttery":
+            return False
+        fixture_path = ROOT / manifest["fixtures"]["path"]
+        with fixture_path.open(
+            "r",
+            encoding="utf-8-sig",
+            newline="",
+        ) as handle:
+            reader = csv.DictReader(handle)
+            required = {
+                "date",
+                "team_a",
+                "team_b",
+                "match_id",
+                "match_num",
+                "kickoff_at",
+            }
+            if (
+                not reader.fieldnames
+                or not required.issubset(reader.fieldnames)
+            ):
+                return False
+            return next(reader, None) is None
+    except (KeyError, OSError, UnicodeError, csv.Error, ValueError):
+        return False
 
 
 def _reconcile_count(value: str) -> int:
