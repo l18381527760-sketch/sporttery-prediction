@@ -1,10 +1,11 @@
 import csv
 import json
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from betting_ledger import resolve_ledger_path
+from live_odds import LIVE_SCHEMA_VERSION, read_valid_live_snapshot
 from strategy_controls import fit_league_draw_calibrations
 
 
@@ -12,7 +13,16 @@ ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "output"
 DATA_DIR = ROOT / "data"
 SNAPSHOT_DIR = ROOT / "data" / "odds_snapshots"
+LIVE_SNAPSHOT_DIR = ROOT / "data" / "live_odds_snapshots"
 BEIJING = timezone(timedelta(hours=8))
+SNAPSHOT_PHASES = (
+    "opening",
+    "decision",
+    "monitoring",
+    "pre_kickoff",
+    "pre_kickoff_90",
+    "pre_kickoff_30",
+)
 
 
 def play_family(play: str) -> str:
@@ -198,28 +208,220 @@ def closing_line_value(rows: list[dict]) -> dict:
     }
 
 
-def snapshot_coverage(snapshot_dir: Path = SNAPSHOT_DIR) -> dict:
-    phases = {"opening": 0, "decision": 0, "monitoring": 0, "pre_kickoff": 0}
+def snapshot_coverage(
+    snapshot_dir: Path = SNAPSHOT_DIR,
+    live_snapshot_dir: Path = LIVE_SNAPSHOT_DIR,
+    target_date: date | None = None,
+) -> dict:
+    records = []
+    file_captures = []
+    paths = []
+    snapshot_dir = Path(snapshot_dir)
+    live_snapshot_dir = Path(live_snapshot_dir)
+    if snapshot_dir.exists():
+        paths.extend(("legacy", path) for path in snapshot_dir.glob("*.json"))
+    if live_snapshot_dir.exists():
+        paths.extend(("live", path) for path in live_snapshot_dir.rglob("*.json"))
+
+    live_root = _live_snapshot_root(live_snapshot_dir)
     files = 0
-    matches = 0
-    latest = None
-    for path in sorted(snapshot_dir.glob("*.json")) if snapshot_dir.exists() else []:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+    for kind, path in sorted(set(paths), key=lambda item: str(item[1])):
+        parsed = (
+            _legacy_snapshot_records(path, target_date)
+            if kind == "legacy"
+            else _live_snapshot_records(live_root, path, target_date)
+        )
+        if parsed is None:
             continue
-        if not isinstance(payload, dict):
-            continue
+        captured, snapshot_records = parsed
         files += 1
-        captured = str(payload.get("captured_at") or "")
-        latest = max(latest or captured, captured)
-        for match in payload.get("matches", []):
-            if not isinstance(match, dict):
-                continue
-            matches += 1
-            phase = str(match.get("capture_phase") or payload.get("capture_phase") or "monitoring")
-            phases[phase] = phases.get(phase, 0) + 1
-    return {"files": files, "matches": matches, "phases": phases, "latest": latest}
+        file_captures.append(captured)
+        records.extend(snapshot_records)
+
+    identity_labels: dict[str, set[tuple[str, str]]] = {}
+    for record in records:
+        label = record["identity"]
+        if label != ("", ""):
+            identity_labels.setdefault(record["match_id"], set()).add(label)
+    conflicts = {
+        match_id
+        for match_id, labels in identity_labels.items()
+        if len(labels) > 1
+    }
+    valid_records = [
+        record for record in records if record["match_id"] not in conflicts
+    ]
+
+    match_ids = {record["match_id"] for record in valid_records}
+    phase_ids = {phase: set() for phase in SNAPSHOT_PHASES}
+    requested_ids: dict[str, set[str]] = {}
+    latest_by_phase: dict[str, datetime] = {}
+    latest_by_requested_phase: dict[str, datetime] = {}
+    for record in valid_records:
+        match_id = record["match_id"]
+        captured = record["captured"]
+        phase = record["phase"]
+        requested = record["requested"]
+        if phase is not None:
+            phase_ids[phase].add(match_id)
+            latest_by_phase[phase] = max(
+                latest_by_phase.get(phase, captured),
+                captured,
+            )
+        if requested is not None:
+            requested_ids.setdefault(requested, set()).add(match_id)
+            latest_by_requested_phase[requested] = max(
+                latest_by_requested_phase.get(requested, captured),
+                captured,
+            )
+
+    return {
+        "files": files,
+        "matches": len(match_ids),
+        "phases": {
+            phase: len(phase_ids[phase])
+            for phase in SNAPSHOT_PHASES
+        },
+        "requested_phases": {
+            phase: len(ids)
+            for phase, ids in sorted(requested_ids.items())
+        },
+        "latest": max(file_captures).isoformat() if file_captures else None,
+        "latest_by_phase": {
+            phase: captured.isoformat()
+            for phase, captured in sorted(latest_by_phase.items())
+        },
+        "latest_by_requested_phase": {
+            phase: captured.isoformat()
+            for phase, captured in sorted(latest_by_requested_phase.items())
+        },
+        "match_ids_by_phase": {
+            phase: sorted(ids)
+            for phase, ids in phase_ids.items()
+            if ids
+        },
+        "match_ids_by_requested_phase": {
+            phase: sorted(ids)
+            for phase, ids in sorted(requested_ids.items())
+        },
+    }
+
+
+def _legacy_snapshot_records(
+    path: Path,
+    target_date: date | None,
+) -> tuple[datetime, list[dict]] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    payload_date = payload.get("target_date") or payload.get("date")
+    if (
+        not isinstance(payload_date, str)
+        or (target_date is not None and payload_date != target_date.isoformat())
+    ):
+        return None
+    captured = _snapshot_datetime(payload.get("captured_at"))
+    requested = payload.get("capture_phase") or payload.get("phase")
+    matches = payload.get("matches")
+    if (
+        captured is None
+        or requested not in SNAPSHOT_PHASES
+        or not isinstance(matches, list)
+    ):
+        return None
+    records = []
+    for row in matches:
+        if not isinstance(row, dict):
+            continue
+        match_id = _canonical_snapshot_text(row.get("match_id"))
+        phase = row.get("capture_phase") or requested
+        if match_id is None or phase not in SNAPSHOT_PHASES:
+            continue
+        records.append(
+            _snapshot_record(row, match_id, captured, phase, requested)
+        )
+    return captured, records
+
+
+def _live_snapshot_records(
+    root: Path | None,
+    path: Path,
+    target_date: date | None,
+) -> tuple[datetime, list[dict]] | None:
+    if root is None:
+        return None
+    candidate_date = target_date
+    if candidate_date is None:
+        try:
+            candidate_date = date.fromisoformat(path.parent.name)
+        except ValueError:
+            return None
+    try:
+        payload = read_valid_live_snapshot(root, path, candidate_date)
+    except ValueError:
+        return None
+    captured = _snapshot_datetime(payload.get("captured_at"))
+    if captured is None:
+        return None
+    records = []
+    phase_bearing = payload.get("schema_version") == LIVE_SCHEMA_VERSION
+    requested = payload.get("capture_phase") if phase_bearing else None
+    for row in payload["matches"]:
+        match_id = _canonical_snapshot_text(row.get("match_id"))
+        if match_id is None:
+            continue
+        phase = row.get("capture_phase") if phase_bearing else None
+        records.append(
+            _snapshot_record(row, match_id, captured, phase, requested)
+        )
+    return captured, records
+
+
+def _snapshot_record(
+    row: dict,
+    match_id: str,
+    captured: datetime,
+    phase: str | None,
+    requested: str | None,
+) -> dict:
+    team_a = _canonical_snapshot_text(row.get("team_a")) or ""
+    team_b = _canonical_snapshot_text(row.get("team_b")) or ""
+    identity = (team_a, team_b) if team_a and team_b else ("", "")
+    return {
+        "match_id": match_id,
+        "identity": identity,
+        "captured": captured,
+        "phase": phase,
+        "requested": requested,
+    }
+
+
+def _live_snapshot_root(path: Path) -> Path | None:
+    resolved = path.resolve()
+    if resolved.name != "live_odds_snapshots" or resolved.parent.name != "data":
+        return None
+    return resolved.parent.parent
+
+
+def _snapshot_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(BEIJING)
+
+
+def _canonical_snapshot_text(value: object) -> str | None:
+    if not isinstance(value, str) or not value or value != value.strip():
+        return None
+    return value
 
 
 def write_metrics() -> Path:

@@ -11,6 +11,7 @@ from PIL import Image, UnidentifiedImageError
 
 from betting_ledger import resolve_ledger_path
 from decision_bundle import read_valid_decision_bundle
+from evidence_health import build_evidence_health
 from import_sporttery import read_valid_import_manifest
 from plan_lock import read_valid_lock
 from provisional_plan import read_valid_provisional_state
@@ -523,6 +524,12 @@ def publish_status(
         expected_report_stage=phase,
         expected_build_id=build_id,
     )
+    health = build_evidence_health(
+        root,
+        report_date,
+        generated_at,
+        zero_fixture_verified=verified_zero_fixture_day(root, report_date),
+    )
     status = _previous_status(root, report_date)
     forecast_ready = all(
         state[key]
@@ -530,8 +537,11 @@ def publish_status(
             "source_ready", "fixtures_ready", "import_manifest_ready", "odds_ready",
             "official_odds_complete", "predictions_ready", "site_ready", "image_ready",
         )
+    ) and not health["forecast_blockers"]
+    snapshot_ready = (
+        state["decision_snapshot_ready"]
+        and not health["decision_blockers"]
     )
-    snapshot_ready = state["decision_snapshot_ready"]
     plan_ready = state["plan_lock_ready"] and state["plan_csv_ready"]
     initial_report_ready = all(
         state[key]
@@ -539,7 +549,7 @@ def publish_status(
             "decision_bundle_ready", "provisional_plan_ready", "provisional_shadow_ready",
             "provisional_state_ready", "site_ready", "image_ready",
         )
-    )
+    ) and not health["decision_blockers"]
     if phase == "provisional" and initial_report_ready:
         from revalidation_reporting import publish_revalidation_report
 
@@ -641,6 +651,7 @@ def publish_status(
                 state["provisional_plan_count"] + state["provisional_shadow_count"]
             ),
             "data_quality": _data_quality(state),
+            "evidence_health": health,
             "source_status": state["source_status"],
         }
     )
