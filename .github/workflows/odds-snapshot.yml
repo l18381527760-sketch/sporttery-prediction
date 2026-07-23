@@ -33,6 +33,7 @@ jobs:
 
       - name: Capture live monitoring snapshot
         run: |
+          set -euo pipefail
           TARGET_DATE="$(date +%F)"
           python capture_odds_snapshot.py --date "$TARGET_DATE" --phase monitoring --live
 
@@ -40,4 +41,4 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Capture Sporttery odds snapshot"
-          file_pattern: "data/odds_snapshots"
+          file_pattern: "data/live_odds_snapshots"

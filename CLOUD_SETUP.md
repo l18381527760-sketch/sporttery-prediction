@@ -39,6 +39,20 @@ Apps Script 需要一个 fine-grained token 来调用工作流。它只能授权
 
 现有 cron 定时运行与 Apps Script dispatch 彼此独立。Apps Script 在 Pages 更新前可能仍读到旧状态，于是两者可能为同一阶段各入队一次，出现额外的排队运行。它们共享并发队列；不可变导入清单、初选 generation 指针、单调候选状态和幂等账本写入保证重复运行不会把旧赔率或 provisional 金额当成已确认模拟投入，但会增加排队时间。不要删除现有 cron。
 
+Evidence workflow contract: `--reconcile-days 7` runs oldest-first before
+historical features, proven settlement, metrics, and shadow training. New live
+captures use strict live snapshot schema 2 with canonical immutable filenames;
+decision, T-90, and T-30 remain separate phase evidence. Required steps fail
+before status publication, commit, or deployment when an upstream contract
+fails.
+
+GitHub Actions retries do not duplicate canonical results, simulated ledger
+entries, or mail. Apps Script remains the sole email sender in the Beijing
+14:00-18:00 window; `.github/workflows/email-report.yml` remains disabled.
+
+Phase 1 acceptance requires seven successful daily production runs before Project 2 planning.
+Broader 30-day evidence maturity remains required before model or profitability claims.
+
 ## 赛前复核契约
 
 14:00 初选是 provisional，provisional 金额不计入盈亏。系统按候选最早开赛时间执行 T-90 和 T-30 两个窗口；最终金额只能保持或降低，错过窗口必须取消。复核允许跨北京时间午夜，`target_date` 始终使用初选业务日，`now_bjt` 必须是含 `+08:00` 的时区感知时间。

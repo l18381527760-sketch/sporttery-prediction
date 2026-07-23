@@ -851,6 +851,60 @@ class ValueV4PlanIntegrationTest(unittest.TestCase):
             strategy.main()
         settle_mock.assert_not_called()
 
+    def test_load_results_removes_conflicts_and_preserves_unique_nonfinished_rows(self):
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder)
+            exact = {
+                "match_id": "exact",
+                "result_status": "finished",
+                "result_source": "sporttery",
+                "source_record_id": "result-exact",
+                "captured_at_bjt": "2026-07-19T09:00:00+08:00",
+                "score_scope": "regular_time_90",
+                "settlement_minutes": "90",
+                "home_goals": "2",
+                "away_goals": "1",
+            }
+            conflict = {**exact, "match_id": "conflict"}
+            refund = {
+                **exact,
+                "match_id": "refund",
+                "result_status": "refunded",
+                "source_record_id": "refund-record",
+                "score_scope": "",
+                "settlement_minutes": "",
+                "home_goals": "",
+                "away_goals": "",
+            }
+            invalid = {
+                **refund,
+                "match_id": "invalid",
+                "result_status": "invalid",
+                "source_record_id": "invalid-record",
+            }
+            rows = [
+                exact,
+                dict(exact),
+                conflict,
+                {**conflict, "source_record_id": "changed-record"},
+                refund,
+                invalid,
+            ]
+            with (data / "bet_results.csv").open(
+                "w", encoding="utf-8-sig", newline=""
+            ) as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(exact))
+                writer.writeheader()
+                writer.writerows(rows)
+
+            with patch.object(strategy, "DATA_DIR", data):
+                results = strategy.load_results()
+
+        self.assertEqual({"exact", "refund", "invalid"}, set(results))
+        self.assertEqual("finished", results["exact"]["result_status"])
+        self.assertEqual("refunded", results["refund"]["result_status"])
+        self.assertEqual("invalid", results["invalid"]["result_status"])
+
     def test_settle_only_delegates_to_ledger_without_generation(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

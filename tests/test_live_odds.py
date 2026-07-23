@@ -1,4 +1,5 @@
 import csv
+import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -35,6 +36,21 @@ def had_odds(**overrides):
     return odds
 
 
+def write_live_payload(root: Path, payload: dict) -> Path:
+    raw = live_odds._canonical_json_bytes(payload)
+    captured = datetime.fromisoformat(payload["captured_at"])
+    path = (
+        root
+        / "data"
+        / "live_odds_snapshots"
+        / payload["target_date"]
+        / live_odds._filename(captured, payload["source"], raw)
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return path
+
+
 class LiveOddsTest(TestCase):
     def test_capture_calls_live_sporttery_endpoints_and_never_manifest_odds(self):
         matches = [sporttery_match()]
@@ -49,8 +65,228 @@ class LiveOddsTest(TestCase):
             )
             payload = live_odds.read_valid_live_snapshot(Path(tmp), path, DAY, NOW)
         self.assertEqual("live", payload["fetch_mode"])
+        self.assertEqual(2, payload["schema_version"])
         self.assertEqual("sporttery", payload["source"])
         self.assertEqual("2.80", payload["matches"][0]["markets"]["had"]["h"])
+
+    def test_capture_records_requested_and_per_match_phases(self):
+        with TemporaryDirectory() as tmp:
+            path = live_odds.capture_live_snapshot(
+                Path(tmp),
+                DAY,
+                datetime(2026, 7, 19, 16, 45, tzinfo=BJT),
+                phase="decision",
+                sporttery_fetcher=lambda day: [
+                    sporttery_match(kickoff_at="2026-07-19T18:00:00+08:00")
+                ],
+                sporttery_odds_fetcher=lambda match_id: had_odds(),
+            )
+            payload = live_odds.read_valid_live_snapshot(
+                Path(tmp), path, DAY, datetime(2026, 7, 19, 16, 46, tzinfo=BJT)
+            )
+
+        self.assertEqual("decision", payload["capture_phase"])
+        self.assertEqual("pre_kickoff_90", payload["matches"][0]["capture_phase"])
+        self.assertEqual(75, payload["matches"][0]["minutes_to_kickoff"])
+
+    def test_match_phase_uses_each_required_boundary(self):
+        expected = {
+            45: "pre_kickoff_30",
+            46: "pre_kickoff_90",
+            105: "pre_kickoff_90",
+            106: "decision",
+        }
+        for minutes, phase in expected.items():
+            with self.subTest(minutes=minutes):
+                self.assertEqual(phase, live_odds._match_phase("decision", minutes))
+
+    def test_pre_kickoff_request_cannot_assert_a_phase_outside_its_window(self):
+        cases = (
+            ("pre_kickoff_30", 46),
+            ("pre_kickoff_30", 106),
+            ("pre_kickoff_90", 45),
+            ("pre_kickoff_90", 106),
+        )
+        for phase, minutes in cases:
+            with self.subTest(phase=phase, minutes=minutes):
+                kickoff = NOW + timedelta(minutes=minutes)
+                with TemporaryDirectory() as tmp:
+                    with self.assertRaisesRegex(ValueError, "timing window"):
+                        live_odds.capture_live_snapshot(
+                            Path(tmp),
+                            DAY,
+                            NOW,
+                            phase=phase,
+                            sporttery_fetcher=lambda day, value=kickoff: [
+                                sporttery_match(kickoff_at=value.isoformat())
+                            ],
+                            sporttery_odds_fetcher=lambda match_id: had_odds(),
+                        )
+
+    def test_pre_kickoff_requests_accept_exact_window_boundaries(self):
+        cases = (
+            ("pre_kickoff_30", 45),
+            ("pre_kickoff_90", 46),
+            ("pre_kickoff_90", 105),
+        )
+        for phase, minutes in cases:
+            with self.subTest(phase=phase, minutes=minutes):
+                kickoff = NOW + timedelta(minutes=minutes)
+                with TemporaryDirectory() as tmp:
+                    path = live_odds.capture_live_snapshot(
+                        Path(tmp),
+                        DAY,
+                        NOW,
+                        phase=phase,
+                        sporttery_fetcher=lambda day, value=kickoff: [
+                            sporttery_match(kickoff_at=value.isoformat())
+                        ],
+                        sporttery_odds_fetcher=lambda match_id: had_odds(),
+                    )
+                    payload = live_odds.read_valid_live_snapshot(
+                        Path(tmp), path, DAY, NOW
+                    )
+                self.assertEqual(
+                    phase,
+                    payload["matches"][0]["capture_phase"],
+                )
+
+    def test_pre_kickoff_request_allows_other_matches_outside_requested_window(self):
+        with TemporaryDirectory() as tmp:
+            path = live_odds.capture_live_snapshot(
+                Path(tmp),
+                DAY,
+                NOW,
+                phase="pre_kickoff_90",
+                sporttery_fetcher=lambda day: [
+                    sporttery_match(
+                        kickoff_at=(NOW + timedelta(minutes=90)).isoformat(),
+                    ),
+                    sporttery_match(
+                        matchId="m2",
+                        matchNumStr="Sunday002",
+                        homeTeam="Alpha",
+                        awayTeam="Beta",
+                        kickoff_at=(NOW + timedelta(minutes=150)).isoformat(),
+                    ),
+                ],
+                sporttery_odds_fetcher=lambda match_id: had_odds(),
+            )
+            payload = live_odds.read_valid_live_snapshot(
+                Path(tmp), path, DAY, NOW
+            )
+
+        self.assertEqual("pre_kickoff_90", payload["capture_phase"])
+        self.assertEqual(
+            ["pre_kickoff_90", "monitoring"],
+            [match["capture_phase"] for match in payload["matches"]],
+        )
+
+    def test_fourth_positional_argument_remains_preferred_source(self):
+        with TemporaryDirectory() as tmp:
+            path = live_odds.capture_live_snapshot(
+                Path(tmp),
+                DAY,
+                NOW,
+                "sporttery",
+                lambda day: [sporttery_match()],
+                lambda match_id: had_odds(),
+            )
+            payload = live_odds.read_valid_live_snapshot(
+                Path(tmp), path, DAY, NOW
+            )
+
+        self.assertEqual("sporttery", payload["source"])
+
+    def test_capture_derives_minutes_from_aware_cross_offset_timestamps(self):
+        with TemporaryDirectory() as tmp:
+            path = live_odds.capture_live_snapshot(
+                Path(tmp),
+                DAY,
+                datetime(2026, 7, 19, 0, 0, tzinfo=timezone(timedelta(hours=-7))),
+                phase="decision",
+                sporttery_fetcher=lambda day: [
+                    sporttery_match(kickoff_at="2026-07-19T10:15:00+02:00")
+                ],
+                sporttery_odds_fetcher=lambda match_id: had_odds(),
+            )
+            payload = live_odds.read_valid_live_snapshot(
+                Path(tmp),
+                path,
+                DAY,
+                datetime(2026, 7, 19, 0, 1, tzinfo=timezone(timedelta(hours=-7))),
+            )
+
+        self.assertEqual(75, payload["matches"][0]["minutes_to_kickoff"])
+        self.assertEqual("pre_kickoff_90", payload["matches"][0]["capture_phase"])
+
+    def test_v1_snapshot_remains_valid_without_phase_evidence(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v2_path = live_odds.capture_live_snapshot(
+                root,
+                DAY,
+                NOW,
+                sporttery_fetcher=lambda day: [sporttery_match()],
+                sporttery_odds_fetcher=lambda match_id: had_odds(),
+            )
+            payload = json.loads(v2_path.read_text(encoding="utf-8"))
+            payload["schema_version"] = 1
+            payload.pop("capture_phase")
+            for match in payload["matches"]:
+                match.pop("capture_phase")
+                match.pop("minutes_to_kickoff")
+            v1_path = write_live_payload(root, payload)
+            validated = live_odds.read_valid_live_snapshot(root, v1_path, DAY, NOW)
+
+        self.assertEqual(1, validated["schema_version"])
+        self.assertNotIn("capture_phase", validated)
+        self.assertNotIn("minutes_to_kickoff", validated["matches"][0])
+
+    def test_v2_validation_rejects_invalid_phase_and_minute_evidence(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = live_odds.capture_live_snapshot(
+                root,
+                DAY,
+                datetime(2026, 7, 19, 16, 45, tzinfo=BJT),
+                phase="decision",
+                sporttery_fetcher=lambda day: [
+                    sporttery_match(kickoff_at="2026-07-19T18:00:00+08:00")
+                ],
+                sporttery_odds_fetcher=lambda match_id: had_odds(),
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            mutations = {
+                "missing snapshot phase": lambda value: value.pop("capture_phase"),
+                "invalid snapshot phase": lambda value: value.update(capture_phase="invalid"),
+                "missing match phase": lambda value: value["matches"][0].pop("capture_phase"),
+                "invalid match phase": lambda value: value["matches"][0].update(capture_phase="invalid"),
+                "boolean minutes": lambda value: value["matches"][0].update(minutes_to_kickoff=True),
+                "negative minutes": lambda value: value["matches"][0].update(minutes_to_kickoff=-1),
+                "fractional minutes": lambda value: value["matches"][0].update(minutes_to_kickoff=75.5),
+                "text minutes": lambda value: value["matches"][0].update(minutes_to_kickoff="75"),
+                "recomputed minute mismatch": lambda value: value["matches"][0].update(minutes_to_kickoff=74),
+                "phase minute mismatch": lambda value: value["matches"][0].update(capture_phase="decision"),
+            }
+            for label, mutate in mutations.items():
+                with self.subTest(label=label):
+                    changed = json.loads(json.dumps(payload))
+                    mutate(changed)
+                    invalid_path = write_live_payload(root, changed)
+                    with self.assertRaisesRegex(ValueError, "phase|minutes"):
+                        live_odds.read_valid_live_snapshot(root, invalid_path, DAY, NOW)
+
+    def test_capture_rejects_invalid_phase_before_fetching(self):
+        with TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "capture phase"):
+                live_odds.capture_live_snapshot(
+                    Path(tmp),
+                    DAY,
+                    NOW,
+                    phase="unsupported",
+                    sporttery_fetcher=lambda day: self.fail("live source must not fetch"),
+                )
 
     def test_zgzcw_fallback_maps_exact_fixture_identity_and_market(self):
         with TemporaryDirectory() as tmp:

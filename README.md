@@ -102,6 +102,19 @@ python build_daily_image.py
 | T-90 / T-30 | `pre-kickoff-revalidation.yml` 按候选最早开赛时间采集新的国内赔率，完成筛查、确认或取消，并发布按业务日绑定的不可变更新图片。 |
 | 每 30 分钟 | 保存仍未开赛比赛的官方赔率快照；开赛前一小时内自动标记为临场快照，供 CLV 与复盘使用。 |
 
+Evidence workflow contract: `--reconcile-days 7` runs oldest-first before
+historical features, proven settlement, metrics, and shadow training. New live
+captures use strict live snapshot schema 2 with canonical immutable filenames;
+decision, T-90, and T-30 remain separate phase evidence. Required steps fail
+before status publication or commit when any upstream contract fails.
+
+GitHub Actions retries do not duplicate canonical results, simulated ledger
+entries, or mail. Apps Script remains the sole email sender in the Beijing
+14:00-18:00 window; GitHub Actions only generates and publishes artifacts.
+
+Phase 1 acceptance requires seven successful daily production runs before Project 2 planning.
+Broader 30-day evidence maturity remains required before model or profitability claims.
+
 部署后，Apps Script 是唯一的邮件发送方，`.github/workflows/email-report.yml` 在 GitHub Actions 中保持 disabled。GitHub Actions 负责生成和发布报告，Apps Script 负责调度、轮询、校验和发信；两边都在云端运行，所以电脑可以关机。云端设置请阅读 [CLOUD_SETUP.md](CLOUD_SETUP.md)，Apps Script 的逐步部署与恢复请阅读 [apps-script/README.md](apps-script/README.md)。不需要 Google 日历。
 
 现有工作流 cron 与 Apps Script dispatch 彼此独立，可能在 Pages 尚未更新时为同一阶段各排队一次；共享并发队列、写入前方案锁检查和同日幂等状态使额外运行保持安全。仓库中的 `web/` 是 Pages artifact 根目录，所以公开状态和图片 URL 不包含 `/web/`。

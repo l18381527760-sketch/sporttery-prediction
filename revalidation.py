@@ -30,6 +30,10 @@ BEIJING = timezone(timedelta(hours=8))
 STATE_SCHEMA_VERSION = 1
 TERMINAL_STATES = frozenset({"confirmed", "cancelled"})
 LEDGER_STATUSES = frozenset({"not_applicable", "pending", "ingested"})
+STAGE_CAPTURE_PHASE = {
+    "t90": "pre_kickoff_90",
+    "t30": "pre_kickoff_30",
+}
 ALLOWED_TRANSITIONS = {
     ("provisional", "t90", "pass"): "screened",
     ("provisional", "t90", "cancel"): "cancelled",
@@ -94,6 +98,26 @@ def evaluate_candidate(
     remaining_caps: dict | None = None,
 ) -> dict:
     """Evaluate an immutable candidate without publishing state or touching a ledger."""
+    return _evaluate_candidate(
+        candidate,
+        snapshot,
+        stage,
+        checked_at,
+        config,
+        remaining_caps,
+    )
+
+
+def _evaluate_candidate(
+    candidate: dict,
+    snapshot: dict,
+    stage: str,
+    checked_at: datetime,
+    config: dict,
+    remaining_caps: dict | None = None,
+    *,
+    allow_existing_v1_receipt: bool = False,
+) -> dict:
     checked = _aware(checked_at, "checked_at")
     validated = _validate_candidate(candidate)
     settings = _validate_config(config)
@@ -102,6 +126,16 @@ def evaluate_candidate(
     state = validated.get("_runtime_state", validated["state"])
     if (state, stage) not in {("provisional", "t90"), ("screened", "t30")}:
         raise ValueError("revalidation stage is not allowed for candidate state")
+    if not (
+        allow_existing_v1_receipt
+        and isinstance(snapshot, dict)
+        and snapshot.get("schema_version") == 1
+    ):
+        _require_strict_phase_snapshot(
+            snapshot,
+            stage,
+            validated["report_date"],
+        )
 
     evaluation = _evaluate_legs(validated, snapshot, checked)
     probability = _decimal(validated["conservative_probability"], "conservative_probability")
@@ -216,13 +250,38 @@ def run_due_revalidation(
             else:
                 needs_evaluation.append((effective, old_entry, stage))
 
-        if needs_evaluation:
-            snapshot_path = snapshot_provider(root, target_date, checked)
-            snapshot = read_valid_live_snapshot(root, snapshot_path, target_date, checked)
-            snapshot_rel = _relative_path(root, Path(snapshot_path))
-            snapshot_sha = _sha256_bytes(_canonical_bytes(snapshot))
+        snapshots_by_stage = {}
+        for _effective, _old_entry, stage in needs_evaluation:
+            actual_stage = "t90" if stage.startswith("t90") else "t30"
+            if actual_stage in snapshots_by_stage:
+                continue
+            phase = STAGE_CAPTURE_PHASE[actual_stage]
+            snapshot_path = snapshot_provider(
+                root,
+                target_date,
+                checked,
+                phase=phase,
+            )
+            snapshot = read_valid_live_snapshot(
+                root,
+                snapshot_path,
+                target_date,
+                checked,
+            )
+            _require_strict_phase_snapshot(
+                snapshot,
+                actual_stage,
+                target_date.isoformat(),
+            )
+            snapshots_by_stage[actual_stage] = (
+                snapshot,
+                _relative_path(root, Path(snapshot_path)),
+                _sha256_bytes(_canonical_bytes(snapshot)),
+            )
         for effective, old_entry, stage in needs_evaluation:
             entry = entries_by_id[effective["candidate_id"]]
+            actual_stage = "t90" if stage.startswith("t90") else "t30"
+            snapshot, snapshot_rel, snapshot_sha = snapshots_by_stage[actual_stage]
             if stage.endswith("_window_missed"):
                 result = _missed_window_result(effective, stage, checked)
             else:
@@ -480,7 +539,15 @@ def _replay_receipt_result(
         result = _missed_window_result(candidate, expected_due, checked_at)
     else:
         caps = {"previous_stake": previous_entry.get("last_stake", candidate["provisional_stake"])}
-        result = evaluate_candidate(candidate, snapshot, stage, checked_at, settings, caps)
+        result = _evaluate_candidate(
+            candidate,
+            snapshot,
+            stage,
+            checked_at,
+            settings,
+            caps,
+            allow_existing_v1_receipt=True,
+        )
     expected_receipt = result["receipt"]
     expected_receipt["live_odds_snapshot_path"] = receipt["live_odds_snapshot_path"]
     expected_receipt["live_odds_snapshot_sha256"] = receipt["live_odds_snapshot_sha256"]
@@ -588,6 +655,41 @@ def _evaluate_legs(candidate: dict, snapshot: dict, checked: datetime) -> dict:
             return {"reason_code": "odds_invalid"}
         odds *= odd
     return {"odds": odds}
+
+
+def _require_strict_phase_snapshot(
+    snapshot: object,
+    stage: str,
+    report_date: str,
+) -> None:
+    expected_phase = STAGE_CAPTURE_PHASE.get(stage)
+    if expected_phase is None:
+        raise ValueError("revalidation stage is invalid")
+    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != 2:
+        raise ValueError("new revalidation transitions require live snapshot schema 2")
+    if snapshot.get("target_date") != report_date:
+        raise ValueError("revalidation snapshot target date is invalid")
+    if snapshot.get("capture_phase") != expected_phase:
+        raise ValueError("revalidation snapshot requested phase is invalid")
+    matches = snapshot.get("matches")
+    if not isinstance(matches, list):
+        raise ValueError("revalidation snapshot matches are invalid")
+    for row in matches:
+        if not isinstance(row, dict):
+            raise ValueError("revalidation snapshot match is invalid")
+        minutes = row.get("minutes_to_kickoff")
+        if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes < 0:
+            raise ValueError("revalidation snapshot match phase minutes are invalid")
+        if minutes <= 45:
+            match_phase = "pre_kickoff_30"
+        elif minutes <= 105:
+            match_phase = "pre_kickoff_90"
+        elif expected_phase in {"pre_kickoff_90", "pre_kickoff_30"}:
+            match_phase = "monitoring"
+        else:
+            match_phase = expected_phase
+        if row.get("capture_phase") != match_phase:
+            raise ValueError("revalidation snapshot match phase is invalid")
 
 
 def _fixture_matches(leg: dict, row: dict) -> bool:

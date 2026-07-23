@@ -11,7 +11,9 @@ from PIL import Image, UnidentifiedImageError
 
 from betting_ledger import resolve_ledger_path
 from decision_bundle import read_valid_decision_bundle
+from evidence_health import build_evidence_health
 from import_sporttery import read_valid_import_manifest
+from legacy_snapshot import read_valid_legacy_snapshot
 from plan_lock import read_valid_lock
 from provisional_plan import read_valid_provisional_state
 
@@ -209,23 +211,15 @@ def _matching_decision_snapshot(root: Path, report_date: date) -> tuple[bool, st
     suffix = "-decision.json"
     candidates = sorted((root / "data" / "odds_snapshots").glob(f"{prefix}*{suffix}"))
     for path in reversed(candidates):
-        timestamp = path.name.removeprefix(prefix).removesuffix(suffix)
         try:
-            captured_at = datetime.strptime(timestamp, "%H%M%S").replace(
-                year=report_date.year,
-                month=report_date.month,
-                day=report_date.day,
-                tzinfo=BEIJING,
+            payload, captured_at = read_valid_legacy_snapshot(
+                root,
+                path,
+                report_date,
             )
-        except ValueError:
+        except (OSError, ValueError):
             continue
-        payload = _read_json(path)
-        if isinstance(payload, dict) and (
-            (payload.get("target_date") or payload.get("date")) == report_date.isoformat()
-            and (payload.get("capture_phase") or payload.get("phase")) == "decision"
-            and isinstance(payload.get("matches"), list)
-            and payload["matches"]
-        ):
+        if payload["capture_phase"] == "decision":
             return True, captured_at.isoformat()
     return False, ""
 
@@ -523,6 +517,12 @@ def publish_status(
         expected_report_stage=phase,
         expected_build_id=build_id,
     )
+    health = build_evidence_health(
+        root,
+        report_date,
+        generated_at,
+        zero_fixture_verified=verified_zero_fixture_day(root, report_date),
+    )
     status = _previous_status(root, report_date)
     forecast_ready = all(
         state[key]
@@ -530,8 +530,11 @@ def publish_status(
             "source_ready", "fixtures_ready", "import_manifest_ready", "odds_ready",
             "official_odds_complete", "predictions_ready", "site_ready", "image_ready",
         )
+    ) and not health["forecast_blockers"]
+    snapshot_ready = (
+        state["decision_snapshot_ready"]
+        and not health["decision_blockers"]
     )
-    snapshot_ready = state["decision_snapshot_ready"]
     plan_ready = state["plan_lock_ready"] and state["plan_csv_ready"]
     initial_report_ready = all(
         state[key]
@@ -539,7 +542,7 @@ def publish_status(
             "decision_bundle_ready", "provisional_plan_ready", "provisional_shadow_ready",
             "provisional_state_ready", "site_ready", "image_ready",
         )
-    )
+    ) and not health["decision_blockers"]
     if phase == "provisional" and initial_report_ready:
         from revalidation_reporting import publish_revalidation_report
 
@@ -641,6 +644,7 @@ def publish_status(
                 state["provisional_plan_count"] + state["provisional_shadow_count"]
             ),
             "data_quality": _data_quality(state),
+            "evidence_health": health,
             "source_status": state["source_status"],
         }
     )

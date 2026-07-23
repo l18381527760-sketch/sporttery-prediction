@@ -55,6 +55,7 @@ jobs:
         env:
           REQUESTED_TARGET_DATE: ${{ inputs.target_date }}
         run: |
+          set -euo pipefail
           TARGET_DATE="$REQUESTED_TARGET_DATE"
           TARGET_DATE="${TARGET_DATE:-$(date +%F)}"
           NORMALIZED_TARGET_DATE="$(date -d "$TARGET_DATE" +%F)"
@@ -64,11 +65,12 @@ jobs:
           fi
           TODAY="$TARGET_DATE"
           SETTLEMENT_DATE="$(date -d "$TODAY - 1 day" +%F)"
-          python update_sporttery_results.py --date "$SETTLEMENT_DATE"
+          python update_sporttery_results.py --date "$SETTLEMENT_DATE" --reconcile-days 7
           python build_historical_features.py
           # The revalidation workflow is the only path that ingests confirmed rows.
           python generate_betting_plan.py --settle-only
           python draw_model_learning.py --train --date "$TODAY"
+          python model_metrics.py
           REPORT_BUILD_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-settlement"
           export REPORT_BUILD_ID
           python build_site.py --date "$TODAY" --stage settlement

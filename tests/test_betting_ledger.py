@@ -40,6 +40,7 @@ from tests.test_revalidation import (
     production_task2_bundle,
     production_value_v4_row,
     production_value_v4_parlay_row,
+    requested_snapshot_provider,
     write_actual_snapshot,
 )
 
@@ -244,8 +245,9 @@ class BettingLedgerTest(unittest.TestCase):
         )
         bundle = production_task2_bundle()
         if any(row.get("market_type") == "parlay" for _route, row in routed_rows):
-            initial_snapshot = actual_snapshot()
-            initial_snapshot["captured_at"] = "2026-07-20T00:00:00+08:00"
+            initial_snapshot = actual_snapshot(
+                captured_at="2026-07-20T00:00:00+08:00", phase="decision"
+            )
             bundle["decision_snapshot"]["payload"] = initial_snapshot
             bundle["decision_snapshot"]["captured_at_bjt"] = initial_snapshot[
                 "captured_at"
@@ -270,17 +272,20 @@ class BettingLedgerTest(unittest.TestCase):
                 self.root,
                 datetime(2026, 7, 20, 0, 30, tzinfo=BJT),
                 target_dates=[REVALIDATION_DAY],
-                snapshot_provider=lambda *_args: write_actual_snapshot(self.root),
+                snapshot_provider=requested_snapshot_provider,
             )
-            final_snapshot = actual_snapshot()
-            final_snapshot["captured_at"] = "2026-07-20T01:35:00+08:00"
+            final_snapshot = actual_snapshot(
+                captured_at="2026-07-20T01:35:00+08:00",
+                phase="pre_kickoff_30",
+            )
             final_snapshot["matches"][0]["markets"]["had"]["h"] = final_odds
             run_due_revalidation(
                 self.root,
                 datetime(2026, 7, 20, 1, 35, tzinfo=BJT),
                 target_dates=[REVALIDATION_DAY],
-                snapshot_provider=lambda *_args: write_actual_snapshot(
-                    self.root, final_snapshot
+                snapshot_provider=lambda *_args, **_kwargs: write_actual_snapshot(
+                    self.root,
+                    final_snapshot,
                 ),
             )
         state = json.loads(
@@ -2303,6 +2308,8 @@ class SettlementTest(unittest.TestCase):
             {**zgzcw, "result_source": "external"},
             {**zgzcw, "source_record_id": ""},
             {**zgzcw, "captured_at_bjt": "2026-07-17T11:00:00"},
+            {**zgzcw, "captured_at_bjt": "2026-07-17T03:00:00+00:00"},
+            {**zgzcw, "captured_at_bjt": "2026-07-17T12:00:00+09:00"},
             {**zgzcw, "score_scope": "extra_time"},
             {**zgzcw, "score_scope": ""},
             {**zgzcw, "settlement_minutes": "120"},
@@ -2314,6 +2321,27 @@ class SettlementTest(unittest.TestCase):
                     pending,
                     settle_pending(pending, {"1001": result}, SETTLED_AT),
                 )
+
+        unproven_refund = {
+            "match_id": "1001",
+            "result_status": "refunded",
+            "result_source": "external",
+            "source_record_id": "refund-1001",
+            "captured_at_bjt": "2026-07-17T11:00:00+08:00",
+        }
+        self.assertEqual(
+            pending,
+            settle_pending(pending, {"1001": unproven_refund}, SETTLED_AT),
+        )
+        utc_refund = {
+            **unproven_refund,
+            "result_source": "sporttery",
+            "captured_at_bjt": "2026-07-17T03:00:00+00:00",
+        }
+        self.assertEqual(
+            pending,
+            settle_pending(pending, {"1001": utc_refund}, SETTLED_AT),
+        )
 
     def test_existing_canonical_paid_corruption_fails_before_account_math(self):
         canonical = ingest_locked_plan([], [plan_row()], lock())[0]
@@ -2493,6 +2521,11 @@ class SettlementTest(unittest.TestCase):
             {"1001": {**finished("1001", "x", 0)}},
             {"1001": {**finished("1001", 1, 0), "captured_at_bjt": "not-a-timestamp"}},
             {"1001": {**finished("1001", 1, 0), "captured_at_bjt": "2026-07-17T11:00:00"}},
+            {"1001": {
+                **finished("1001", 1, 0),
+                "result_status": "invalid",
+                "captured_at_bjt": "2026-07-17T03:00:00+00:00",
+            }},
             {"wrong": finished("wrong", 1, 0)},
         )
         for results in cases:

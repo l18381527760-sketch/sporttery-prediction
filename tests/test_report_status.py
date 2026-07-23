@@ -99,8 +99,8 @@ class ReportStatusTest(unittest.TestCase):
                     "date": REPORT_DATE.isoformat(),
                     "kickoff_local": "20:00",
                     "stage": "league",
-                    "team_a": "A",
-                    "team_b": "B",
+                    "team_a": f"A-{match_id}",
+                    "team_b": f"B-{match_id}",
                     "neutral": "false",
                     "venue": "test",
                     "match_id": match_id,
@@ -134,8 +134,8 @@ class ReportStatusTest(unittest.TestCase):
                 writer.writerow({
                     "date": REPORT_DATE.isoformat(),
                     "match_id": match_id,
-                    "team_a": "A",
-                    "team_b": "B",
+                    "team_a": f"A-{match_id}",
+                    "team_b": f"B-{match_id}",
                     "kickoff_at": "2026-07-16T20:00:00+08:00",
                 })
         with (output / f"betting_plan_{REPORT_DATE.isoformat()}.csv").open(
@@ -209,6 +209,73 @@ class ReportStatusTest(unittest.TestCase):
         (web / "index.html").write_text("<html></html>", encoding="utf-8")
         (web / "daily-report.png").write_bytes(b"exact png bytes")
 
+    def write_contract_decision_snapshot(
+        self,
+        root: Path,
+        timestamp: str = "133000",
+    ) -> Path:
+        def record(path: Path) -> dict:
+            content = path.read_bytes()
+            return {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": len(content),
+            }
+
+        captured = datetime(
+            REPORT_DATE.year,
+            REPORT_DATE.month,
+            REPORT_DATE.day,
+            int(timestamp[:2]),
+            int(timestamp[2:4]),
+            int(timestamp[4:]),
+            tzinfo=BJT,
+        )
+        manifest_path = (
+            root / "data" / "import_manifests" / f"{REPORT_DATE.isoformat()}.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        with (root / "data" / "fixtures.csv").open(
+            "r",
+            encoding="utf-8",
+            newline="",
+        ) as handle:
+            fixtures = [
+                row
+                for row in csv.DictReader(handle)
+                if row.get("date") == REPORT_DATE.isoformat()
+            ]
+        matches = []
+        for row in fixtures:
+            kickoff = datetime.fromisoformat(row["kickoff_at"])
+            matches.append({
+                "match_id": row["match_id"],
+                "team_a": row["team_a"],
+                "team_b": row["team_b"],
+                "kickoff_at": row["kickoff_at"],
+                "capture_phase": "decision",
+                "minutes_to_kickoff": int(
+                    (kickoff - captured).total_seconds() // 60
+                ),
+            })
+        snapshots = root / "data" / "odds_snapshots"
+        snapshots.mkdir(exist_ok=True)
+        path = snapshots / (
+            f"{REPORT_DATE.isoformat()}-{timestamp}-decision.json"
+        )
+        path.write_text(
+            json.dumps({
+                "target_date": REPORT_DATE.isoformat(),
+                "captured_at": captured.isoformat(),
+                "capture_phase": "decision",
+                "source": manifest["source"],
+                "import_manifest": record(manifest_path),
+                "matches": matches,
+            }),
+            encoding="utf-8",
+        )
+        return path
+
     def make_lock(
         self,
         root: Path,
@@ -278,6 +345,8 @@ class ReportStatusTest(unittest.TestCase):
                     "team_b": row["team_b"],
                     "match_num": row["match_id"],
                     "kickoff_at": row["kickoff_at"],
+                    "capture_phase": "decision",
+                    "minutes_to_kickoff": 390,
                     "sales_state": "Selling",
                     "markets": {
                         "had": {"h": "2.00", "d": "3.20", "a": "3.50"},
@@ -309,49 +378,29 @@ class ReportStatusTest(unittest.TestCase):
         )
 
     def make_decision_snapshot(self, root: Path) -> None:
-        snapshots = root / "data" / "odds_snapshots"
-        snapshots.mkdir(exist_ok=True)
-        path = snapshots / "2026-07-16-133000-decision.json"
+        path = (
+            root
+            / "data"
+            / "odds_snapshots"
+            / "2026-07-16-133000-decision.json"
+        )
         if path.exists():
             return
-        path.write_text(
-            json.dumps({
-                "target_date": REPORT_DATE.isoformat(),
-                "phase": "decision",
-                "matches": [{"match_id": "001"}],
-            }),
-            encoding="utf-8",
-        )
+        self.write_contract_decision_snapshot(root)
 
     def write_producer_decision_snapshot(self, root: Path) -> None:
-        snapshots = root / "data" / "odds_snapshots"
-        snapshots.mkdir()
-        (snapshots / "2026-07-16-133000-decision.json").write_text(
-            json.dumps({
-                "target_date": REPORT_DATE.isoformat(),
-                "captured_at": "2026-07-16T13:30:00+08:00",
-                "capture_phase": "decision",
-                "source": "zgzcw",
-                "matches": [{"match_num": "001"}],
-            }),
-            encoding="utf-8",
-        )
+        self.write_contract_decision_snapshot(root)
 
     def write_decision_snapshot(self, root: Path, timestamp: str) -> Path:
-        snapshots = root / "data" / "odds_snapshots"
-        snapshots.mkdir(exist_ok=True)
-        path = snapshots / f"2026-07-16-{timestamp}-decision.json"
+        path = (
+            root
+            / "data"
+            / "odds_snapshots"
+            / f"2026-07-16-{timestamp}-decision.json"
+        )
         if path.exists():
             return path
-        path.write_text(
-            json.dumps({
-                "target_date": REPORT_DATE.isoformat(),
-                "phase": "decision",
-                "matches": [{"match_id": "001"}],
-            }),
-            encoding="utf-8",
-        )
-        return path
+        return self.write_contract_decision_snapshot(root, timestamp)
 
     def publish(self, root: Path, phase: str, **kwargs) -> dict:
         self.write_report_image(
@@ -607,7 +656,7 @@ class ReportStatusTest(unittest.TestCase):
             self.assertEqual("2026-07-16T13:30:00+08:00", status["decision_odds_at_bjt"])
             self.assertEqual("2026-07-16T13:31:00+08:00", status["plan_locked_at_bjt"])
 
-    def test_decision_snapshot_accepts_the_payload_date_field(self):
+    def test_decision_snapshot_rejects_the_legacy_payload_date_alias(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_artifacts(root)
@@ -616,15 +665,29 @@ class ReportStatusTest(unittest.TestCase):
             (snapshots / "2026-07-16-133000-decision.json").write_text(
                 json.dumps({
                     "date": REPORT_DATE.isoformat(),
+                    "captured_at": "2026-07-16T13:30:00+08:00",
                     "phase": "decision",
-                    "matches": [{"match_id": "001"}],
+                    "matches": [{"match_id": "001"}, {"match_id": "002"}],
                 }),
                 encoding="utf-8",
             )
 
             status = self.publish(root, "decision")
 
-            self.assertTrue(status["decision_snapshot_ready"])
+            self.assertFalse(status["decision_snapshot_ready"])
+
+    def test_matching_decision_snapshot_rejects_bad_manifest_proof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            path = self.write_contract_decision_snapshot(root)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["import_manifest"]["sha256"] = "0" * 64
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            matched = _matching_decision_snapshot(root, REPORT_DATE)
+
+        self.assertEqual((False, ""), matched)
 
     def test_matching_decision_snapshot_requires_a_nonempty_matches_list(self):
         payloads = (
@@ -1133,6 +1196,141 @@ class ReportStatusTest(unittest.TestCase):
             self.assertFalse(status["forecast_ready"])
             self.assertEqual(0.5, status["official_odds_coverage_ratio"])
 
+    def test_identity_health_blocker_forces_forecast_not_ready(self):
+        health = {
+            "forecast_blockers": ["identity_not_unique"],
+            "decision_blockers": [],
+            "hard_blockers": ["identity_not_unique"],
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "report_status.build_evidence_health",
+            return_value=health,
+        ):
+            root = Path(tmp)
+            self.make_artifacts(root)
+
+            status = self.publish(root, "forecast")
+
+        self.assertEqual(2, status["schema_version"])
+        self.assertFalse(status["forecast_ready"])
+        self.assertEqual(health, status["evidence_health"])
+
+    def test_decision_blocker_does_not_retroactively_invalidate_forecast(self):
+        healthy = {
+            "forecast_blockers": [],
+            "decision_blockers": [],
+            "hard_blockers": [],
+        }
+        blocked = {
+            "forecast_blockers": [],
+            "decision_blockers": ["decision_snapshot_incomplete"],
+            "hard_blockers": ["decision_snapshot_incomplete"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            self.make_decision_snapshot(root)
+            with patch(
+                "report_status.build_evidence_health",
+                return_value=healthy,
+            ):
+                forecast = self.publish(root, "forecast")
+            with patch(
+                "report_status.build_evidence_health",
+                return_value=blocked,
+            ):
+                decision = self.publish(root, "decision")
+
+        self.assertTrue(forecast["forecast_ready"])
+        self.assertTrue(decision["forecast_ready"])
+        self.assertFalse(decision["decision_snapshot_ready"])
+        self.assertEqual(blocked, decision["evidence_health"])
+
+    def test_empty_health_blockers_preserve_existing_decision_readiness(self):
+        health = {
+            "forecast_blockers": [],
+            "decision_blockers": [],
+            "hard_blockers": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "report_status.build_evidence_health",
+            return_value=health,
+        ):
+            root = Path(tmp)
+            self.make_artifacts(root)
+            self.make_decision_snapshot(root)
+
+            status = self.publish(root, "decision")
+
+        self.assertTrue(status["decision_snapshot_ready"])
+        self.assertEqual(health, status["evidence_health"])
+
+    def test_invalid_snapshot_json_surfaces_decision_evidence_blockers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            snapshots = root / "data" / "odds_snapshots"
+            snapshots.mkdir()
+            (snapshots / "2026-07-16-133000-decision.json").write_text(
+                "{",
+                encoding="utf-8",
+            )
+
+            status = self.publish(root, "decision")
+
+        self.assertFalse(status["decision_snapshot_ready"])
+        self.assertIn(
+            "decision_snapshot_incomplete",
+            status["evidence_health"]["decision_blockers"],
+        )
+        self.assertIn(
+            "decision_odds_stale",
+            status["evidence_health"]["decision_blockers"],
+        )
+
+    def test_decision_health_blocker_gates_provisional_readiness(self):
+        health = {
+            "forecast_blockers": [],
+            "decision_blockers": ["decision_odds_stale"],
+            "hard_blockers": ["decision_odds_stale"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            self.write_report_image(
+                root,
+                REPORT_DATE,
+                "provisional",
+                "123456-1-provisional",
+            )
+            state = artifact_state(
+                root,
+                REPORT_DATE,
+                expected_report_stage="provisional",
+                expected_build_id="123456-1-provisional",
+            )
+            state.update({
+                "decision_bundle_ready": True,
+                "provisional_plan_ready": True,
+                "provisional_shadow_ready": True,
+                "provisional_state_ready": True,
+                "provisional_plan_count": 1,
+                "provisional_shadow_count": 0,
+                "provisional_plan_sha256": "a" * 64,
+                "provisional_stake": 10,
+            })
+            with (
+                patch("report_status.artifact_state", return_value=state),
+                patch(
+                    "report_status.build_evidence_health",
+                    return_value=health,
+                ),
+            ):
+                status = self.publish(root, "provisional")
+
+        self.assertFalse(status["initial_report_ready"])
+        self.assertFalse(status["revalidation_ready"])
+
     def test_settlement_rebinds_the_current_validated_provisional_generation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1169,7 +1367,17 @@ class ReportStatusTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("report_status.artifact_state", return_value=state):
+            with (
+                patch("report_status.artifact_state", return_value=state),
+                patch(
+                    "report_status.build_evidence_health",
+                    return_value={
+                        "forecast_blockers": [],
+                        "decision_blockers": [],
+                        "hard_blockers": [],
+                    },
+                ),
+            ):
                 status = self.publish(
                     root, "settlement", settled_through=date(2026, 7, 15)
                 )

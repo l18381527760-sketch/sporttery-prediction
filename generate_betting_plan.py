@@ -22,6 +22,7 @@ from betting_ledger import (
 from model_metrics import play_family, summarize, write_metrics
 from official_markets import normalize_market, parse_handicap
 from plan_lock import read_valid_lock
+from result_evidence import resolve_result_batch
 from strategy_controls import (
     apply_league_draw_calibration,
     build_daily_decision,
@@ -1543,13 +1544,8 @@ def load_results() -> dict[str, dict]:
     path = DATA_DIR / "bet_results.csv"
     if not path.exists():
         return {}
-    results = {}
     with path.open("r", encoding="utf-8-sig", newline="") as fh:
-        for row in csv.DictReader(fh):
-            match_id = row.get("match_id")
-            if match_id:
-                results[str(match_id)] = row
-    return results
+        return resolve_result_batch(csv.DictReader(fh))
 
 
 def write_plan(plan: list[dict], target_date: date) -> Path:

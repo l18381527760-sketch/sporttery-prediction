@@ -13,7 +13,7 @@ from import_sporttery import (
     read_valid_import_manifest,
     single_eligibility,
 )
-from live_odds import capture_live_snapshot
+from live_odds import LIVE_PHASES, capture_live_snapshot
 from report_status import verified_zero_fixture_day
 
 
@@ -23,6 +23,7 @@ BEIJING = timezone(timedelta(hours=8))
 
 
 CAPTURE_PHASES = {"opening", "decision", "monitoring"}
+ALL_CAPTURE_PHASES = CAPTURE_PHASES | LIVE_PHASES
 
 
 def capture(
@@ -215,13 +216,15 @@ def _kickoff_time(value) -> datetime | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Capture a pre-match odds snapshot.")
     parser.add_argument("--date", default=datetime.now(BEIJING).date().isoformat())
-    parser.add_argument("--phase", choices=sorted(CAPTURE_PHASES), default="monitoring")
+    parser.add_argument("--phase", choices=sorted(ALL_CAPTURE_PHASES), default="monitoring")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--print-path", action="store_true")
     args = parser.parse_args()
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+    if not args.live and args.phase not in CAPTURE_PHASES:
+        parser.error("pre-kickoff phases require --live")
     output = (
-        capture_live_snapshot(ROOT, target_date, datetime.now(BEIJING))
+        capture_live_snapshot(ROOT, target_date, datetime.now(BEIJING), phase=args.phase)
         if args.live
         else capture(target_date, phase=args.phase)
     )

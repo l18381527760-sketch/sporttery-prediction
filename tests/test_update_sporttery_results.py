@@ -1,11 +1,12 @@
 import csv
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import update_sporttery_results as results
+import import_sporttery
 
 
 class ResultProvenanceTest(unittest.TestCase):
@@ -65,7 +66,7 @@ class ResultProvenanceTest(unittest.TestCase):
             (data / "fixtures.csv").write_text("date,team_a,team_b,match_id\n2026-07-16,甲队,乙队,1001\n", encoding="utf-8")
             (data / "bet_results.csv").write_text("date,team_a,team_b,legacy\n2026-07-15,旧队,对手,keep\n", encoding="utf-8")
             fallback = [{"homeTeam": "甲队", "awayTeam": "乙队", "score": "3:2", "source_record_id": "678"}]
-            with patch.object(results, "DATA_DIR", data), patch.object(results, "official_result_rows", side_effect=RuntimeError("offline")), patch.object(results, "fetch_zgzcw_results", return_value=fallback):
+            with patch.object(results, "ROOT", root), patch.object(results, "DATA_DIR", data), patch.object(results, "official_result_rows", side_effect=RuntimeError("offline")), patch.object(results, "fetch_zgzcw_results", return_value=fallback):
                 path = results.update_results(date(2026, 7, 16))
 
             with path.open(encoding="utf-8-sig", newline="") as handle:
@@ -79,6 +80,67 @@ class ResultProvenanceTest(unittest.TestCase):
             self.assertIn("+08:00", migrated["captured_at_bjt"])
             self.assertEqual("regular_time_90", migrated["score_scope"])
             self.assertEqual("90", migrated["settlement_minutes"])
+
+    def test_fallback_uses_historical_manifest_after_current_fixture_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            fixtures = data / "fixtures.csv"
+            fixtures.write_text(
+                "date,team_a,team_b,match_id\n2026-07-21,Team A,Team B,2040580\n",
+                encoding="utf-8",
+            )
+            odds = data / "odds.json"
+            odds.write_text("{}\n", encoding="utf-8")
+            ratings = data / "ratings.csv"
+            ratings.write_text("team,elo\nTeam A,1500\nTeam B,1500\n", encoding="utf-8")
+            with patch.object(import_sporttery, "DATA_DIR", data):
+                import_sporttery.write_import_manifest(
+                    "sporttery", date(2026, 7, 21), fixtures, odds, ratings
+                )
+            fixtures.write_text(
+                "date,team_a,team_b,match_id\n2026-07-22,New A,New B,9999\n",
+                encoding="utf-8",
+            )
+            fallback = [{
+                "homeTeam": "Team A", "awayTeam": "Team B",
+                "score": "1:1", "source_record_id": "tr-88",
+            }]
+            with (
+                patch.object(results, "ROOT", root),
+                patch.object(results, "DATA_DIR", data),
+                patch.object(results, "official_result_rows", side_effect=RuntimeError("offline")),
+                patch.object(results, "fetch_zgzcw_results", return_value=fallback),
+            ):
+                path = results.update_results(date(2026, 7, 21))
+
+            row = self.read_rows(path)[0]
+            self.assertEqual("2040580", row["match_id"])
+            self.assertEqual("finished", row["result_status"])
+            self.assertEqual("regular_time_90", row["score_scope"])
+            self.assertEqual("tr-88", row["source_record_id"])
+
+    def test_direct_result_does_not_require_fallback_fixture_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            direct = self.captured(
+                "2040580", ("1", "1"), "2026-07-22T10:00:00+08:00",
+                match_id="2040580", result_source="sporttery",
+            )
+            with (
+                patch.object(results, "ROOT", root),
+                patch.object(results, "DATA_DIR", data),
+                patch.object(results, "official_result_rows", return_value=[direct]),
+            ):
+                path = results.update_results(date(2026, 7, 21))
+
+            row = self.read_rows(path)[0]
+            self.assertEqual("2040580", row["match_id"])
+            self.assertEqual("finished", row["result_status"])
+            self.assertEqual(("1", "1"), (row["home_goals"], row["away_goals"]))
 
     def test_unproven_fallback_id_is_unavailable_and_conflicting_score_never_overwrites_finished_score(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -244,7 +306,7 @@ class ResultProvenanceTest(unittest.TestCase):
                 encoding="utf-8",
             )
             fallback = [{"homeTeam": "甲队", "awayTeam": "乙队", "score": "2:1", "source_record_id": "678"}]
-            with patch.object(results, "DATA_DIR", data), patch.object(results, "official_result_rows", side_effect=RuntimeError("offline")), patch.object(results, "fetch_zgzcw_results", return_value=fallback):
+            with patch.object(results, "ROOT", data.parent), patch.object(results, "DATA_DIR", data), patch.object(results, "official_result_rows", side_effect=RuntimeError("offline")), patch.object(results, "fetch_zgzcw_results", return_value=fallback):
                 path = results.update_results(date(2026, 7, 16))
 
             rows = self.read_rows(path)
@@ -309,6 +371,7 @@ class ResultProvenanceTest(unittest.TestCase):
                 },
             ]
             with (
+                patch.object(results, "ROOT", data.parent),
                 patch.object(results, "DATA_DIR", data),
                 patch.object(results, "official_result_rows", side_effect=RuntimeError("offline")),
                 patch.object(results, "fetch_zgzcw_results", return_value=fallback),
@@ -354,6 +417,7 @@ class ResultProvenanceTest(unittest.TestCase):
                 },
             ]
             with (
+                patch.object(results, "ROOT", data.parent),
                 patch.object(results, "DATA_DIR", data),
                 patch.object(results, "official_result_rows", side_effect=RuntimeError("offline")),
                 patch.object(results, "fetch_zgzcw_results", return_value=fallback),
@@ -414,6 +478,7 @@ class ResultProvenanceTest(unittest.TestCase):
                 },
             ]
             with (
+                patch.object(results, "ROOT", data.parent),
                 patch.object(results, "DATA_DIR", data),
                 patch.object(results, "official_result_rows", side_effect=RuntimeError("offline")),
                 patch.object(results, "fetch_zgzcw_results", return_value=fallback),
@@ -511,6 +576,146 @@ class ResultProvenanceTest(unittest.TestCase):
             row = self.read_rows(path)[0]
             self.assertEqual(("1", "0", "conflict"), (row["home_goals"], row["away_goals"], row["result_status"]))
             self.assertEqual("2026-07-17T10:00:00+08:00", row["captured_at_bjt"])
+
+    def test_verified_immutable_zero_fixture_day_is_a_successful_no_op(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            existing = data / "bet_results.csv"
+            existing.write_text(
+                "date,match_id,result_status\n2026-07-15,old,finished\n",
+                encoding="utf-8",
+            )
+            before = existing.read_bytes()
+            fixture_bytes = (
+                b"date,team_a,team_b,match_id,match_num,kickoff_at\n"
+            )
+            with patch.object(import_sporttery, "DATA_DIR", data):
+                import_sporttery.publish_import_manifest(
+                    "sporttery",
+                    date(2026, 7, 16),
+                    fixture_bytes,
+                    b"{}\n",
+                    b"team,elo\n",
+                )
+
+            with (
+                patch.object(results, "ROOT", root),
+                patch.object(results, "DATA_DIR", data),
+                patch.object(results, "official_result_rows", return_value=[]),
+                patch.object(results, "fetch_zgzcw_results", return_value=[]),
+            ):
+                path = results.update_results(date(2026, 7, 16))
+
+            self.assertEqual(existing, path)
+            self.assertEqual(before, existing.read_bytes())
+
+    def test_unproven_empty_result_day_still_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            with (
+                patch.object(results, "ROOT", root),
+                patch.object(results, "DATA_DIR", data),
+                patch.object(results, "official_result_rows", return_value=[]),
+                patch.object(results, "fetch_zgzcw_results", return_value=[]),
+            ):
+                with self.assertRaises(RuntimeError):
+                    results.update_results(date(2026, 7, 16))
+
+    def test_atomic_write_failure_preserves_prior_canonical_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bet_results.csv"
+            original = b"known-good-canonical-results\n"
+            path.write_bytes(original)
+
+            with patch(
+                "update_sporttery_results.os.fsync",
+                side_effect=OSError("simulated disk failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "simulated disk failure"):
+                    results._write_rows(path, [{
+                        "date": "2026-07-16",
+                        "match_id": "1001",
+                        "result_status": "finished",
+                    }])
+
+            self.assertEqual(original, path.read_bytes())
+            self.assertEqual([], list(path.parent.glob(".bet_results.csv.*.tmp")))
+
+
+class ResultCliTest(unittest.TestCase):
+    def test_reconcile_days_defaults_to_one_update_of_the_requested_date(self):
+        with patch.object(results, "update_results", return_value=Path("results.csv")) as update:
+            exit_code = results.main(["--date", "2026-07-21"])
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual([call(date(2026, 7, 21))], update.call_args_list)
+
+    def test_reconcile_days_accepted_endpoints_run_oldest_first(self):
+        expected_starts = {
+            1: date(2026, 7, 21),
+            30: date(2026, 6, 22),
+        }
+        for reconcile_days, start in expected_starts.items():
+            with self.subTest(reconcile_days=reconcile_days), patch.object(
+                results, "update_results", return_value=Path("results.csv")
+            ) as update:
+                exit_code = results.main([
+                    "--date", "2026-07-21", "--reconcile-days", str(reconcile_days),
+                ])
+
+            self.assertEqual(0, exit_code)
+            self.assertEqual(
+                [start + timedelta(days=offset) for offset in range(reconcile_days)],
+                [call.args[0] for call in update.call_args_list],
+            )
+
+    def test_reconcile_days_runs_oldest_first_for_a_middle_value(self):
+        with patch.object(results, "update_results", return_value=Path("results.csv")) as update:
+            exit_code = results.main([
+                "--date", "2026-07-21", "--reconcile-days", "3",
+            ])
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [date(2026, 7, 19), date(2026, 7, 20), date(2026, 7, 21)],
+            [call.args[0] for call in update.call_args_list],
+        )
+
+    def test_reconcile_days_rejects_values_outside_one_through_thirty_or_non_integers(self):
+        for value in ("0", "31", "three"):
+            with self.subTest(value=value), self.assertRaises(SystemExit) as raised:
+                results.main(["--date", "2026-07-21", "--reconcile-days", value])
+            self.assertEqual(2, raised.exception.code)
+
+    def test_date_rejects_non_padded_malformed_and_invalid_calendar_values(self):
+        for value in ("2026-7-21", "20260721", "not-a-date", "2026-02-30"):
+            with self.subTest(value=value):
+                with patch.object(results, "update_results") as update:
+                    with self.assertRaises(SystemExit) as raised:
+                        results.main(["--date", value])
+                self.assertEqual(2, raised.exception.code)
+                update.assert_not_called()
+
+    def test_reconcile_failure_stops_before_later_dates_and_propagates(self):
+        failure = RuntimeError("result source unavailable")
+        with patch.object(
+            results,
+            "update_results",
+            side_effect=[Path("first.csv"), failure, Path("third.csv")],
+        ) as update:
+            with self.assertRaisesRegex(RuntimeError, "result source unavailable"):
+                results.main([
+                    "--date", "2026-07-21", "--reconcile-days", "3",
+                ])
+
+        self.assertEqual(
+            [date(2026, 7, 19), date(2026, 7, 20)],
+            [call.args[0] for call in update.call_args_list],
+        )
 
 
 if __name__ == "__main__":

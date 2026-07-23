@@ -1,557 +1,128 @@
-# Task 5 Report
+# Task 5: Explicit Live Odds Capture Phases Report
 
-## RED
+Base commit: `88f7e9d321d299b79f6b06febf9c21c43e65aabd`
 
-Before implementation, ran:
+## Implementation
 
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
+- Added the live-only allowed phase set: `opening`, `decision`, `monitoring`, `pre_kickoff_90`, and `pre_kickoff_30`.
+- Extended `capture_live_snapshot(..., phase="monitoring")`; it rejects an invalid phase before any source fetch.
+- Added canonical snapshot `capture_phase` and per-match `capture_phase` plus `minutes_to_kickoff` evidence.
+- Calculates minutes from Beijing-aware kickoff and capture instants. Matches at 45 minutes or less are `pre_kickoff_30`; those at 105 minutes or less are `pre_kickoff_90`; all others retain the requested phase.
+- Reader validation now requires an allowed snapshot phase, non-negative non-boolean whole minutes matching the recomputed value, and the exact derived per-match phase.
+- The capture CLI forwards `--phase` for live snapshots and permits the two pre-kickoff phases only with `--live`.
+- Immutable filename calculation, canonical JSON, source/raw-response digest evidence, exclusive create (`xb`), no-overwrite conflict protection, and existing revalidation behavior were not changed.
+
+## RED Evidence
+
+Command:
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_live_odds.LiveOddsTest.test_capture_records_requested_and_per_match_phases tests.test_live_odds.LiveOddsTest.test_capture_rejects_invalid_phase_before_fetching -v
 ```
 
-The new ledger suite failed with `ModuleNotFoundError: No module named 'betting_ledger'`. The new result-provenance tests also failed because direct rows lacked `match_id`, the fallback parser lacked `source_record_id`, old CSV columns were discarded, and conflicting scores overwrote a finished score. This is the expected RED baseline.
+Result: both tests errored with `TypeError: capture_live_snapshot() got an unexpected keyword argument 'phase'`.
 
-## GREEN
+Command:
 
-Implemented `betting_ledger.py` with canonical SHA-256 identities, first-row-wins ingestion, deterministic legacy migration, strict two-leg settlement, correction-only abnormal reopening, and atomic UTF-8-SIG CSV replacement. Updated `update_sporttery_results.py` to preserve CSV schema history and write canonical match/result provenance without guessing unresolved or conflicting results.
-
-Verification before the feature commit:
-
-```text
-tests.test_betting_ledger tests.test_update_sporttery_results: 14 tests passed
-tests.test_value_portfolio tests.test_report_status: 69 tests passed
-py_compile: passed
-git diff --check: passed
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_capture_odds_snapshot.CaptureOddsSnapshotCliTest.test_live_flag_delegates_to_immutable_live_capture_and_prints_path -v
 ```
 
-## Self-review
+Result: errored with `KeyError: 'phase'` because the live CLI did not forward the option.
 
-- Locked plan fields are copied only once; existing canonical IDs retain their original odds, probability, stake, and metadata.
-- Scores settle only when a matching canonical `match_id` has explicit finished/refunded status and complete provenance.
-- HAD, integer HHAD, all TTG buckets, and both-leg parlay/refund paths use decimal money serialized to two places.
-- Repeating settlement preserves terminal rows unchanged, and atomic writing has deterministic field ordering and bytes.
-- Result migrations retain old CSV columns and rows; a score disagreement remains a conflict with both source identities recorded.
+## GREEN And Regression Evidence
+
+- New phase and CLI tests: 3 passed.
+- Focused live/revalidation/pre-kickoff suite: 57 passed.
+- Betting-ledger consumer regression suite: 89 passed.
+- Full Python suite:
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest discover -s tests
+```
+
+Result: 710 passed.
+
+- Exact Node suite:
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' --test tests/apps_script_orchestrator.test.mjs
+```
+
+Result: 63 passed, 0 failed.
+
+## Files
+
+- `live_odds.py`
+- `capture_odds_snapshot.py`
+- `tests/test_live_odds.py`
+- `tests/test_capture_odds_snapshot.py`
+- `tests/test_revalidation.py`
+- `tests/test_pre_kickoff_rehearsal.py`
+- `tests/test_betting_ledger.py`
+
+## Self-Review
+
+- Confirmed phase validation is before live source fetchers are invoked.
+- Confirmed read validation rejects stale, negative, boolean, or mismatched minute evidence and mismatched match phases.
+- Confirmed immutable filenames and existing overwrite behavior remain unchanged.
+- Updated revalidation and pre-kickoff fixture builders so their immutable test payloads satisfy the new live evidence contract without changing consumer logic.
 
 ## Concerns
 
-- This task provides the ledger primitives and result schema only. The later plan-integration task must route valid plan locks through ledger ingestion and settlement commands.
-- Existing legacy readers still key historical results by date/team. They are intentionally preserved until the planned Phase 3 migration.
+None. Phase-less live snapshot payloads are intentionally rejected by the newly phase-aware validator.
 
-## Commit
-
-Feature commit: `04599c6` (`feat: add immutable idempotent betting ledger`).
-
-## Review fixes
-
-### Scope
-
-- Kept conflict rows unavailable across repeated captures, preserved the first score, and merged `|`-delimited provenance as sorted unique tokens.
-- Cleared all plan-supplied settlement state on new locked rows, stored authoritative normalized lock source and `plan_sha256`, and rejected mismatched row sources.
-- Made correction mode reopening-only and idempotent, including canonical offending-leg tracking for abnormal parlays.
-- Required parseable timezone-aware result capture timestamps, reserved `legacy_match:` for the private migration path, and retained full Decimal odds precision until money serialization.
-- Replaced date/team result-row collapsing with ordered rows plus deterministic row selection so duplicate legacy rows and unknown columns survive.
-
-### RED chronology and exact output
-
-An initial test invocation stopped at import with `SyntaxError: invalid syntax` on a test fixture using `return` as a keyword. It was not counted as RED. After correcting only that test syntax, the required focused command produced the valid RED run below:
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-
-test_atomic_writer_is_deterministic_utf8_sig_and_preserves_unknown_fields ... FAIL
-test_malformed_identity_fails_closed (match_id='legacy_match:forbidden') ... FAIL
-test_malformed_identity_fails_closed (parlay leg match_id='legacy_match:forbidden') ... FAIL
-test_new_locked_row_clears_plan_settlement_fields_and_uses_authoritative_lock_metadata ... FAIL
-test_abnormal_parlay_reopens_by_offending_leg_then_requires_ordinary_settlement ... ERROR
-test_correction_mode_never_settles_pending_rows ... FAIL
-test_locked_odds_keep_full_decimal_precision_until_money_is_quantized ... FAIL
-test_unproven_results_do_not_mutate_pending_and_correction_is_explicit (captured_at_bjt='not-a-timestamp') ... FAIL
-test_unproven_results_do_not_mutate_pending_and_correction_is_explicit (captured_at_bjt='2026-07-17T11:00:00') ... FAIL
-test_unproven_results_do_not_mutate_pending_and_correction_is_explicit ... FAIL
-test_conflict_survives_repeated_and_later_captures_idempotently ... FAIL
-test_duplicate_legacy_rows_and_unknown_columns_survive_migration_in_order ... FAIL
-
-----------------------------------------------------------------------
-Ran 20 tests in 0.134s
-
-FAILED (failures=11, errors=1)
-```
-
-### GREEN verification
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-Ran 20 tests in 0.064s
-OK
-
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_value_portfolio tests.test_report_status -v
-Ran 69 tests in 1.161s
-OK
-
-.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile betting_ledger.py update_sporttery_results.py tests\test_betting_ledger.py tests\test_update_sporttery_results.py
-Exit code: 0
-
-git diff --check
-Exit code: 0
-```
-
-Fix commit: `ed5950f0932f47fbf689ef15faa31f0dd25a5942` (`fix: harden betting ledger review invariants`).
-
-Immediately after the fix commit, `git status --short` produced no output (clean worktree).
-
-## Review fixes 2
-
-### Files changed
-
-- `update_sporttery_results.py` - canonical direct/fallback resolution, protected-score migration, and observation idempotency.
-- `tests/test_update_sporttery_results.py` - focused canonical-resolution, duplicate-ID, protected-history, and byte-idempotency coverage.
-- `betting_ledger.py` - Task 5 owned implementation file; unchanged in this review pass.
-- `tests/test_betting_ledger.py` - Task 5 owned ledger test file; unchanged in this review pass.
-- `.superpowers/sdd/task-5-report.md` - RED/GREEN chronology, commits, compatibility notes, and file inventory.
+## Review Fixes: Schema Compatibility And Evidence Boundaries
 
 ### RED
 
-After adding the final focused test contract and before changing production code, ran:
+Before the versioned validator implementation, ran:
 
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-
-test_ambiguous_fallback_ids_append_unavailable_without_touching_identified_rows ... FAIL
-test_changed_score_same_record_conflicts_once_and_repeat_is_byte_idempotent ... FAIL
-test_direct_mismatched_match_id_appends_without_touching_identified_row ... FAIL
-test_duplicate_legacy_rows_and_unknown_columns_survive_migration_in_order ... FAIL
-test_multiple_blank_fallback_candidates_are_ambiguous_and_remain_untouched ... FAIL
-test_preexisting_score_without_status_is_protected_from_changed_capture ... FAIL
-test_same_finished_observation_with_new_capture_time_is_byte_idempotent ... FAIL
-
-----------------------------------------------------------------------
-Ran 28 tests in 0.152s
-
-FAILED (failures=7)
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_live_odds tests.test_revalidation.RevalidationTest.test_v1_live_snapshot_replays_existing_revalidation_receipt tests.test_pre_kickoff_rehearsal -v
 ```
 
-The failures showed the prior implementation selecting the first date/team row despite a mismatched canonical ID, collapsing fixture identities to one value, overwriting status-less historical scores, and extending timestamps for an already observed source record.
+Result: 17 tests ran with 1 failure and 3 errors. New captures still returned schema version 1; phase-less v1 snapshots failed with `live capture phase is invalid`; and the v2 rehearsal fixture failed with `live snapshot schema is invalid`.
 
 ### GREEN
 
+Implemented an explicit versioned read path:
+
+- New live captures now write schema version 2.
+- Schema v1 executes the original snapshot validation contract without requiring, synthesizing, or mutating `capture_phase` or `minutes_to_kickoff`.
+- Schema v2 requires a valid snapshot phase, a valid per-match phase, a non-negative non-boolean integer minute value, exact Beijing-aware minute recomputation, and exact phase classification.
+- The fixture helper now retains its requested `monitoring` phase when a match is more than 105 minutes away.
+
+Verification command:
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_live_odds tests.test_capture_odds_snapshot tests.test_revalidation tests.test_pre_kickoff_rehearsal tests.test_report_status -v
+```
+
+Output summary:
+
 ```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-Ran 28 tests in 0.195s
+Ran 115 tests in 7.512s
 OK
-
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_value_portfolio tests.test_report_status -v
-Ran 69 tests in 1.388s
-OK
-
-.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile betting_ledger.py update_sporttery_results.py tests\test_betting_ledger.py tests\test_update_sporttery_results.py
-Exit code: 0
-
-git diff --check
-Exit code: 0
 ```
 
-### Compatibility and fail-closed review
+### Added Coverage
 
-- Existing CSV rows retain input order and unknown columns; no legacy row is collapsed or deleted.
-- Direct results update only an exact canonical ID or a sole blank date/team row. Other cases append a canonical row.
-- Fallback resolution uses the set union of every exact date/team existing and fixture ID. Zero/ambiguous unions write only a blank-ID `unavailable` row and never alter identified history.
-- Every parseable pre-existing score is protected even without `result_status`.
-- Re-observing the same source/record does not extend timestamps; a new source record extends sorted provenance once.
+- v2 producer and reader behavior.
+- Genuine phase-less v1 canonical snapshot reading with no synthesized fields.
+- v1 snapshot revalidation receipt replay without a fresh fetch.
+- Phase boundaries at 45, 46, 105, and 106 minutes.
+- Cross-offset aware capture and kickoff timestamps.
+- Missing and invalid snapshot/match phases.
+- Boolean, negative, fractional, text, and recomputation-mismatched minute values.
+- Phase/minute inconsistency rejection.
 
-Fix commit: `d9b95a5bfb92d78e764e5831ec4810ba8ee0a3f3` (`fix: make result migration canonical and idempotent`).
+### Self-Review
 
-Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
+- The filename hash and exclusive-create publication flow are unchanged; v2 payload bytes naturally receive their own immutable filenames.
+- v1 files are read as-is and returned as-is. The validator does not add phase or minute evidence to historical payloads.
+- Revalidation and report-status consumers passed their focused regression coverage.
 
-## Review fixes 3
+### Concerns
 
-### Scope
-
-- Reused an existing blank-ID `unavailable` row when it already contains the same fallback `result_source` and `source_record_id` observation.
-- Kept ambiguous canonical resolution unavailable and left every identified historical row unchanged.
-- Made a blank or malformed fallback `source_record_id` fail closed as `unavailable`, even when fixture history proves one canonical match ID.
-
-### Files changed
-
-- `update_sporttery_results.py` - unavailable-observation reuse and missing-source fail-closed resolution.
-- `tests/test_update_sporttery_results.py` - repeated ambiguous fallback byte-idempotency and missing-source coverage.
-- `.superpowers/sdd/task-5-report.md` - this chronology and verification record.
-
-### RED
-
-After adding the two focused tests and before changing production code, ran:
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-
-test_fallback_without_source_record_id_is_unavailable_despite_unique_match_id ... FAIL
-test_repeated_ambiguous_fallback_reuses_the_same_unavailable_observation ... FAIL
-
-======================================================================
-FAIL: test_fallback_without_source_record_id_is_unavailable_despite_unique_match_id
-----------------------------------------------------------------------
-AssertionError: 'unavailable' != 'finished'
-- unavailable
-+ finished
-
-======================================================================
-FAIL: test_repeated_ambiguous_fallback_reuses_the_same_unavailable_observation
-----------------------------------------------------------------------
-AssertionError: 4 != 5
-
-----------------------------------------------------------------------
-Ran 30 tests in 0.210s
-
-FAILED (failures=2)
-```
-
-The first failure exposed a settleable status without a source record ID. The second showed that the repeated observation appended a fifth row instead of reusing the fourth row byte-for-byte.
-
-### GREEN
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-Ran 30 tests in 0.189s
-OK
-
-.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile update_sporttery_results.py tests\test_update_sporttery_results.py
-Exit code: 0
-
-git diff --check
-Exit code: 0
-```
-
-### Review
-
-- Observation reuse searches only blank `match_id` candidates and therefore cannot rewrite identified historical rows.
-- Reused ambiguous rows remain `unavailable`, retain their first capture timestamp, and produce identical bytes on a later same-source/same-record observation.
-- Missing fallback source identity may preserve a uniquely proven canonical match ID for legacy lookup, but its `unavailable` status keeps it outside ledger settlement.
-- Ordered legacy rows, duplicate candidates, and unknown CSV columns remain preserved by the existing collection and writer paths.
-
-Code/test fix commit: `6ecaf08e24f1642e28e2b9ad7d0b13b9f5928166` (`fix: deduplicate unavailable fallback results`).
-
-Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
-
-## Review fixes 4
-
-### Scope
-
-- Made repeated fallback observations with a blank or malformed `source_record_id` byte-idempotent for both unique canonical IDs and ambiguous blank-ID history.
-- Limited anonymous reuse to an existing `unavailable` row with the same source, blank stored source identity, identical preserved match-ID state, and identical score.
-- Preserved the first capture timestamp and every existing field on reuse; a changed anonymous score appends a separate unavailable row without altering protected history.
-
-### Files changed
-
-- `update_sporttery_results.py` - strict anonymous-unavailable matching and no-op reuse.
-- `tests/test_update_sporttery_results.py` - unique and ambiguous anonymous repeat coverage plus changed-score protection.
-- `.superpowers/sdd/task-5-report.md` - this review chronology and verification record.
-
-### RED
-
-After extending the unique-ID test and adding the ambiguous/multiple-blank test, before production edits, ran:
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-
-test_fallback_without_source_record_id_is_unavailable_despite_unique_match_id ... FAIL
-test_repeated_missing_source_ambiguous_fallback_reuses_only_matching_unavailable_row ... FAIL
-
-======================================================================
-FAIL: test_fallback_without_source_record_id_is_unavailable_despite_unique_match_id
-----------------------------------------------------------------------
-AssertionError: 1 != 2
-
-======================================================================
-FAIL: test_repeated_missing_source_ambiguous_fallback_reuses_only_matching_unavailable_row
-----------------------------------------------------------------------
-AssertionError: 4 != 5
-
-----------------------------------------------------------------------
-Ran 31 tests in 0.277s
-
-FAILED (failures=2)
-```
-
-Both failures showed the second anonymous capture appending another row instead of preserving the first file bytes and row count.
-
-### GREEN
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-Ran 31 tests in 0.208s
-OK
-
-.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile update_sporttery_results.py tests\test_update_sporttery_results.py
-Exit code: 0
-
-git diff --check
-Exit code: 0
-```
-
-### Review
-
-- Exact date/team selection remains enforced by the existing ordered candidate index.
-- Anonymous reuse accepts only `unavailable`; `finished`, `conflict`, and differently identified rows cannot be selected or altered.
-- The preserved `match_id` must exactly equal the sole canonical ID, or remain blank when canonical IDs are absent or ambiguous.
-- Exact score equality is required. A changed score creates a new unavailable observation while the prior row, score, provenance, timestamp, unknown columns, and ordering remain unchanged.
-
-Code/test fix commit: `d2c30cbcab50efbbe8d469ca454d1e073dd1fada` (`fix: deduplicate anonymous fallback results`).
-
-Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
-
-## Review fixes 5
-
-### Scope
-
-- Made normalized `market_type` authoritative for new parlay identity and settlement dispatch.
-- Rejected new English `parlay` play labels paired with a non-parlay market while accepting localized parlay labels.
-- Added a private deterministic fallback identity for legacy rows that cannot satisfy canonical identity validation, including parlay-like rows without valid legs.
-- Added `performance_multiplier` beside the other multipliers in the deterministic ledger schema.
-- Parameterized HAD settlement coverage for `胜`, `平`, and `负` with matching 90-minute scores.
-
-### Files changed
-
-- `betting_ledger.py` - authoritative parlay classification, private legacy fallback identity, and required schema order.
-- `tests/test_betting_ledger.py` - identity, migration, settlement, multiplier-header, and HAD coverage.
-- `.superpowers/sdd/task-5-report.md` - this review chronology and verification record.
-
-### RED
-
-After adding all review tests and before production edits, ran:
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-
-test_atomic_writer_is_deterministic_utf8_sig_and_preserves_unknown_fields ... FAIL
-test_legacy_parlay_without_legs_uses_deterministic_fallback_identity ... ERROR
-test_market_type_is_authoritative_for_new_parlay_identity ... FAIL
-test_settlement_uses_market_type_not_legacy_english_play_label ... FAIL
-test_two_leg_parlay_requires_both_legs_and_handles_loss_and_refunds ... FAIL
-
-======================================================================
-ERROR: test_legacy_parlay_without_legs_uses_deterministic_fallback_identity
-----------------------------------------------------------------------
-ValueError: parlay must contain exactly two legs
-
-======================================================================
-FAIL: test_atomic_writer_is_deterministic_utf8_sig_and_preserves_unknown_fields
-----------------------------------------------------------------------
-AssertionError: 32 != 50
-
-======================================================================
-FAIL: test_market_type_is_authoritative_for_new_parlay_identity
-----------------------------------------------------------------------
-AssertionError: ValueError not raised
-
-======================================================================
-FAIL: test_settlement_uses_market_type_not_legacy_english_play_label
-----------------------------------------------------------------------
-AssertionError: '命中' != '未结算'
-
-======================================================================
-FAIL: test_two_leg_parlay_requires_both_legs_and_handles_loss_and_refunds
-----------------------------------------------------------------------
-AssertionError: ('命中', '60.00', '50.00') != ('未结算', '0.00', '0.00')
-
-----------------------------------------------------------------------
-Ran 35 tests in 0.228s
-
-FAILED (failures=4, errors=1)
-```
-
-The parameterized HAD `胜`/`平`/`负` coverage was already green in this RED run; it closed a test-coverage gap without requiring settlement changes.
-
-### GREEN
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-Ran 35 tests in 0.164s
-OK
-
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_value_portfolio tests.test_report_status -v
-Ran 69 tests in 1.129s
-OK
-
-.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile betting_ledger.py update_sporttery_results.py tests\test_betting_ledger.py tests\test_update_sporttery_results.py
-Exit code: 0
-
-git diff --check
-Exit code: 0
-```
-
-### Review
-
-- Valid legacy rows retain the prior canonical migration path; the namespaced fallback is used only when strict legacy canonicalization raises `ValueError`.
-- Fallback identity includes preserved date, strategy, play, market, selection/line, match/team/display content, and a migration namespace to avoid canonical-ID collisions.
-- Synthetic `legacy_match:` material exists only in the copied identity input and is never written to the migrated ledger row as an official `match_id`.
-- Existing English-labeled legacy rows settle according to normalized `market_type`; only new canonical rows enforce the contradiction check.
-- `performance_multiplier` is preserved and serialized immediately after `volatility_multiplier` and before `portfolio_rank`.
-
-Code/test fix commit: `55ce55eb55b7231e01900fd1bd9563b7abb0a310` (`fix: harden parlay ledger migration`).
-
-Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
-
-## Review fixes 6
-
-### Scope
-
-- Added deterministic legacy leg content to fallback migration identity and versioned the private namespace as `legacy_fallback_v2`.
-- Normalized list-of-dictionary legs to sorted `match_id`, `market_type`, `selection`, and `line` identity fields only.
-- Ignored mutable legacy leg odds, stake, and probability while preserving leg-order and JSON-key-order invariance.
-- Preserved distinct missing, raw-text, canonical raw-JSON, and non-JSON-value representations so malformed leg content cannot collapse.
-
-### Files changed
-
-- `betting_ledger.py` - private legacy leg identity normalization.
-- `tests/test_betting_ledger.py` - structured leg collision, reorder invariance, raw collision, preservation, and idempotency coverage.
-- `.superpowers/sdd/task-5-report.md` - this review chronology and verification record.
-
-### RED 1
-
-After adding the three requested migration tests and before production edits, ran:
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-
-test_legacy_fallback_distinguishes_structured_leg_identities_and_keeps_rows ... FAIL
-test_legacy_fallback_structured_legs_ignore_order_key_order_and_mutable_values ... FAIL
-test_legacy_fallback_unparseable_leg_text_is_distinct_and_idempotent ... FAIL
-
-======================================================================
-FAIL: test_legacy_fallback_distinguishes_structured_leg_identities_and_keeps_rows
-----------------------------------------------------------------------
-AssertionError: 2 != 1
-
-======================================================================
-FAIL: test_legacy_fallback_structured_legs_ignore_order_key_order_and_mutable_values
-----------------------------------------------------------------------
-AssertionError: 'b909f1c8c093da0d2709753545a580497e9cd98a525add0c076e7374a43ec4b3' == 'b909f1c8c093da0d2709753545a580497e9cd98a525add0c076e7374a43ec4b3'
-
-======================================================================
-FAIL: test_legacy_fallback_unparseable_leg_text_is_distinct_and_idempotent
-----------------------------------------------------------------------
-AssertionError: 2 != 1
-
-----------------------------------------------------------------------
-Ran 38 tests in 0.166s
-
-FAILED (failures=3)
-```
-
-### RED 2
-
-Self-review of the first implementation found that missing legs, empty raw text, and JSON `null` still normalized to one empty value. Added a focused assertion before refining production code:
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-
-test_legacy_fallback_unparseable_leg_text_is_distinct_and_idempotent ... FAIL
-
-======================================================================
-FAIL: test_legacy_fallback_unparseable_leg_text_is_distinct_and_idempotent
-----------------------------------------------------------------------
-AssertionError: 3 != 1
-
-----------------------------------------------------------------------
-Ran 38 tests in 0.149s
-
-FAILED (failures=1)
-```
-
-### GREEN
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-Ran 38 tests in 0.151s
-OK
-
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_value_portfolio tests.test_report_status -v
-Ran 69 tests in 1.002s
-OK
-
-.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile betting_ledger.py update_sporttery_results.py tests\test_betting_ledger.py tests\test_update_sporttery_results.py
-Exit code: 0
-
-git diff --check
-Exit code: 0
-```
-
-### Review
-
-- Structured legacy legs use only stable identity fields and sort by canonical JSON; equivalent reordered legs and key order hash identically.
-- Different structured leg identities produce distinct IDs, so both rows survive ingestion in original order.
-- Parseable non-leg JSON is canonically represented; unparseable strings retain normalized text, and format markers distinguish missing, empty, and JSON-null content.
-- Existing ledger fields, including original `legs`/`legs_json`, remain unchanged; synthetic migration match material is never written as an official `match_id`.
-- Existing rows with persisted `bet_id` remain immutable and bypass migration recomputation.
-
-Code/test fix commit: `65e12b6c59ecfd907d7e5a06c89baaa5a652c9c0` (`fix: include legacy parlay legs in identity`).
-
-Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
-
-## Review fixes 7
-
-### Scope
-
-- Added a private `legacy_leg_match_v1` identity namespace for structured legacy parlay legs without a canonical `match_id`.
-- Included normalized legacy leg match/team/display fields in hash input while retaining the existing canonical `match_id` path when an ID is present.
-- Kept mutable odds, stake, probability, result, and settlement fields outside identity and retained deterministic leg sorting.
-- Preserved every original ledger field and never wrote migration-only match identity into the ledger row.
-
-### Files changed
-
-- `betting_ledger.py` - namespaced no-ID structured legacy leg identity.
-- `tests/test_betting_ledger.py` - no-ID team collision, canonical-ID isolation, order/key invariance, preservation, and rerun coverage.
-- `.superpowers/sdd/task-5-report.md` - this review chronology and verification record.
-
-### RED
-
-After adding the requested tests and before production edits, ran:
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-
-test_legacy_fallback_no_id_legs_normalize_order_and_ignore_mutable_values ... FAIL
-test_legacy_fallback_no_id_legs_use_team_identity_and_preserve_rows ... FAIL
-
-======================================================================
-FAIL: test_legacy_fallback_no_id_legs_normalize_order_and_ignore_mutable_values
-----------------------------------------------------------------------
-AssertionError: '9da748651f51ec8e91d5adf373137c30a1b41de3a564a76bcb0360d60d324d1c' == '9da748651f51ec8e91d5adf373137c30a1b41de3a564a76bcb0360d60d324d1c'
-
-======================================================================
-FAIL: test_legacy_fallback_no_id_legs_use_team_identity_and_preserve_rows
-----------------------------------------------------------------------
-AssertionError: 2 != 1
-
-----------------------------------------------------------------------
-Ran 40 tests in 0.171s
-
-FAILED (failures=2)
-```
-
-### GREEN
-
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_betting_ledger tests.test_update_sporttery_results -v
-Ran 40 tests in 0.152s
-OK
-
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_value_portfolio tests.test_report_status -v
-Ran 69 tests in 0.993s
-OK
-
-.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile betting_ledger.py update_sporttery_results.py tests\test_betting_ledger.py tests\test_update_sporttery_results.py
-Exit code: 0
-
-git diff --check
-Exit code: 0
-```
-
-### Review
-
-- Canonical leg IDs retain the previous `match_id`, market, selection, and line payload; changing display teams on those legs does not change identity.
-- No-ID legs include normalized `match`, `fixture`, team-name aliases, `teams`, and display-label aliases under a migration-only namespace.
-- Canonical JSON normalization makes nested key order and leg order invariant, while changed no-ID team/display identity produces a distinct migration ID.
-- Tests verify both colliding legacy rows survive in source order, all original values remain intact, and ingestion reruns are idempotent.
-
-Code/test fix commit: `73d5625ebf94313458b50c43aa2f50ae0e324a8e` (`fix: distinguish no-id legacy parlay legs`).
-
-Immediately after the code/test fix commit, `git status --short` produced no output (clean worktree).
+None. The earlier phase-less-payload concern applies only to v2; genuine schema-v1 snapshots remain valid under their original contract.

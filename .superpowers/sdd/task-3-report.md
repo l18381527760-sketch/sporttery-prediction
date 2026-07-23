@@ -1,105 +1,250 @@
-# Phase 2 Task 3 Report
+# Task 3 Report: Shared Proven 90-Minute Result Contract
 
-## Files Changed
+## Implementation and Files
 
-- `value_candidates.py`: added the immutable candidate and odds-risk models plus candidate construction for official HAD, HHAD, and TTG markets.
-- `tests/test_value_candidates.py`: added focused coverage for probability layers, eligibility separation, identity and quality rejection, volatility controls, and domestic odds preservation.
+- `result_evidence.py`: added the canonical `proven_result_provenance`,
+  `normalized_result`, and `proven_90_minute_result` contract. It accepts only
+  approved `sporttery` or `zgzcw` provenance, aware capture timestamps, finished
+  regular-time 90-minute scores, nonempty canonical match IDs, and nonnegative
+  integer goals.
+- `build_historical_features.py`: filters `bet_results.csv` through
+  `proven_90_minute_result`; legacy display rows remain stored but cannot build
+  historical features.
+- `draw_model_learning.py`: normalizes proven results once, indexes them by
+  canonical `match_id`, and removes the prior date/team and local goal predicate.
+- `betting_ledger.py`: delegates finished-result eligibility to
+  `proven_90_minute_result` and refund/invalid provenance to
+  `proven_result_provenance`. Settlement return, profit, effective-odds, and
+  correction branches were not changed.
+- `tests/test_result_evidence.py`: adds the prescribed evidence matrix plus
+  malformed-row and negative-goal fail-closed coverage.
+- `tests/test_build_historical_features.py`: proves only canonical proven rows
+  feed historical features.
+- `tests/test_draw_model_learning.py`: upgrades existing fixtures to canonical
+  evidence and proves training joins only by canonical match ID.
+- `tests/test_betting_ledger.py`: proves an unapproved refund source cannot
+  settle while existing single and parlay refund economics remain covered.
+- `tests/test_collect_market_heat.py`: upgrades the verified training integration
+  fixture to the shared canonical result shape.
 
 ## RED Evidence
 
-Initial command:
+Command:
 
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_value_candidates -v
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_result_evidence -v
 ```
 
-Result: exit code 1 with the expected `ModuleNotFoundError: No module named 'value_candidates'`.
-
-Two later regression cycles also observed expected RED failures before their minimal fixes:
-
-- An externally constructed non-domestic `OfficialMarket` was accepted despite matching prices.
-- A mismatched opening snapshot incorrectly upgraded direct official odds to `high` quality.
-
-## GREEN Result
+Expected output, exit code 1:
 
 ```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_official_markets tests.test_value_candidates -v
-Ran 21 tests in 0.004s
+ImportError: Failed to import test module: test_result_evidence
+ModuleNotFoundError: No module named 'result_evidence'
+Ran 1 test in 0.000s
+FAILED (errors=1)
+```
+
+The failure was the prescribed missing-module RED before any production
+implementation.
+
+## GREEN Evidence
+
+Canonical contract:
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_result_evidence -v
+```
+
+```text
+Ran 4 tests in 0.000s
 OK
 ```
 
-Also passed:
+Focused consumers and ledger:
 
-```text
-.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile value_candidates.py tests\test_value_candidates.py
-git diff --check
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_result_evidence tests.test_build_historical_features tests.test_draw_model_learning tests.test_betting_ledger -v
 ```
 
-## Commit
+```text
+Ran 151 tests in 14.861s
+OK
+```
 
-Implementation commit: `1db2fe3` (`feat: build unified positive-value candidate pool`).
+The first complete Python run found one stale legacy-shaped result fixture in
+`test_collect_market_heat`. The run completed `698` tests with `1` failure.
+After adding the required canonical evidence fields, the failing integration
+test passed in isolation:
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_collect_market_heat.MarketHeatCollectorTest.test_collector_payload_flows_to_verified_training_snapshot -v
+```
+
+```text
+Ran 1 test in 0.048s
+OK
+```
+
+Final complete Python suite:
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest discover -s tests -v
+```
+
+```text
+Ran 698 tests in 45.250s
+OK
+```
+
+Exact Node suite:
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' --test tests/apps_script_orchestrator.test.mjs
+```
+
+```text
+tests 63
+pass 63
+fail 0
+cancelled 0
+skipped 0
+```
 
 ## Self-Review
 
-- `ValueCandidate` is frozen and contains the resolved `paid_eligible`, `value_gate_reasons`, `calibration_samples`, and `performance_multiplier=1.0` fields.
-- `paid_eligible` only records probability-edge and EV gates; it stays independent from Task 2's official `single_eligible` flag and no stake or budget data is calculated.
-- Official prices come only from trusted domestic `OfficialMarket` objects and match the decision snapshot's exact match ID, identity, market, line, and prices. External consensus data is ignored.
-- HAD retains raw, calibrated, market, and conservative probabilities separately; league calibration applies only to draws. HHAD and TTG use the Task 1 Poisson helpers.
-- Started, unsupported, malformed, identity-conflicting, missing-decision, non-domestic, and unverified-jump markets are excluded. Missing or mismatched opening evidence is medium quality rather than high.
+- Settlement regressions: refund rows still require provenance only; single
+  refunds still return the stake, fully refunded parlays still return the stake,
+  and mixed parlays still remove refunded-leg odds from the effective product.
+  No economic calculation changed.
+- Duplicated predicates: historical features and ledger finished settlement use
+  the shared boolean predicate; draw training consumes the shared normalized
+  result; ledger refund and invalid handling use the shared provenance predicate.
+  The obsolete draw goal parser and ledger provenance implementation were
+  removed. The remaining ledger `_goal` function computes market outcomes after
+  evidence acceptance and is not an eligibility predicate.
+- Malformed input: non-dicts, missing or blank proof fields, unapproved sources,
+  naive or invalid timestamps, non-finished status, non-90-minute scope, malformed
+  goals, and negative goals fail closed. `_result_for` continues to require the
+  result payload's match ID to equal the requested canonical ID.
+- Legacy behavior: legacy result rows remain readable by storage/display paths
+  but are intentionally excluded from history features, draw training, and
+  canonical finished settlement.
+- Scope: changes are limited to the shared result contract, its three consumers,
+  corresponding tests, one affected integration fixture, and this report.
+  Import manifest schema version `2`, official/fallback independence, and result
+  import logic are unchanged.
+- `git diff --check` reported no whitespace errors; only existing Git line-ending
+  conversion warnings were emitted.
 
 ## Concerns
 
-No code concerns found. Callers that want `high` quality must supply a same-identity opening record through `snapshot["opening_matches"]` (or `snapshot["opening"]["matches"]`); the Task 2 decision-only payload remains valid and intentionally produces `medium` quality.
+No implementation concerns identified. The checked-in historical result CSV is
+legacy-shaped, so those rows are intentionally ineligible until refreshed with
+canonical identity and provenance.
 
-## Review-Fix Evidence
+## Blocking Review Fix: Batch Ambiguity and Beijing Offset
 
-### RED
+### Implementation and Files
 
-Before the fixes, the focused regression command was:
+- `result_evidence.py`: added `resolve_result_batch(rows)`, the single shared
+  batch-level conflict resolver. It canonicalizes nonblank string match IDs,
+  collapses exact duplicate rows, and permanently removes a match ID after any
+  distinct duplicate. It does not filter result statuses, so unique `refunded`
+  and provenance-bearing `invalid` rows remain available to settlement.
+- `result_evidence.py`: tightened `captured_at_bjt` proof from any aware timestamp
+  to an exact `UTC+08:00` offset. `normalized_result`, finished settlement,
+  refunds, and invalid-result abnormal handling inherit the same requirement.
+- `build_historical_features.py`: resolves the complete CSV batch before
+  selecting proven 90-minute rows.
+- `draw_model_learning.py`: resolves the complete CSV batch before normalization
+  and canonical match-ID indexing.
+- `generate_betting_plan.py`: routes settlement CSV ingress through
+  `resolve_result_batch` instead of overwriting duplicate IDs.
+- `tests/test_result_evidence.py`: covers exact duplicate collapse, permanent
+  conflict exclusion, unique refund/invalid preservation, and rejection of UTC,
+  `+09:00`, and `+07:59`.
+- `tests/test_build_historical_features.py`: uses a real CSV to prove exact
+  duplicate collapse and conflicting-ID exclusion.
+- `tests/test_draw_model_learning.py`: uses real result dictionaries and snapshot
+  files to prove conflicting results produce no training sample.
+- `tests/test_value_strategy_integration.py`: uses a real settlement result CSV
+  to prove conflicts are absent while exact, refund, and invalid rows remain.
+- `tests/test_betting_ledger.py`: proves finished, refunded, and invalid evidence
+  with non-Beijing offsets cannot mutate pending rows.
 
-```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_value_candidates -v
+### RED Evidence
+
+Command:
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_result_evidence tests.test_build_historical_features tests.test_draw_model_learning tests.test_betting_ledger tests.test_value_strategy tests.test_value_strategy_integration -v
 ```
 
-It completed with exit code 1:
+Result, exit code 1:
 
 ```text
-Ran 15 tests in 0.009s
-FAILED (failures=3, errors=5)
-TypeError: can't compare offset-naive and offset-aware datetimes
-AssertionError: 0.28695652173913044 != 0.3 within 7 places
-AssertionError: 'medium' != 'high'
+ImportError: cannot import name 'resolve_result_batch' from 'result_evidence'
+test_load_results_keeps_only_proven_90_minute_rows ... FAIL
+test_training_skips_conflicting_results_for_one_match_id ... FAIL
+test_only_approved_proven_regular_time_90_results_can_settle ... FAIL
+test_unproven_results_do_not_mutate_pending_and_correction_is_explicit ... FAIL
+test_load_results_removes_conflicts_and_preserves_unique_nonfinished_rows ... FAIL
+Ran 196 tests in 15.172s
+FAILED (failures=7, errors=1)
 ```
 
-Those failures covered the naive Beijing kickoff versus aware decision-capture comparison, the draw-calibration sample fallback changing the global gate/weight, and bare or malformed opening evidence being accepted as high quality or used for volatility.
+The failures demonstrated all reported defects before production changes:
+duplicate rows remained eligible in history and draw training, settlement ingress
+kept the last conflicting row, and UTC/other aware offsets settled finished,
+refunded, and invalid results.
 
-### GREEN
+### GREEN Evidence
 
-After the fixes:
+Shared contract:
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_result_evidence -v
+```
 
 ```text
-$env:OPENBLAS_NUM_THREADS='1'; .\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m unittest tests.test_official_markets tests.test_value_candidates -v
-Ran 28 tests in 0.009s
+Ran 6 tests in 0.000s
 OK
-
-.\.superpowers\sdd\runtime\verify-venv\Scripts\python.exe -m py_compile value_candidates.py tests\test_value_candidates.py
-exit code 0
-
-git diff --check
-exit code 0
 ```
 
-### Review-Fix Commit
+Required covering suites, including settlement ingress and value-strategy
+integration:
 
-`8e3acbd` (`fix: harden value candidate evidence gates`).
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_result_evidence tests.test_build_historical_features tests.test_draw_model_learning tests.test_betting_ledger tests.test_value_strategy tests.test_value_strategy_integration -v
+```
 
-### Review-Fix Scope
+```text
+Ran 201 tests in 14.635s
+OK
+```
 
-- Naive timestamps are interpreted as Beijing time; aware timestamps retain their supplied offset, and invalid values exclude candidates without raising.
-- All candidate model weights and strict/normal value gates use one nonnegative `value_strategy.settled_samples` value, defaulting to `0`; draw calibration samples remain a candidate reliability field.
-- High quality now requires a complete embedded `snapshot["opening"]` payload with the direct `sporttery` source, opening phase, valid pre-decision/pre-kickoff capture time, matching identity/market/handicap line, and complete valid prices. Invalid opening material remains medium and cannot influence volatility.
-- Cross-artifact opening assembly remains deferred to Task 6.
+The full suite was not rerun, per the review instruction.
 
-### Review-Fix Concerns
+### Self-Review
 
-No code concerns found. The earlier `opening_matches` concern is superseded: a bare list is now intentionally treated as missing opening evidence and remains medium quality; assembling separate snapshot artifacts is Task 6 work.
+- Shared logic: all three CSV consumers call `resolve_result_batch`; no consumer
+  retains local duplicate/conflict selection logic.
+- Exact duplicates: equal row dictionaries collapse to one copied row with a
+  canonical trimmed match ID. No last-write-wins update occurs.
+- Ambiguity removal: after the first distinct duplicate, the ID is removed and
+  retained in the conflict set, so later rows cannot restore it.
+- Refunds and abnormal handling: unique `refunded` and `invalid` rows survive
+  batch resolution. Their existing ledger paths remain unchanged and now require
+  approved provenance captured at exactly `UTC+08:00`.
+- Economics: no stake, return, profit, odds, parlay, correction, or terminal
+  economics code changed. Existing refund and abnormal settlement tests pass.
+- Scope: changes are limited to the shared evidence contract, the three required
+  batch consumers, corresponding tests, and this report append.
+- `git diff --check` reported no whitespace errors; only existing line-ending
+  conversion warnings were emitted.
+
+### Concerns
+
+No implementation concerns identified. Distinct duplicate rows are intentionally
+treated as ambiguous even when their differences are outside the score fields;
+this is the conservative fail-closed behavior required for settlement evidence.

@@ -50,13 +50,23 @@ def plan_row():
     }
 
 
-def snapshot(captured_at, odds):
+def snapshot(captured_at, odds, phase="monitoring"):
+    minutes_to_kickoff = int(
+        (datetime.fromisoformat(KICKOFF) - datetime.fromisoformat(captured_at)).total_seconds() // 60
+    )
+    if minutes_to_kickoff <= 45:
+        capture_phase = "pre_kickoff_30"
+    elif minutes_to_kickoff <= 105:
+        capture_phase = "pre_kickoff_90"
+    else:
+        capture_phase = phase
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "target_date": REPORT_DATE.isoformat(),
         "captured_at": captured_at,
         "source": "sporttery",
         "fetch_mode": "live",
+        "capture_phase": phase,
         "source_response_sha256": "0" * 64,
         "matches": [
             {
@@ -73,6 +83,8 @@ def snapshot(captured_at, odds):
                     "ttg": False,
                 },
                 "markets": {"had": {"h": odds}, "hhad": {}, "ttg": {}},
+                "capture_phase": capture_phase,
+                "minutes_to_kickoff": minutes_to_kickoff,
             }
         ],
     }
@@ -105,6 +117,12 @@ def read_csv(path):
 
 
 class PreKickoffCrossMidnightRehearsalTest(unittest.TestCase):
+    def test_snapshot_helper_keeps_requested_phase_above_t90_window(self):
+        payload = snapshot("2026-07-19T20:00:00+08:00", "2.50")
+
+        self.assertEqual(300, payload["matches"][0]["minutes_to_kickoff"])
+        self.assertEqual("monitoring", payload["matches"][0]["capture_phase"])
+
     def test_active_rehearsal_is_ordered_bounded_idempotent_and_cross_midnight_safe(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -126,7 +144,11 @@ class PreKickoffCrossMidnightRehearsalTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            initial_snapshot = snapshot("2026-07-19T13:45:00+08:00", "2.50")
+            initial_snapshot = snapshot(
+                "2026-07-19T13:45:00+08:00",
+                "2.50",
+                phase="decision",
+            )
             decision_bundle = {
                 "schema_version": 3,
                 "target_date": REPORT_DATE.isoformat(),
@@ -166,13 +188,23 @@ class PreKickoffCrossMidnightRehearsalTest(unittest.TestCase):
             self.assertEqual(PROVISIONAL_AT.isoformat(), provisional["generated_at_bjt"])
 
             snapshots = {
-                T90_AT: snapshot("2026-07-19T23:30:00+08:00", "2.40"),
-                T30_AT: snapshot("2026-07-20T00:30:00+08:00", "2.30"),
+                T90_AT: snapshot(
+                    "2026-07-19T23:30:00+08:00",
+                    "2.40",
+                    phase="pre_kickoff_90",
+                ),
+                T30_AT: snapshot(
+                    "2026-07-20T00:30:00+08:00",
+                    "2.30",
+                    phase="pre_kickoff_30",
+                ),
             }
 
-            def provider(_root, target_date, checked_at):
+            def provider(_root, target_date, checked_at, *, phase):
                 self.assertEqual(REPORT_DATE, target_date)
-                return write_snapshot(root, snapshots[checked_at])
+                payload = snapshots[checked_at]
+                self.assertEqual(phase, payload["capture_phase"])
+                return write_snapshot(root, payload)
 
             with patch(
                 "provisional_plan.read_valid_decision_bundle",

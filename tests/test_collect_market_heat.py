@@ -492,16 +492,36 @@ class MarketHeatCollectorTest(unittest.TestCase):
             ) as handle:
                 writer = csv.DictWriter(
                     handle,
-                    fieldnames=["date", "team_a", "team_b", "home_goals", "away_goals"],
+                    fieldnames=[
+                        "date",
+                        "match_id",
+                        "team_a",
+                        "team_b",
+                        "home_goals",
+                        "away_goals",
+                        "result_status",
+                        "result_source",
+                        "source_record_id",
+                        "captured_at_bjt",
+                        "score_scope",
+                        "settlement_minutes",
+                    ],
                 )
                 writer.writeheader()
                 writer.writerow(
                     {
                         "date": "2026-07-12",
+                        "match_id": "001",
                         "team_a": "Norway",
                         "team_b": "England",
                         "home_goals": "1",
                         "away_goals": "1",
+                        "result_status": "finished",
+                        "result_source": "sporttery",
+                        "source_record_id": "result-001",
+                        "captured_at_bjt": "2026-07-12T22:00:00+08:00",
+                        "score_scope": "regular_time_90",
+                        "settlement_minutes": "90",
                     }
                 )
 

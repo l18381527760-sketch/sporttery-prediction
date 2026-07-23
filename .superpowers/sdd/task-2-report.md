@@ -149,3 +149,95 @@ Implementation commit: `de347035d39c0eaa93aec628c5bd5cd321af825c` (`fix: require
 ### Concerns
 
 No code concerns found.
+
+## Historical Identity Result Resolution
+
+### Initial Implementation
+
+- Routed fallback fixture identity through `fixture_identity.fixture_match_ids(ROOT, target_date)` and converted immutable values to the resolver's existing mutable-set interface.
+- Added fallback provenance coverage for canonical prior-day identity after a mutable `fixtures.csv` overwrite.
+- Commit: `ab4ecd3fc0e31a15f348c20139d074ce236fdb38` (`fix: resolve results from historical manifests`).
+
+## Historical Identity Review Fix
+
+### Files Changed
+
+- `update_sporttery_results.py`: loads fixture identity only after the official source fails, fallback returns at least one score-bearing result, and fallback matching is required.
+- `tests/test_update_sporttery_results.py`: adds the direct-source no-fixture regression and replaces the mocked historical fixture identity with a schema-2 immutable-manifest integration test built by `import_sporttery.write_import_manifest`.
+- `.superpowers/sdd/task-2-report.md`: appends this review-fix evidence.
+
+### RED Evidence
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_update_sporttery_results.ResultProvenanceTest.test_direct_result_does_not_require_fallback_fixture_identity -v
+```
+
+```text
+ERROR: test_direct_result_does_not_require_fallback_fixture_identity
+ValueError: fixture identity source is invalid
+Ran 1 test in 0.025s
+FAILED (errors=1)
+```
+
+The failure proved the direct Sporttery path was incorrectly loading fallback-only fixture identity when no manifest or mutable fixture source existed.
+
+### GREEN Evidence
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_update_sporttery_results.ResultProvenanceTest.test_direct_result_does_not_require_fallback_fixture_identity tests.test_update_sporttery_results.ResultProvenanceTest.test_fallback_uses_historical_manifest_after_current_fixture_overwrite -v
+```
+
+```text
+Ran 2 tests in 0.065s
+OK
+exit code 0
+```
+
+The manifest integration test creates target-date fixtures and a schema-2 validated manifest with the real `write_import_manifest` contract, overwrites `data/fixtures.csv` with a later date, and mocks only the result providers during `update_results`. It therefore fails if `ROOT` or `target_date` is routed incorrectly.
+
+### Covering Test Evidence
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_update_sporttery_results -v
+```
+
+```text
+Ran 19 tests in 0.202s
+OK
+exit code 0
+```
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_fixture_identity -v
+```
+
+```text
+Ran 3 tests in 0.038s
+OK
+exit code 0
+```
+
+```powershell
+& 'C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_import_sporttery -v
+```
+
+```text
+Ran 23 tests in 0.360s
+OK
+exit code 0
+```
+
+All three commands completed with no unittest failures or errors. Their normal
+test-fixture source diagnostics were emitted, and every unittest summary ended
+with `OK`.
+
+### Self-Review
+
+- Direct, source-identified Sporttery rows now proceed without reading fixtures, manifests, or fallback identity.
+- Fallback identity is read only after fallback result rows exist; an invalid manifest or fixture identity source still raises `ValueError` and is not swallowed or guessed.
+- `_resolve_fallback_target` is unchanged: source-record identity remains mandatory, multiple canonical IDs remain unavailable, and conflicts retain existing scores.
+- The real manifest test uses the target date in both manifest and resolver call, while the only mutable fixture row is on a different date; incorrect `ROOT` or target-date routing cannot resolve `2040580`.
+
+### Concerns
+
+No implementation concerns identified.
