@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import update_sporttery_results as results
 import import_sporttery
@@ -576,6 +576,25 @@ class ResultProvenanceTest(unittest.TestCase):
             row = self.read_rows(path)[0]
             self.assertEqual(("1", "0", "conflict"), (row["home_goals"], row["away_goals"], row["result_status"]))
             self.assertEqual("2026-07-17T10:00:00+08:00", row["captured_at_bjt"])
+
+
+class ResultCliTest(unittest.TestCase):
+    def test_reconcile_days_runs_oldest_first_and_is_bounded(self):
+        with patch.object(results, "update_results", return_value=Path("results.csv")) as update:
+            exit_code = results.main([
+                "--date", "2026-07-21", "--reconcile-days", "3",
+            ])
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [date(2026, 7, 19), date(2026, 7, 20), date(2026, 7, 21)],
+            [call.args[0] for call in update.call_args_list],
+        )
+
+    def test_reconcile_days_rejects_values_outside_one_through_thirty(self):
+        for value in ("0", "31"):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                results.main(["--date", "2026-07-21", "--reconcile-days", value])
 
 
 if __name__ == "__main__":

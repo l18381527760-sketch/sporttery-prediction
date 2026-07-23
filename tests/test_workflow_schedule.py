@@ -228,7 +228,7 @@ class WorkflowScheduleTest(unittest.TestCase):
         expected = (
             'TODAY="$TARGET_DATE"',
             'SETTLEMENT_DATE="$(date -d "$TODAY - 1 day" +%F)"',
-            'python update_sporttery_results.py --date "$SETTLEMENT_DATE"',
+            'python update_sporttery_results.py --date "$SETTLEMENT_DATE" --reconcile-days 7',
             "python generate_betting_plan.py --settle-only",
             'python draw_model_learning.py --train --date "$TODAY"',
             'python build_site.py --date "$TODAY" --stage settlement',

@@ -1,3 +1,4 @@
+import argparse
 import csv
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
@@ -392,17 +393,28 @@ def _write_rows(path: Path, rows: list[dict]) -> None:
             writer.writerow({field: row.get(field, "") for field in fields})
 
 
-def main() -> int:
-    import argparse
+def _reconcile_count(value: str) -> int:
+    try:
+        count = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("reconcile-days must be an integer") from error
+    if not 1 <= count <= 30:
+        raise argparse.ArgumentTypeError("reconcile-days must be between 1 and 30")
+    return count
+
+
+def main(argv: list[str] | None = None) -> int:
 
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     parser = argparse.ArgumentParser(description="抓取已完场竞彩足球赛果并更新结算数据。")
     parser.add_argument("--date", default=yesterday)
-    args = parser.parse_args()
+    parser.add_argument("--reconcile-days", type=_reconcile_count, default=1)
+    args = parser.parse_args(argv)
 
-    target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
-    path = update_results(target_date)
-    print(f"Updated results: {path}")
+    end = datetime.strptime(args.date, "%Y-%m-%d").date()
+    for offset in reversed(range(args.reconcile_days)):
+        path = update_results(end - timedelta(days=offset))
+        print(f"Updated results: {path}")
     return 0
 
 
