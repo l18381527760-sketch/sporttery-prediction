@@ -1,7 +1,7 @@
 import csv
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import call, patch
 
@@ -579,7 +579,33 @@ class ResultProvenanceTest(unittest.TestCase):
 
 
 class ResultCliTest(unittest.TestCase):
-    def test_reconcile_days_runs_oldest_first_and_is_bounded(self):
+    def test_reconcile_days_defaults_to_one_update_of_the_requested_date(self):
+        with patch.object(results, "update_results", return_value=Path("results.csv")) as update:
+            exit_code = results.main(["--date", "2026-07-21"])
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual([call(date(2026, 7, 21))], update.call_args_list)
+
+    def test_reconcile_days_accepted_endpoints_run_oldest_first(self):
+        expected_starts = {
+            1: date(2026, 7, 21),
+            30: date(2026, 6, 22),
+        }
+        for reconcile_days, start in expected_starts.items():
+            with self.subTest(reconcile_days=reconcile_days), patch.object(
+                results, "update_results", return_value=Path("results.csv")
+            ) as update:
+                exit_code = results.main([
+                    "--date", "2026-07-21", "--reconcile-days", str(reconcile_days),
+                ])
+
+            self.assertEqual(0, exit_code)
+            self.assertEqual(
+                [start + timedelta(days=offset) for offset in range(reconcile_days)],
+                [call.args[0] for call in update.call_args_list],
+            )
+
+    def test_reconcile_days_runs_oldest_first_for_a_middle_value(self):
         with patch.object(results, "update_results", return_value=Path("results.csv")) as update:
             exit_code = results.main([
                 "--date", "2026-07-21", "--reconcile-days", "3",
@@ -591,10 +617,37 @@ class ResultCliTest(unittest.TestCase):
             [call.args[0] for call in update.call_args_list],
         )
 
-    def test_reconcile_days_rejects_values_outside_one_through_thirty(self):
-        for value in ("0", "31"):
-            with self.subTest(value=value), self.assertRaises(SystemExit):
+    def test_reconcile_days_rejects_values_outside_one_through_thirty_or_non_integers(self):
+        for value in ("0", "31", "three"):
+            with self.subTest(value=value), self.assertRaises(SystemExit) as raised:
                 results.main(["--date", "2026-07-21", "--reconcile-days", value])
+            self.assertEqual(2, raised.exception.code)
+
+    def test_date_rejects_non_padded_malformed_and_invalid_calendar_values(self):
+        for value in ("2026-7-21", "20260721", "not-a-date", "2026-02-30"):
+            with self.subTest(value=value):
+                with patch.object(results, "update_results") as update:
+                    with self.assertRaises(SystemExit) as raised:
+                        results.main(["--date", value])
+                self.assertEqual(2, raised.exception.code)
+                update.assert_not_called()
+
+    def test_reconcile_failure_stops_before_later_dates_and_propagates(self):
+        failure = RuntimeError("result source unavailable")
+        with patch.object(
+            results,
+            "update_results",
+            side_effect=[Path("first.csv"), failure, Path("third.csv")],
+        ) as update:
+            with self.assertRaisesRegex(RuntimeError, "result source unavailable"):
+                results.main([
+                    "--date", "2026-07-21", "--reconcile-days", "3",
+                ])
+
+        self.assertEqual(
+            [date(2026, 7, 19), date(2026, 7, 20)],
+            [call.args[0] for call in update.call_args_list],
+        )
 
 
 if __name__ == "__main__":

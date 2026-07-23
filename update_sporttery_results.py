@@ -403,15 +403,25 @@ def _reconcile_count(value: str) -> int:
     return count
 
 
+def _parse_date(value: str) -> date:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("date must be exact YYYY-MM-DD") from error
+    if value != parsed.isoformat():
+        raise argparse.ArgumentTypeError("date must be exact YYYY-MM-DD")
+    return parsed
+
+
 def main(argv: list[str] | None = None) -> int:
 
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    yesterday = date.today() - timedelta(days=1)
     parser = argparse.ArgumentParser(description="抓取已完场竞彩足球赛果并更新结算数据。")
-    parser.add_argument("--date", default=yesterday)
+    parser.add_argument("--date", type=_parse_date, default=yesterday)
     parser.add_argument("--reconcile-days", type=_reconcile_count, default=1)
     args = parser.parse_args(argv)
 
-    end = datetime.strptime(args.date, "%Y-%m-%d").date()
+    end = args.date
     for offset in reversed(range(args.reconcile_days)):
         path = update_results(end - timedelta(days=offset))
         print(f"Updated results: {path}")
