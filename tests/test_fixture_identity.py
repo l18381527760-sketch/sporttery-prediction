@@ -70,6 +70,29 @@ class FixtureIdentityTest(unittest.TestCase):
             )
             self.assertEqual((1, 1), fixture_identity_rate(root, DAY))
 
+    def test_falls_back_to_current_fixture_csv_when_target_manifest_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            (data / "fixtures.csv").write_text(
+                "date,team_a,team_b,match_id,kickoff_at\n"
+                "2026-07-21,\u7532\u961f,\u4e59\u961f,2040580,2026-07-21T18:00:00+08:00\n"
+                "2026-07-21,\u4e19\u961f,\u4e01\u961f,2040581,2026-07-21T20:00:00+08:00\n"
+                "2026-07-22,\u7532\u961f,\u4e59\u961f,999,2026-07-22T18:00:00+08:00\n",
+                encoding="utf-8",
+            )
+
+            identities = fixture_match_ids(root, DAY)
+            self.assertEqual(
+                {
+                    ("2026-07-21", "\u7532\u961f", "\u4e59\u961f"): frozenset({"2040580"}),
+                    ("2026-07-21", "\u4e19\u961f", "\u4e01\u961f"): frozenset({"2040581"}),
+                },
+                identities,
+            )
+            self.assertEqual((2, 2), fixture_identity_rate(root, DAY))
+
     def test_rejects_duplicate_provider_ids_for_different_matches(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

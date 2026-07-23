@@ -86,3 +86,25 @@ C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin
 ## Concerns
 
 None identified. The initial brief/schema mismatch was resolved by using schema version `2` as clarified and recorded in the plan source.
+
+## Review Follow-Up
+
+Fix summary: added a real-file regression test for the absent-manifest compatibility path. It creates `data/fixtures.csv` without a target-date manifest, includes two target-date rows and one non-target-date row, and verifies exact-date filtering, the returned identity mapping, and the `(2, 2)` identity rate. Production code and the intentional plan-document schema corrections were unchanged.
+
+Command:
+
+```text
+C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m unittest tests.test_fixture_identity tests.test_import_sporttery -v
+```
+
+Output:
+
+```text
+test_falls_back_to_current_fixture_csv_when_target_manifest_is_absent (tests.test_fixture_identity.FixtureIdentityTest.test_falls_back_to_current_fixture_csv_when_target_manifest_is_absent) ... ok
+test_reads_target_day_from_immutable_manifest_when_current_csv_is_newer (tests.test_fixture_identity.FixtureIdentityTest.test_reads_target_day_from_immutable_manifest_when_current_csv_is_newer) ... ok
+test_rejects_duplicate_provider_ids_for_different_matches (tests.test_fixture_identity.FixtureIdentityTest.test_rejects_duplicate_provider_ids_for_different_matches) ... ok
+Ran 26 tests in 0.375s
+OK
+```
+
+Self-review: the added test uses real temporary files, proves the absent-manifest branch rather than mocking it, verifies target-date filtering through an extra next-day row, and leaves production behavior and scope unchanged. No new concerns identified.
