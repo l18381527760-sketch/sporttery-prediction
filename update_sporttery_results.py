@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
+from fixture_identity import fixture_match_ids
 from import_sporttery import ZGZCW_HAD_URL, fetch_matches, fetch_text
 
 
@@ -349,21 +350,10 @@ def _fallback_result_row(item: dict) -> dict:
 
 
 def _fixture_match_ids(target_date: date) -> dict[tuple[str, str, str], set[str]]:
-    path = DATA_DIR / "fixtures.csv"
-    if not path.exists():
-        return {}
-    try:
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            fixture_ids: dict[tuple[str, str, str], set[str]] = {}
-            for row in csv.DictReader(handle):
-                match_id = row.get("match_id", "").strip()
-                if row.get("date") != target_date.isoformat() or not match_id:
-                    continue
-                key = (row.get("date", ""), row.get("team_a", ""), row.get("team_b", ""))
-                fixture_ids.setdefault(key, set()).add(match_id)
-            return fixture_ids
-    except (OSError, csv.Error):
-        return {}
+    return {
+        key: set(values)
+        for key, values in fixture_match_ids(ROOT, target_date).items()
+    }
 
 
 def _result_provenance(item: dict, status: str) -> dict:
