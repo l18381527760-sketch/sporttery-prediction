@@ -243,6 +243,7 @@ class CaptureOddsSnapshotCliTest(unittest.TestCase):
 
         capture_live.assert_called_once()
         self.assertEqual((root, TARGET_DATE_VALUE), capture_live.call_args.args[:2])
+        self.assertEqual("decision", capture_live.call_args.kwargs["phase"])
         output.assert_any_call(str(snapshot))
 
 

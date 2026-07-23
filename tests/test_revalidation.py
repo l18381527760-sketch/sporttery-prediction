@@ -109,18 +109,24 @@ def parlay_candidate(*, kickoffs, state="provisional"):
 
 
 def snapshot(*, odds="2.50", kickoff="2026-07-20T02:00:00+08:00"):
+    minutes_to_kickoff = int(
+        (datetime.fromisoformat(kickoff) - datetime(2026, 7, 20, 0, 30, tzinfo=BJT)).total_seconds() // 60
+    )
     return {
         "schema_version": 1,
         "target_date": DAY.isoformat(),
         "captured_at": "2026-07-20T00:30:00+08:00",
         "source": "sporttery",
         "fetch_mode": "live",
+        "capture_phase": "monitoring",
         "source_response_sha256": "0" * 64,
         "matches": [{
             "match_id": "match-1", "source_record_id": "source-1", "match_num": "Monday001",
             "team_a": "Home", "team_b": "Away", "kickoff_at": kickoff, "sales_state": "Selling",
             "single_eligibility": {"had": True, "hhad": False, "ttg": False},
             "markets": {"had": {"h": odds}, "hhad": {}, "ttg": {}},
+            "capture_phase": _match_phase(minutes_to_kickoff),
+            "minutes_to_kickoff": minutes_to_kickoff,
         }],
     }
 
@@ -152,8 +158,9 @@ def actual_plan_row(*, market_type="had", market_line="", selection="h", match_i
 
 def actual_candidate(**changes):
     row = actual_plan_row(**changes)
-    initial_snapshot = actual_snapshot()
-    initial_snapshot["captured_at"] = "2026-07-19T13:30:00+08:00"
+    initial_snapshot = actual_snapshot(
+        captured_at="2026-07-19T13:30:00+08:00", phase="decision"
+    )
     evidence = task2_bundle()
     evidence["decision_snapshot"]["captured_at_bjt"] = initial_snapshot["captured_at"]
     evidence["decision_snapshot"]["payload"] = initial_snapshot
@@ -196,26 +203,49 @@ def actual_parlay_candidate():
     )
 
 
-def actual_snapshot(*, second_goal_line="+1"):
+def _match_phase(minutes_to_kickoff, requested_phase="monitoring"):
+    if minutes_to_kickoff <= 45:
+        return "pre_kickoff_30"
+    if minutes_to_kickoff <= 105:
+        return "pre_kickoff_90"
+    return requested_phase
+
+
+def actual_snapshot(
+    *,
+    second_goal_line="+1",
+    captured_at="2026-07-20T00:30:00+08:00",
+    phase="monitoring",
+):
+    captured = datetime.fromisoformat(captured_at)
+    first_kickoff = "2026-07-20T02:00:00+08:00"
+    second_kickoff = "2026-07-20T03:00:00+08:00"
+    first_minutes = int((datetime.fromisoformat(first_kickoff) - captured).total_seconds() // 60)
+    second_minutes = int((datetime.fromisoformat(second_kickoff) - captured).total_seconds() // 60)
     return {
         "schema_version": 1, "target_date": DAY.isoformat(),
-        "captured_at": "2026-07-20T00:30:00+08:00",
+        "captured_at": captured_at,
         "source": "sporttery", "fetch_mode": "live",
+        "capture_phase": phase,
         "source_response_sha256": "0" * 64,
         "matches": [
             {
                 "match_id": "match-1", "source_record_id": "source-1",
                 "match_num": "Monday001", "team_a": "Home", "team_b": "Away",
-                "kickoff_at": "2026-07-20T02:00:00+08:00", "sales_state": "Selling",
+                "kickoff_at": first_kickoff, "sales_state": "Selling",
                 "single_eligibility": {"had": True, "hhad": True, "ttg": True},
                 "markets": {"had": {"h": "2.50"}, "hhad": {"h": "2.50", "goalLine": "+1"}, "ttg": {}},
+                "capture_phase": _match_phase(first_minutes, phase),
+                "minutes_to_kickoff": first_minutes,
             },
             {
                 "match_id": "match-2", "source_record_id": "source-2",
                 "match_num": "Monday002", "team_a": "Alpha", "team_b": "Beta",
-                "kickoff_at": "2026-07-20T03:00:00+08:00", "sales_state": "Selling",
+                "kickoff_at": second_kickoff, "sales_state": "Selling",
                 "single_eligibility": {"had": True, "hhad": True, "ttg": True},
                 "markets": {"had": {}, "hhad": {"a": "2.50", "goalLine": second_goal_line}, "ttg": {}},
+                "capture_phase": _match_phase(second_minutes, phase),
+                "minutes_to_kickoff": second_minutes,
             },
         ],
     }
@@ -252,8 +282,9 @@ def runtime_state(value, **entry_changes):
 
 
 def task2_bundle():
-    initial_snapshot = actual_snapshot()
-    initial_snapshot["captured_at"] = "2026-07-19T13:30:00+08:00"
+    initial_snapshot = actual_snapshot(
+        captured_at="2026-07-19T13:30:00+08:00", phase="decision"
+    )
     return {
         "schema_version": 3, "target_date": DAY.isoformat(),
         "locked_at_bjt": "2026-07-20T00:20:00+08:00",
@@ -558,8 +589,9 @@ class RevalidationTest(TestCase):
                         target_dates=[DAY],
                         snapshot_provider=lambda *_args: write_actual_snapshot(root),
                     )
-                    t30_snapshot = actual_snapshot()
-                    t30_snapshot["captured_at"] = "2026-07-20T01:35:00+08:00"
+                    t30_snapshot = actual_snapshot(
+                        captured_at="2026-07-20T01:35:00+08:00"
+                    )
                     confirmed = run_due_revalidation(
                         root,
                         datetime(2026, 7, 20, 1, 35, tzinfo=BJT),
@@ -957,8 +989,9 @@ class RevalidationTest(TestCase):
                     target_dates=[DAY],
                     snapshot_provider=lambda *_args: write_actual_snapshot(root),
                 )
-                final_snapshot = actual_snapshot()
-                final_snapshot["captured_at"] = "2026-07-20T01:35:00+08:00"
+                final_snapshot = actual_snapshot(
+                    captured_at="2026-07-20T01:35:00+08:00"
+                )
                 with patch(
                     "betting_ledger._commit_ledger_generation_locked",
                     side_effect=OSError("ledger unavailable"),

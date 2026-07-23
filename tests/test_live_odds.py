@@ -52,6 +52,37 @@ class LiveOddsTest(TestCase):
         self.assertEqual("sporttery", payload["source"])
         self.assertEqual("2.80", payload["matches"][0]["markets"]["had"]["h"])
 
+    def test_capture_records_requested_and_per_match_phases(self):
+        with TemporaryDirectory() as tmp:
+            path = live_odds.capture_live_snapshot(
+                Path(tmp),
+                DAY,
+                datetime(2026, 7, 19, 16, 45, tzinfo=BJT),
+                phase="decision",
+                sporttery_fetcher=lambda day: [
+                    sporttery_match(kickoff_at="2026-07-19T18:00:00+08:00")
+                ],
+                sporttery_odds_fetcher=lambda match_id: had_odds(),
+            )
+            payload = live_odds.read_valid_live_snapshot(
+                Path(tmp), path, DAY, datetime(2026, 7, 19, 16, 46, tzinfo=BJT)
+            )
+
+        self.assertEqual("decision", payload["capture_phase"])
+        self.assertEqual("pre_kickoff_90", payload["matches"][0]["capture_phase"])
+        self.assertEqual(75, payload["matches"][0]["minutes_to_kickoff"])
+
+    def test_capture_rejects_invalid_phase_before_fetching(self):
+        with TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "capture phase"):
+                live_odds.capture_live_snapshot(
+                    Path(tmp),
+                    DAY,
+                    NOW,
+                    phase="unsupported",
+                    sporttery_fetcher=lambda day: self.fail("live source must not fetch"),
+                )
+
     def test_zgzcw_fallback_maps_exact_fixture_identity_and_market(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

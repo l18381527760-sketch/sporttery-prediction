@@ -21,6 +21,9 @@ from import_sporttery import (
 BEIJING = timezone(timedelta(hours=8))
 LIVE_SCHEMA_VERSION = 1
 DOMESTIC_SOURCES = frozenset({"sporttery", "zgzcw"})
+LIVE_PHASES = frozenset({
+    "opening", "decision", "monitoring", "pre_kickoff_90", "pre_kickoff_30"
+})
 _SUPPORTED_MARKETS = ("had", "hhad", "ttg")
 
 
@@ -28,6 +31,7 @@ def capture_live_snapshot(
     root: Path,
     target_date: date,
     captured_at: datetime,
+    phase: str = "monitoring",
     preferred_source: str | None = None,
     sporttery_fetcher=None,
     sporttery_odds_fetcher=None,
@@ -36,6 +40,7 @@ def capture_live_snapshot(
 ) -> Path:
     root = Path(root).resolve()
     captured = _aware_datetime(captured_at, "captured_at").astimezone(BEIJING)
+    phase = _capture_phase(phase)
     source = _preferred_source(preferred_source)
     sporttery_fetcher = sporttery_fetcher or fetch_selling_matches
     sporttery_odds_fetcher = sporttery_odds_fetcher or fetch_odds
@@ -51,7 +56,7 @@ def capture_live_snapshot(
         else:
             try:
                 normalized, odds_by_source_id = _normalize_sporttery(
-                    matches, sporttery_odds_fetcher, captured
+                    matches, sporttery_odds_fetcher, captured, phase
                 )
             except ValueError:
                 raise
@@ -66,14 +71,17 @@ def capture_live_snapshot(
                     "sporttery",
                     {"matches": matches, "odds": odds_by_source_id},
                     normalized,
+                    phase,
                 )
 
     matches = zgzcw_match_fetcher(target_date)
     odds_by_source_id = zgzcw_odds_fetcher(target_date)
     normalized = _normalize_zgzcw(
-        root, target_date, matches, odds_by_source_id, captured
+        root, target_date, matches, odds_by_source_id, captured, phase
     )
-    return _publish(root, target_date, captured, "zgzcw", (matches, odds_by_source_id), normalized)
+    return _publish(
+        root, target_date, captured, "zgzcw", (matches, odds_by_source_id), normalized, phase
+    )
 
 
 def read_valid_live_snapshot(
@@ -111,8 +119,14 @@ def _preferred_source(value: str | None) -> str | None:
     return value.lower()
 
 
+def _capture_phase(value: object) -> str:
+    if not isinstance(value, str) or value not in LIVE_PHASES:
+        raise ValueError("live capture phase is invalid")
+    return value
+
+
 def _normalize_sporttery(
-    matches: object, odds_fetcher, captured: datetime
+    matches: object, odds_fetcher, captured: datetime, phase: str
 ) -> tuple[list[dict], dict[str, dict]]:
     if not isinstance(matches, list):
         raise ValueError("Sporttery matches are invalid")
@@ -136,6 +150,8 @@ def _normalize_sporttery(
             sales_state,
             eligibility,
             markets,
+            captured,
+            phase,
         ))
     _require_unique_ids(normalized)
     return normalized, odds_by_source_id
@@ -147,6 +163,7 @@ def _normalize_zgzcw(
     matches: object,
     odds_by_source_id: object,
     captured: datetime,
+    phase: str,
 ) -> list[dict]:
     if not isinstance(matches, list) or not isinstance(odds_by_source_id, dict):
         raise ValueError("ZGZCW source response is invalid")
@@ -173,6 +190,8 @@ def _normalize_zgzcw(
             sales_state,
             eligibility,
             markets,
+            captured,
+            phase,
         ))
     _require_unique_ids(normalized)
     return normalized
@@ -259,7 +278,10 @@ def _match_row(
     sales_state: str,
     eligibility: dict,
     markets: dict,
+    captured: datetime,
+    requested_phase: str,
 ) -> dict:
+    minutes_to_kickoff = _minutes_to_kickoff(kickoff, captured)
     return {
         "match_id": match_id,
         "source_record_id": source_record_id,
@@ -270,7 +292,26 @@ def _match_row(
         "sales_state": sales_state,
         "single_eligibility": eligibility,
         "markets": markets,
+        "capture_phase": _match_phase(requested_phase, minutes_to_kickoff),
+        "minutes_to_kickoff": minutes_to_kickoff,
     }
+
+
+def _minutes_to_kickoff(kickoff: datetime, captured: datetime) -> int:
+    minutes = int(
+        (kickoff.astimezone(BEIJING) - captured.astimezone(BEIJING)).total_seconds() // 60
+    )
+    if minutes < 0:
+        raise ValueError("live snapshot kickoff is not future")
+    return minutes
+
+
+def _match_phase(requested: str, minutes: int) -> str:
+    if minutes <= 45:
+        return "pre_kickoff_30"
+    if minutes <= 105:
+        return "pre_kickoff_90"
+    return requested
 
 
 def _require_unique_ids(matches: list[dict]) -> None:
@@ -287,6 +328,7 @@ def _publish(
     source: str,
     source_response: object,
     matches: list[dict],
+    phase: str,
 ) -> Path:
     payload = {
         "schema_version": LIVE_SCHEMA_VERSION,
@@ -294,6 +336,7 @@ def _publish(
         "captured_at": captured.isoformat(),
         "source": source,
         "fetch_mode": "live",
+        "capture_phase": phase,
         "source_response_sha256": _canonical_sha256(source_response),
         "matches": matches,
     }
@@ -322,6 +365,7 @@ def _validate_payload(payload: object, target_date: date, not_after: datetime | 
     source = payload.get("source")
     if not isinstance(source, str) or source not in DOMESTIC_SOURCES:
         raise ValueError("live snapshot source is invalid")
+    phase = _capture_phase(payload.get("capture_phase"))
     captured = _aware_datetime(payload.get("captured_at"), "live snapshot captured_at").astimezone(BEIJING)
     if not_after is not None and captured > _aware_datetime(not_after, "not_after").astimezone(BEIJING):
         raise ValueError("live snapshot was captured after the allowed time")
@@ -348,6 +392,17 @@ def _validate_payload(payload: object, target_date: date, not_after: datetime | 
         kickoff = _aware_datetime(row.get("kickoff_at"), "live kickoff_at").astimezone(BEIJING)
         if kickoff <= captured:
             raise ValueError("live snapshot kickoff is not future")
+        minutes_to_kickoff = row.get("minutes_to_kickoff")
+        if (
+            not isinstance(minutes_to_kickoff, int)
+            or isinstance(minutes_to_kickoff, bool)
+            or minutes_to_kickoff < 0
+        ):
+            raise ValueError("live snapshot minutes to kickoff is invalid")
+        if minutes_to_kickoff != _minutes_to_kickoff(kickoff, captured):
+            raise ValueError("live snapshot minutes to kickoff is invalid")
+        if _capture_phase(row.get("capture_phase")) != _match_phase(phase, minutes_to_kickoff):
+            raise ValueError("live snapshot match capture phase is invalid")
         _required_text(row.get("sales_state"), "live market sales state")
         markets = row.get("markets")
         if not isinstance(markets, dict) or set(markets) != set(_SUPPORTED_MARKETS):

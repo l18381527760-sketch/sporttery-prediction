@@ -244,8 +244,9 @@ class BettingLedgerTest(unittest.TestCase):
         )
         bundle = production_task2_bundle()
         if any(row.get("market_type") == "parlay" for _route, row in routed_rows):
-            initial_snapshot = actual_snapshot()
-            initial_snapshot["captured_at"] = "2026-07-20T00:00:00+08:00"
+            initial_snapshot = actual_snapshot(
+                captured_at="2026-07-20T00:00:00+08:00", phase="decision"
+            )
             bundle["decision_snapshot"]["payload"] = initial_snapshot
             bundle["decision_snapshot"]["captured_at_bjt"] = initial_snapshot[
                 "captured_at"
@@ -272,8 +273,9 @@ class BettingLedgerTest(unittest.TestCase):
                 target_dates=[REVALIDATION_DAY],
                 snapshot_provider=lambda *_args: write_actual_snapshot(self.root),
             )
-            final_snapshot = actual_snapshot()
-            final_snapshot["captured_at"] = "2026-07-20T01:35:00+08:00"
+            final_snapshot = actual_snapshot(
+                captured_at="2026-07-20T01:35:00+08:00"
+            )
             final_snapshot["matches"][0]["markets"]["had"]["h"] = final_odds
             run_due_revalidation(
                 self.root,

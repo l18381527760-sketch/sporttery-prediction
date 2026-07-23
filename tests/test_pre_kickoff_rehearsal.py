@@ -51,12 +51,17 @@ def plan_row():
 
 
 def snapshot(captured_at, odds):
+    minutes_to_kickoff = int(
+        (datetime.fromisoformat(KICKOFF) - datetime.fromisoformat(captured_at)).total_seconds() // 60
+    )
+    capture_phase = "pre_kickoff_30" if minutes_to_kickoff <= 45 else "pre_kickoff_90"
     return {
         "schema_version": 1,
         "target_date": REPORT_DATE.isoformat(),
         "captured_at": captured_at,
         "source": "sporttery",
         "fetch_mode": "live",
+        "capture_phase": "monitoring",
         "source_response_sha256": "0" * 64,
         "matches": [
             {
@@ -73,6 +78,8 @@ def snapshot(captured_at, odds):
                     "ttg": False,
                 },
                 "markets": {"had": {"h": odds}, "hhad": {}, "ttg": {}},
+                "capture_phase": capture_phase,
+                "minutes_to_kickoff": minutes_to_kickoff,
             }
         ],
     }
