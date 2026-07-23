@@ -145,6 +145,7 @@ def update_results(target_date: date) -> Path:
     path = DATA_DIR / "bet_results.csv"
     rows = read_existing(path)
     source = "sporttery"
+    fixture_ids: dict[tuple[str, str, str], set[str]] = {}
     try:
         result_rows = official_result_rows(target_date)
         if not result_rows:
@@ -157,7 +158,8 @@ def update_results(target_date: date) -> Path:
     if not result_rows:
         raise RuntimeError(f"{target_date.isoformat()} 暂未抓到任何已完场赛果，稍后自动重试")
 
-    fixture_ids = _fixture_match_ids(target_date)
+    if source == "zgzcw":
+        fixture_ids = _fixture_match_ids(target_date)
     row_indexes = _index_rows(rows)
     updated = 0
     for item in result_rows:

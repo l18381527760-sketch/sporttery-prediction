@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import update_sporttery_results as results
+import import_sporttery
 
 
 class ResultProvenanceTest(unittest.TestCase):
@@ -85,13 +86,23 @@ class ResultProvenanceTest(unittest.TestCase):
             root = Path(tmp)
             data = root / "data"
             data.mkdir()
-            (data / "fixtures.csv").write_text(
+            fixtures = data / "fixtures.csv"
+            fixtures.write_text(
+                "date,team_a,team_b,match_id\n2026-07-21,Team A,Team B,2040580\n",
+                encoding="utf-8",
+            )
+            odds = data / "odds.json"
+            odds.write_text("{}\n", encoding="utf-8")
+            ratings = data / "ratings.csv"
+            ratings.write_text("team,elo\nTeam A,1500\nTeam B,1500\n", encoding="utf-8")
+            with patch.object(import_sporttery, "DATA_DIR", data):
+                import_sporttery.write_import_manifest(
+                    "sporttery", date(2026, 7, 21), fixtures, odds, ratings
+                )
+            fixtures.write_text(
                 "date,team_a,team_b,match_id\n2026-07-22,New A,New B,9999\n",
                 encoding="utf-8",
             )
-            historical = {
-                ("2026-07-21", "Team A", "Team B"): frozenset({"2040580"})
-            }
             fallback = [{
                 "homeTeam": "Team A", "awayTeam": "Team B",
                 "score": "1:1", "source_record_id": "tr-88",
@@ -101,7 +112,6 @@ class ResultProvenanceTest(unittest.TestCase):
                 patch.object(results, "DATA_DIR", data),
                 patch.object(results, "official_result_rows", side_effect=RuntimeError("offline")),
                 patch.object(results, "fetch_zgzcw_results", return_value=fallback),
-                patch.object(results, "fixture_match_ids", return_value=historical),
             ):
                 path = results.update_results(date(2026, 7, 21))
 
@@ -110,6 +120,27 @@ class ResultProvenanceTest(unittest.TestCase):
             self.assertEqual("finished", row["result_status"])
             self.assertEqual("regular_time_90", row["score_scope"])
             self.assertEqual("tr-88", row["source_record_id"])
+
+    def test_direct_result_does_not_require_fallback_fixture_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            direct = self.captured(
+                "2040580", ("1", "1"), "2026-07-22T10:00:00+08:00",
+                match_id="2040580", result_source="sporttery",
+            )
+            with (
+                patch.object(results, "ROOT", root),
+                patch.object(results, "DATA_DIR", data),
+                patch.object(results, "official_result_rows", return_value=[direct]),
+            ):
+                path = results.update_results(date(2026, 7, 21))
+
+            row = self.read_rows(path)[0]
+            self.assertEqual("2040580", row["match_id"])
+            self.assertEqual("finished", row["result_status"])
+            self.assertEqual(("1", "1"), (row["home_goals"], row["away_goals"]))
 
     def test_unproven_fallback_id_is_unavailable_and_conflicting_score_never_overwrites_finished_score(self):
         with tempfile.TemporaryDirectory() as tmp:
