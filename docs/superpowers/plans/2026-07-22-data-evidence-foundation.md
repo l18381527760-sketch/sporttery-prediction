@@ -118,7 +118,7 @@ class FixtureIdentityTest(unittest.TestCase):
                 "bytes": len(payload),
             }
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "target_date": DAY.isoformat(),
             "source": "sporttery",
             "imported_at_bjt": "2026-07-21T12:05:00+08:00",
@@ -1033,7 +1033,7 @@ def write_import_manifest_fixture(
             "bytes": len(payload),
         }
     (manifests / f"{day.isoformat()}.json").write_text(json.dumps({
-        "schema_version": 1,
+        "schema_version": 2,
         "target_date": day.isoformat(),
         "source": "sporttery",
         "imported_at_bjt": f"{day.isoformat()}T12:05:00+08:00",
