@@ -2,7 +2,7 @@ import csv
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from fixture_identity import fixture_identity_rate, fixture_match_ids
+from fixture_identity import fixture_match_ids
 from model_metrics import snapshot_coverage
 from result_evidence import proven_90_minute_result, resolve_result_batch
 
@@ -20,11 +20,10 @@ def build_evidence_health(
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("evidence health now must include a timezone")
     now_bjt = now.astimezone(BEIJING)
-    try:
-        confirmed, total = fixture_identity_rate(root, target_date)
-    except ValueError:
-        confirmed, total = 0, 0
-    expected_match_ids = _unique_fixture_match_ids(root, target_date)
+    confirmed, total, expected_bindings = _fixture_evidence(
+        root,
+        target_date,
+    )
 
     results = [
         row
@@ -56,7 +55,7 @@ def build_evidence_health(
 
     decision_count = _decision_coverage_count(
         coverage,
-        expected_match_ids,
+        expected_bindings,
     )
     if total and decision_count < total:
         decision_blockers.append("decision_snapshot_incomplete")
@@ -110,37 +109,49 @@ def _result_identity_count(rows: list[dict]) -> int:
     return len(match_ids) + malformed
 
 
-def _unique_fixture_match_ids(
+def _fixture_evidence(
     root: Path,
     target_date: date,
-) -> set[str] | None:
+) -> tuple[int, int, set[tuple[str, str, str, str]]]:
     try:
         identities = fixture_match_ids(root, target_date)
     except ValueError:
-        return None
-    return {
-        next(iter(match_ids))
-        for match_ids in identities.values()
+        return 0, 0, set()
+    confirmed = sum(len(match_ids) == 1 for match_ids in identities.values())
+    bindings = {
+        (*fixture_key, next(iter(match_ids)))
+        for fixture_key, match_ids in identities.items()
         if len(match_ids) == 1
     }
+    return confirmed, len(identities), bindings
 
 
 def _decision_coverage_count(
     coverage: dict,
-    expected_match_ids: set[str] | None,
+    expected_bindings: set[tuple[str, str, str, str]],
 ) -> int:
-    by_phase = coverage.get("match_ids_by_requested_phase")
-    decision_ids = by_phase.get("decision") if isinstance(by_phase, dict) else None
-    if isinstance(decision_ids, list) and all(
-        isinstance(match_id, str) for match_id in decision_ids
-    ):
-        proven_ids = set(decision_ids)
-        if expected_match_ids is not None:
-            proven_ids &= expected_match_ids
-        return len(proven_ids)
-    requested = coverage.get("requested_phases")
-    count = requested.get("decision", 0) if isinstance(requested, dict) else 0
-    return count if type(count) is int and count >= 0 else 0
+    by_phase = coverage.get("bindings_by_requested_phase")
+    raw_bindings = (
+        by_phase.get("decision")
+        if isinstance(by_phase, dict)
+        else None
+    )
+    if not isinstance(raw_bindings, list):
+        return 0
+    proven_bindings = set()
+    for raw in raw_bindings:
+        if (
+            isinstance(raw, list)
+            and len(raw) == 4
+            and all(
+                isinstance(value, str)
+                and value
+                and value == value.strip()
+                for value in raw
+            )
+        ):
+            proven_bindings.add(tuple(raw))
+    return len(expected_bindings & proven_bindings)
 
 
 def _aware(value: object) -> datetime | None:

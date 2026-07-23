@@ -209,6 +209,73 @@ class ReportStatusTest(unittest.TestCase):
         (web / "index.html").write_text("<html></html>", encoding="utf-8")
         (web / "daily-report.png").write_bytes(b"exact png bytes")
 
+    def write_contract_decision_snapshot(
+        self,
+        root: Path,
+        timestamp: str = "133000",
+    ) -> Path:
+        def record(path: Path) -> dict:
+            content = path.read_bytes()
+            return {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": len(content),
+            }
+
+        captured = datetime(
+            REPORT_DATE.year,
+            REPORT_DATE.month,
+            REPORT_DATE.day,
+            int(timestamp[:2]),
+            int(timestamp[2:4]),
+            int(timestamp[4:]),
+            tzinfo=BJT,
+        )
+        manifest_path = (
+            root / "data" / "import_manifests" / f"{REPORT_DATE.isoformat()}.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        with (root / "data" / "fixtures.csv").open(
+            "r",
+            encoding="utf-8",
+            newline="",
+        ) as handle:
+            fixtures = [
+                row
+                for row in csv.DictReader(handle)
+                if row.get("date") == REPORT_DATE.isoformat()
+            ]
+        matches = []
+        for row in fixtures:
+            kickoff = datetime.fromisoformat(row["kickoff_at"])
+            matches.append({
+                "match_id": row["match_id"],
+                "team_a": row["team_a"],
+                "team_b": row["team_b"],
+                "kickoff_at": row["kickoff_at"],
+                "capture_phase": "decision",
+                "minutes_to_kickoff": int(
+                    (kickoff - captured).total_seconds() // 60
+                ),
+            })
+        snapshots = root / "data" / "odds_snapshots"
+        snapshots.mkdir(exist_ok=True)
+        path = snapshots / (
+            f"{REPORT_DATE.isoformat()}-{timestamp}-decision.json"
+        )
+        path.write_text(
+            json.dumps({
+                "target_date": REPORT_DATE.isoformat(),
+                "captured_at": captured.isoformat(),
+                "capture_phase": "decision",
+                "source": manifest["source"],
+                "import_manifest": record(manifest_path),
+                "matches": matches,
+            }),
+            encoding="utf-8",
+        )
+        return path
+
     def make_lock(
         self,
         root: Path,
@@ -278,6 +345,8 @@ class ReportStatusTest(unittest.TestCase):
                     "team_b": row["team_b"],
                     "match_num": row["match_id"],
                     "kickoff_at": row["kickoff_at"],
+                    "capture_phase": "decision",
+                    "minutes_to_kickoff": 390,
                     "sales_state": "Selling",
                     "markets": {
                         "had": {"h": "2.00", "d": "3.20", "a": "3.50"},
@@ -309,54 +378,29 @@ class ReportStatusTest(unittest.TestCase):
         )
 
     def make_decision_snapshot(self, root: Path) -> None:
-        snapshots = root / "data" / "odds_snapshots"
-        snapshots.mkdir(exist_ok=True)
-        path = snapshots / "2026-07-16-133000-decision.json"
+        path = (
+            root
+            / "data"
+            / "odds_snapshots"
+            / "2026-07-16-133000-decision.json"
+        )
         if path.exists():
             return
-        path.write_text(
-            json.dumps({
-                "target_date": REPORT_DATE.isoformat(),
-                "captured_at": "2026-07-16T13:30:00+08:00",
-                "phase": "decision",
-                "matches": [{"match_id": "001"}, {"match_id": "002"}],
-            }),
-            encoding="utf-8",
-        )
+        self.write_contract_decision_snapshot(root)
 
     def write_producer_decision_snapshot(self, root: Path) -> None:
-        snapshots = root / "data" / "odds_snapshots"
-        snapshots.mkdir()
-        (snapshots / "2026-07-16-133000-decision.json").write_text(
-            json.dumps({
-                "target_date": REPORT_DATE.isoformat(),
-                "captured_at": "2026-07-16T13:30:00+08:00",
-                "capture_phase": "decision",
-                "source": "zgzcw",
-                "matches": [{"match_id": "001"}, {"match_id": "002"}],
-            }),
-            encoding="utf-8",
-        )
+        self.write_contract_decision_snapshot(root)
 
     def write_decision_snapshot(self, root: Path, timestamp: str) -> Path:
-        snapshots = root / "data" / "odds_snapshots"
-        snapshots.mkdir(exist_ok=True)
-        path = snapshots / f"2026-07-16-{timestamp}-decision.json"
+        path = (
+            root
+            / "data"
+            / "odds_snapshots"
+            / f"2026-07-16-{timestamp}-decision.json"
+        )
         if path.exists():
             return path
-        path.write_text(
-            json.dumps({
-                "target_date": REPORT_DATE.isoformat(),
-                "captured_at": (
-                    f"2026-07-16T{timestamp[:2]}:{timestamp[2:4]}:"
-                    f"{timestamp[4:]}+08:00"
-                ),
-                "phase": "decision",
-                "matches": [{"match_id": "001"}, {"match_id": "002"}],
-            }),
-            encoding="utf-8",
-        )
-        return path
+        return self.write_contract_decision_snapshot(root, timestamp)
 
     def publish(self, root: Path, phase: str, **kwargs) -> dict:
         self.write_report_image(
@@ -612,7 +656,7 @@ class ReportStatusTest(unittest.TestCase):
             self.assertEqual("2026-07-16T13:30:00+08:00", status["decision_odds_at_bjt"])
             self.assertEqual("2026-07-16T13:31:00+08:00", status["plan_locked_at_bjt"])
 
-    def test_decision_snapshot_accepts_the_payload_date_field(self):
+    def test_decision_snapshot_rejects_the_legacy_payload_date_alias(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_artifacts(root)
@@ -630,7 +674,20 @@ class ReportStatusTest(unittest.TestCase):
 
             status = self.publish(root, "decision")
 
-            self.assertTrue(status["decision_snapshot_ready"])
+            self.assertFalse(status["decision_snapshot_ready"])
+
+    def test_matching_decision_snapshot_rejects_bad_manifest_proof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            path = self.write_contract_decision_snapshot(root)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["import_manifest"]["sha256"] = "0" * 64
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            matched = _matching_decision_snapshot(root, REPORT_DATE)
+
+        self.assertEqual((False, ""), matched)
 
     def test_matching_decision_snapshot_requires_a_nonempty_matches_list(self):
         payloads = (

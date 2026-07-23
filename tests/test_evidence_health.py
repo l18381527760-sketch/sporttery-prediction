@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import live_odds
 from evidence_health import build_evidence_health
 
 
@@ -14,13 +15,18 @@ NOW = datetime(2026, 7, 21, 14, 0, tzinfo=BJT)
 
 def coverage(
     *,
-    decision_ids=("1", "2"),
+    decision_bindings=None,
     decision_count=2,
     decision_at="2026-07-21T13:45:00+08:00",
 ):
+    if decision_bindings is None:
+        decision_bindings = (
+            [DAY.isoformat(), "Home 1", "Away 1", "1"],
+            [DAY.isoformat(), "Home 2", "Away 2", "2"],
+        )
     return {
         "files": 1,
-        "matches": len(decision_ids),
+        "matches": len(decision_bindings),
         "phases": {
             "decision": decision_count,
             "pre_kickoff_90": 0,
@@ -30,8 +36,8 @@ def coverage(
         "latest": decision_at,
         "latest_by_phase": {"decision": decision_at},
         "latest_by_requested_phase": {"decision": decision_at},
-        "match_ids_by_requested_phase": {
-            "decision": list(decision_ids),
+        "bindings_by_requested_phase": {
+            "decision": list(decision_bindings),
         },
     }
 
@@ -50,7 +56,10 @@ class EvidenceHealthTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with (
-                patch("evidence_health.fixture_identity_rate", return_value=(1, 2)),
+                patch("evidence_health.fixture_match_ids", return_value={
+                    (DAY.isoformat(), "Home 1", "Away 1"): frozenset({"1"}),
+                    (DAY.isoformat(), "Home 2", "Away 2"): frozenset({"2", "3"}),
+                }),
                 patch("evidence_health.snapshot_coverage", return_value=coverage()),
             ):
                 health = build_evidence_health(
@@ -81,7 +90,10 @@ class EvidenceHealthTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with (
-                patch("evidence_health.fixture_identity_rate", return_value=(2, 2)),
+                patch("evidence_health.fixture_match_ids", return_value={
+                    (DAY.isoformat(), "Home 1", "Away 1"): frozenset({"1"}),
+                    (DAY.isoformat(), "Home 2", "Away 2"): frozenset({"2"}),
+                }),
                 patch("evidence_health.snapshot_coverage", return_value=coverage()),
             ):
                 health = build_evidence_health(
@@ -95,7 +107,7 @@ class EvidenceHealthTest(unittest.TestCase):
 
     def test_zero_fixture_day_requires_verified_zero_fixture_evidence(self):
         empty_coverage = coverage(
-            decision_ids=(),
+            decision_bindings=(),
             decision_count=0,
             decision_at=None,
         )
@@ -104,7 +116,7 @@ class EvidenceHealthTest(unittest.TestCase):
         empty_coverage["latest_by_phase"] = {}
         with (
             tempfile.TemporaryDirectory() as tmp,
-            patch("evidence_health.fixture_identity_rate", return_value=(0, 0)),
+            patch("evidence_health.fixture_match_ids", return_value={}),
             patch(
                 "evidence_health.snapshot_coverage",
                 return_value=empty_coverage,
@@ -128,6 +140,150 @@ class EvidenceHealthTest(unittest.TestCase):
         self.assertEqual(["identity_not_unique"], unverified["forecast_blockers"])
         self.assertEqual(1.0, verified["identity_confirmation_rate"])
         self.assertEqual([], verified["hard_blockers"])
+
+    def test_relabelled_fixture_ids_do_not_satisfy_decision_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            (data / "fixtures.csv").write_text(
+                "date,team_a,team_b,match_id\n"
+                "2026-07-21,Home A,Away A,A\n"
+                "2026-07-21,Home B,Away B,B\n",
+                encoding="utf-8",
+            )
+            live_odds.capture_live_snapshot(
+                root,
+                DAY,
+                datetime(2026, 7, 21, 13, 45, tzinfo=BJT),
+                phase="decision",
+                sporttery_fetcher=lambda target_date: [
+                    {
+                        "matchId": "B",
+                        "matchNumStr": "Monday001",
+                        "homeTeam": "Home A",
+                        "awayTeam": "Away A",
+                        "matchStatus": "Selling",
+                        "kickoff_at": "2026-07-21T18:00:00+08:00",
+                        "isSingleHad": True,
+                        "isSingleHhad": False,
+                        "isSingleTtg": False,
+                    },
+                    {
+                        "matchId": "A",
+                        "matchNumStr": "Monday002",
+                        "homeTeam": "Home B",
+                        "awayTeam": "Away B",
+                        "matchStatus": "Selling",
+                        "kickoff_at": "2026-07-21T18:00:00+08:00",
+                        "isSingleHad": True,
+                        "isSingleHhad": False,
+                        "isSingleTtg": False,
+                    },
+                ],
+                sporttery_odds_fetcher=lambda match_id: {
+                    "had": {"h": "2.80", "d": "3.10", "a": "2.25"},
+                    "hhad": {},
+                    "ttg": {},
+                },
+            )
+            health = build_evidence_health(
+                root,
+                DAY,
+                NOW,
+                zero_fixture_verified=False,
+            )
+
+        self.assertEqual(1.0, health["identity_confirmation_rate"])
+        self.assertEqual(
+            [
+                [DAY.isoformat(), "Home A", "Away A", "B"],
+                [DAY.isoformat(), "Home B", "Away B", "A"],
+            ],
+            health["snapshot_coverage"][
+                "bindings_by_requested_phase"
+            ]["decision"],
+        )
+        self.assertIn(
+            "decision_snapshot_incomplete",
+            health["decision_blockers"],
+        )
+
+    def test_future_decision_evidence_is_blocked_without_being_stale(self):
+        future = coverage(
+            decision_bindings=(
+                [DAY.isoformat(), "Home 1", "Away 1", "1"],
+            ),
+            decision_count=1,
+            decision_at="2026-07-21T14:00:01+08:00",
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("evidence_health.fixture_match_ids", return_value={
+                (DAY.isoformat(), "Home 1", "Away 1"): frozenset({"1"}),
+            }),
+            patch("evidence_health.snapshot_coverage", return_value=future),
+        ):
+            health = build_evidence_health(
+                Path(tmp),
+                DAY,
+                NOW,
+                zero_fixture_verified=False,
+            )
+
+        self.assertIn("decision_odds_from_future", health["decision_blockers"])
+        self.assertNotIn("decision_odds_stale", health["decision_blockers"])
+
+    def test_decision_evidence_exactly_thirty_minutes_old_is_accepted(self):
+        boundary = coverage(
+            decision_bindings=(
+                [DAY.isoformat(), "Home 1", "Away 1", "1"],
+            ),
+            decision_count=1,
+            decision_at="2026-07-21T13:30:00+08:00",
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("evidence_health.fixture_match_ids", return_value={
+                (DAY.isoformat(), "Home 1", "Away 1"): frozenset({"1"}),
+            }),
+            patch("evidence_health.snapshot_coverage", return_value=boundary),
+        ):
+            health = build_evidence_health(
+                Path(tmp),
+                DAY,
+                NOW,
+                zero_fixture_verified=False,
+            )
+
+        self.assertEqual([], health["decision_blockers"])
+
+    def test_decision_evidence_older_than_thirty_minutes_is_stale(self):
+        stale = coverage(
+            decision_bindings=(
+                [DAY.isoformat(), "Home 1", "Away 1", "1"],
+            ),
+            decision_count=1,
+            decision_at="2026-07-21T13:29:59+08:00",
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("evidence_health.fixture_match_ids", return_value={
+                (DAY.isoformat(), "Home 1", "Away 1"): frozenset({"1"}),
+            }),
+            patch("evidence_health.snapshot_coverage", return_value=stale),
+        ):
+            health = build_evidence_health(
+                Path(tmp),
+                DAY,
+                NOW,
+                zero_fixture_verified=False,
+            )
+
+        self.assertEqual(
+            ["decision_odds_stale"],
+            health["decision_blockers"],
+        )
 
     def test_now_must_include_a_timezone(self):
         with self.assertRaisesRegex(ValueError, "timezone"):

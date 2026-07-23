@@ -117,3 +117,127 @@ Result: exit `0`; 63 tests passed.
   hash mismatch at `data/import_extracts/2026-07-22/odds.json`. A smoke health
   read therefore reports `identity_not_unique`, which is the intended
   fail-closed behavior for the current data state.
+
+## Review Remediation
+
+The Task 6 review findings were fixed in one follow-up pass. This section
+supersedes the original legacy-validation concern above.
+
+### Review RED Evidence
+
+Command:
+
+```powershell
+C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m unittest tests.test_evidence_health tests.test_model_metrics tests.test_report_status -v
+```
+
+Result: exit `1`; 73 tests ran.
+
+```text
+FAILED (failures=7, errors=3)
+```
+
+The expected failures demonstrated the reviewed gaps: relabelled fixture IDs
+could satisfy decision coverage, legacy JSON without strict provenance could
+contribute, report status accepted the date alias and bad manifest proof, and
+coverage did not retain full fixture bindings.
+
+### Review GREEN Evidence
+
+The same focused command after implementation:
+
+```text
+Ran 73 tests
+OK
+```
+
+The end-to-end adversarial fixture-binding regression was also run directly:
+
+```powershell
+C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m unittest tests.test_evidence_health.EvidenceHealthTest.test_relabelled_fixture_ids_do_not_satisfy_decision_coverage -v
+```
+
+Result: exit `0`; 1 test passed.
+
+Final requested regression command:
+
+```powershell
+C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m unittest tests.test_evidence_health tests.test_model_metrics tests.test_report_status tests.test_report_build_metadata tests.test_capture_odds_snapshot tests.test_import_sporttery tests.test_fixture_identity -v
+```
+
+Result: exit `0`.
+
+```text
+Ran 122 tests in 6.974s
+OK
+```
+
+`git diff --check` completed with exit `0`. The import smoke check:
+
+```powershell
+C:\Users\87562\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -c "import legacy_snapshot, model_metrics, evidence_health, report_status, capture_odds_snapshot; print('imports-ok')"
+```
+
+completed with exit `0` and output `imports-ok`.
+
+### Review Files
+
+- `legacy_snapshot.py`
+- `evidence_health.py`
+- `model_metrics.py`
+- `report_status.py`
+- `tests/test_evidence_health.py`
+- `tests/test_model_metrics.py`
+- `tests/test_report_status.py`
+- `.superpowers/sdd/task-6-report.md`
+
+### Review Contract And Compatibility Checks
+
+- Canonical fixture proof remains a complete
+  `(target_date, team_a, team_b, match_id)` binding through coverage and the
+  health gate. Repeated captures deduplicate only an identical full binding.
+- Decision coverage intersects those bindings exactly. The two-valid-ID
+  relabelling regression keeps identity confirmation at `1.0` while producing
+  `decision_snapshot_incomplete`.
+- Coverage exposes only the JSON-serializable
+  `bindings_by_requested_phase` detail needed by evidence health.
+- `read_valid_legacy_snapshot` is shared by
+  `model_metrics.snapshot_coverage` and
+  `report_status._matching_decision_snapshot`. It validates the canonical
+  filename/date/time/phase contract, aware Beijing capture time, production
+  source, immutable schema-2 manifest and embedded file proof, source/date
+  agreement, fixture bindings, and per-match phase shape.
+- Missing source/team/manifest proof, injected source, bad filename, bad
+  embedded hash, changed manifest input, and invalid per-match phase evidence
+  all fail closed. No historical snapshot or import artifact is mutated or
+  synthesized.
+- Genuine producer timestamps are compared to the filename at its actual
+  whole-second resolution, preserving production captures that retain
+  microseconds in `captured_at`.
+- Chronological ordering compares aware datetimes across offsets. Future
+  decision evidence blocks as future, exactly 30 minutes is accepted, more
+  than 30 minutes is stale, and naive `now` remains rejected.
+- The positional `snapshot_coverage(snapshot_dir, live_snapshot_dir,
+  target_date)` signature is unchanged. The existing no-argument,
+  one-position, and three-position callers remain valid.
+- Report status remains schema `2`, with additive `evidence_health`.
+  Forecast readiness reads only forecast blockers; decision and provisional
+  readiness read decision blockers. A decision failure does not retroactively
+  invalidate a completed forecast.
+- The dependency direction is
+  `report_status -> evidence_health -> model_metrics -> legacy_snapshot`.
+  The shared validator imports only lower-level fixture/import contracts, and
+  the import smoke check confirms there is no circular import.
+
+### Review Self-Review And Concerns
+
+- Confirmed no simulation-strategy, Apps Script, email-delivery, or data files
+  changed.
+- Confirmed malformed or unproven legacy files cannot contribute to metrics or
+  report readiness.
+- Confirmed strict live v2 validation and genuine phase-less v1 behavior are
+  unchanged.
+- The checked-in `2026-07-22` manifest hash mismatch noted in the original
+  report remains an external data-state concern. Legacy snapshots without the
+  required immutable manifest proof now intentionally contribute no readiness
+  evidence. No unresolved implementation concerns remain.
