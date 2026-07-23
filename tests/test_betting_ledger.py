@@ -2303,6 +2303,8 @@ class SettlementTest(unittest.TestCase):
             {**zgzcw, "result_source": "external"},
             {**zgzcw, "source_record_id": ""},
             {**zgzcw, "captured_at_bjt": "2026-07-17T11:00:00"},
+            {**zgzcw, "captured_at_bjt": "2026-07-17T03:00:00+00:00"},
+            {**zgzcw, "captured_at_bjt": "2026-07-17T12:00:00+09:00"},
             {**zgzcw, "score_scope": "extra_time"},
             {**zgzcw, "score_scope": ""},
             {**zgzcw, "settlement_minutes": "120"},
@@ -2325,6 +2327,15 @@ class SettlementTest(unittest.TestCase):
         self.assertEqual(
             pending,
             settle_pending(pending, {"1001": unproven_refund}, SETTLED_AT),
+        )
+        utc_refund = {
+            **unproven_refund,
+            "result_source": "sporttery",
+            "captured_at_bjt": "2026-07-17T03:00:00+00:00",
+        }
+        self.assertEqual(
+            pending,
+            settle_pending(pending, {"1001": utc_refund}, SETTLED_AT),
         )
 
     def test_existing_canonical_paid_corruption_fails_before_account_math(self):
@@ -2505,6 +2516,11 @@ class SettlementTest(unittest.TestCase):
             {"1001": {**finished("1001", "x", 0)}},
             {"1001": {**finished("1001", 1, 0), "captured_at_bjt": "not-a-timestamp"}},
             {"1001": {**finished("1001", 1, 0), "captured_at_bjt": "2026-07-17T11:00:00"}},
+            {"1001": {
+                **finished("1001", 1, 0),
+                "result_status": "invalid",
+                "captured_at_bjt": "2026-07-17T03:00:00+00:00",
+            }},
             {"wrong": finished("wrong", 1, 0)},
         )
         for results in cases:

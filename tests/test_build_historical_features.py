@@ -13,6 +13,9 @@ class BuildHistoricalFeaturesTest(unittest.TestCase):
             data_dir = Path(folder)
             rows = [
                 self.result("proven"),
+                self.result("proven"),
+                self.result("conflict"),
+                {**self.result("conflict"), "away_goals": "0"},
                 {
                     **self.result("legacy"),
                     "result_status": "",

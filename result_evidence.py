@@ -1,9 +1,33 @@
 from __future__ import annotations
 
-from datetime import datetime
+from collections.abc import Iterable
+from datetime import datetime, timedelta
 
 
 ALLOWED_RESULT_SOURCES = frozenset({"sporttery", "zgzcw"})
+BEIJING_UTC_OFFSET = timedelta(hours=8)
+
+
+def resolve_result_batch(rows: Iterable[dict]) -> dict[str, dict]:
+    resolved = {}
+    conflicts = set()
+    for source_row in rows:
+        if not isinstance(source_row, dict):
+            continue
+        try:
+            match_id = _text(source_row.get("match_id"))
+        except ValueError:
+            continue
+        if match_id in conflicts:
+            continue
+        row = dict(source_row)
+        row["match_id"] = match_id
+        if match_id not in resolved:
+            resolved[match_id] = row
+        elif resolved[match_id] != row:
+            resolved.pop(match_id)
+            conflicts.add(match_id)
+    return resolved
 
 
 def proven_result_provenance(row: dict) -> bool:
@@ -18,7 +42,7 @@ def proven_result_provenance(row: dict) -> bool:
     return (
         source in ALLOWED_RESULT_SOURCES
         and captured.tzinfo is not None
-        and captured.utcoffset() is not None
+        and captured.utcoffset() == BEIJING_UTC_OFFSET
     )
 
 
@@ -37,7 +61,7 @@ def normalized_result(row: dict) -> dict | None:
         record_id = _text(row.get("source_record_id"))
         captured = _text(row.get("captured_at_bjt"))
         parsed = datetime.fromisoformat(captured)
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
+        if parsed.tzinfo is None or parsed.utcoffset() != BEIJING_UTC_OFFSET:
             return None
         home = int(str(row.get("home_goals")))
         away = int(str(row.get("away_goals")))

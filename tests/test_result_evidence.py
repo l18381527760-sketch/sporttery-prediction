@@ -4,6 +4,7 @@ from result_evidence import (
     normalized_result,
     proven_90_minute_result,
     proven_result_provenance,
+    resolve_result_batch,
 )
 
 
@@ -49,6 +50,57 @@ class ResultEvidenceTest(unittest.TestCase):
         row["result_source"] = "unknown"
         self.assertFalse(proven_result_provenance(row))
         self.assertFalse(proven_90_minute_result(row))
+
+    def test_requires_exact_beijing_offset(self):
+        for captured_at in (
+            "2026-07-22T04:30:00+00:00",
+            "2026-07-22T13:30:00+09:00",
+            "2026-07-22T12:30:00+07:59",
+        ):
+            with self.subTest(captured_at=captured_at):
+                row = self.base()
+                row["captured_at_bjt"] = captured_at
+                self.assertFalse(proven_result_provenance(row))
+                self.assertFalse(proven_90_minute_result(row))
+                self.assertIsNone(normalized_result(row))
+
+    def test_batch_collapses_exact_duplicates_and_removes_conflicting_ids(self):
+        exact = self.base()
+        conflict = {**self.base(), "match_id": "conflict"}
+        refund = {
+            "match_id": "refund",
+            "result_status": "refunded",
+            "result_source": "sporttery",
+            "source_record_id": "refund-record",
+            "captured_at_bjt": "2026-07-22T12:30:00+08:00",
+        }
+        invalid = {
+            "match_id": "invalid",
+            "result_status": "invalid",
+            "result_source": "zgzcw",
+            "source_record_id": "invalid-record",
+            "captured_at_bjt": "2026-07-22T12:30:00+08:00",
+        }
+
+        resolved = resolve_result_batch(
+            [
+                exact,
+                dict(exact),
+                conflict,
+                {**conflict, "away_goals": "0"},
+                dict(conflict),
+                refund,
+                invalid,
+            ]
+        )
+
+        self.assertEqual(
+            {"2040580", "refund", "invalid"},
+            set(resolved),
+        )
+        self.assertEqual(exact, resolved["2040580"])
+        self.assertEqual("refunded", resolved["refund"]["result_status"])
+        self.assertEqual("invalid", resolved["invalid"]["result_status"])
 
     def test_malformed_rows_and_negative_goals_fail_closed(self):
         for row in (None, [], {"result_source": "sporttery"}):

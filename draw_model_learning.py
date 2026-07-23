@@ -23,7 +23,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from result_evidence import normalized_result
+from result_evidence import normalized_result, resolve_result_batch
 
 
 ROOT = Path(__file__).resolve().parent
@@ -209,7 +209,8 @@ def build_training_samples(root: Path = ROOT, as_of: date | None = None) -> list
     root = Path(root)
     cutoff = as_of or date.today()
     result_by_match = {}
-    for source_row in _read_csv(root / "data" / "bet_results.csv"):
+    source_rows = _read_csv(root / "data" / "bet_results.csv")
+    for source_row in resolve_result_batch(source_rows).values():
         result = normalized_result(source_row)
         if result is not None:
             result_by_match[result["match_id"]] = result

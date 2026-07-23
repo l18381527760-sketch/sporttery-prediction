@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
 
-from result_evidence import proven_90_minute_result
+from result_evidence import proven_90_minute_result, resolve_result_batch
 
 
 ROOT = Path(__file__).resolve().parent
@@ -23,7 +23,7 @@ def load_results() -> list[dict]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         return [
             row
-            for row in csv.DictReader(handle)
+            for row in resolve_result_batch(csv.DictReader(handle)).values()
             if proven_90_minute_result(row)
         ]
 
