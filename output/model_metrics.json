@@ -16,21 +16,21 @@
     "settled_days": 1
   },
   "active_strategy": {
-    "version": "value-v3",
-    "count": 13,
-    "hits": 9,
-    "hit_rate": 0.6923076923076923,
-    "brier": 0.2221516252026564,
-    "log_loss": 0.6358329447088256,
-    "calibration_error": 0.1346388885633551,
+    "version": "value-v4",
+    "count": 0,
+    "hits": 0,
+    "hit_rate": null,
+    "brier": null,
+    "log_loss": null,
+    "calibration_error": null,
     "stake": 0.0,
     "profit": 0.0,
     "roi": null,
-    "average_expected_return": 0.8916547104806837,
+    "average_expected_return": null,
     "max_drawdown": 0.0,
-    "max_losing_streak": 2,
+    "max_losing_streak": 0,
     "current_losing_streak": 0,
-    "settled_days": 3
+    "settled_days": 0
   },
   "by_play": {},
   "by_play_all": {
@@ -101,7 +101,7 @@
   },
   "by_league": {},
   "active_betting_strategy": {
-    "version": "value-v3",
+    "version": "value-v4",
     "count": 0,
     "hits": 0,
     "hit_rate": null,
@@ -117,131 +117,89 @@
     "current_losing_streak": 0,
     "settled_days": 0
   },
-  "calibration_by_league": {
-    "欧冠": {
-      "count": 2,
-      "hits": 1,
-      "hit_rate": 0.5,
-      "brier": 0.15046371362689934,
-      "log_loss": 0.48973382381994257,
-      "calibration_error": 0.3860380251610439,
-      "stake": 0.0,
-      "profit": 0.0,
-      "roi": null,
-      "average_expected_return": 0.8960940079286728,
-      "max_drawdown": 0.0,
-      "max_losing_streak": 1,
-      "current_losing_streak": 1,
-      "settled_days": 1,
-      "recent_brier": 0.15046371362689934,
-      "paused": false
-    },
-    "世界杯": {
-      "count": 1,
-      "hits": 1,
-      "hit_rate": 1.0,
-      "brier": 0.45827019665549823,
-      "log_loss": 1.1299685042830727,
-      "calibration_error": 0.6769565692535218,
-      "stake": 0.0,
-      "profit": 0.0,
-      "roi": null,
-      "average_expected_return": 0.9271346462423927,
-      "max_drawdown": 0.0,
-      "max_losing_streak": 0,
-      "current_losing_streak": 0,
-      "settled_days": 1,
-      "recent_brier": 0.45827019665549823,
-      "paused": false
-    },
-    "欧联": {
-      "count": 2,
-      "hits": 2,
-      "hit_rate": 1.0,
-      "brier": 0.16153026329987136,
-      "log_loss": 0.5106101769229575,
-      "calibration_error": 0.39587166943587754,
-      "stake": 0.0,
-      "profit": 0.0,
-      "roi": null,
-      "average_expected_return": 0.8863741017446392,
-      "max_drawdown": 0.0,
-      "max_losing_streak": 0,
-      "current_losing_streak": 0,
-      "settled_days": 1,
-      "recent_brier": 0.16153026329987136,
-      "paused": false
-    },
-    "美职联": {
-      "count": 3,
-      "hits": 2,
-      "hit_rate": 0.6666666666666666,
-      "brier": 0.21754913995303335,
-      "log_loss": 0.6258780326738694,
-      "calibration_error": 0.005199977311276305,
-      "stake": 0.0,
-      "profit": 0.0,
-      "roi": null,
-      "average_expected_return": 0.8911715786154862,
-      "max_drawdown": 0.0,
-      "max_losing_streak": 1,
-      "current_losing_streak": 0,
-      "settled_days": 2,
-      "recent_brier": 0.21754913995303335,
-      "paused": false
-    },
-    "巴西甲": {
-      "count": 4,
-      "hits": 3,
-      "hit_rate": 0.75,
-      "brier": 0.2174766565819538,
-      "log_loss": 0.6244949295400102,
-      "calibration_error": 0.18837025664849952,
-      "stake": 0.0,
-      "profit": 0.0,
-      "roi": null,
-      "average_expected_return": 0.8923003718318129,
-      "max_drawdown": 0.0,
-      "max_losing_streak": 1,
-      "current_losing_streak": 0,
-      "settled_days": 2,
-      "recent_brier": 0.2174766565819538,
-      "paused": false
-    },
-    "瑞典超": {
-      "count": 1,
-      "hits": 0,
-      "hit_rate": 0.0,
-      "brier": 0.28315893093857836,
-      "log_loss": 0.7595579592642102,
-      "calibration_error": 0.5321267996808452,
-      "stake": 0.0,
-      "profit": 0.0,
-      "roi": null,
-      "average_expected_return": 0.8567241474861608,
-      "max_drawdown": 0.0,
-      "max_losing_streak": 1,
-      "current_losing_streak": 1,
-      "settled_days": 1,
-      "recent_brier": 0.28315893093857836,
-      "paused": false
-    }
-  },
+  "calibration_by_league": {},
   "clv": {
-    "count": 18,
-    "average_clv": 0.005072919223315782,
-    "positive_rate": 0.3333333333333333
+    "count": 0,
+    "average_clv": null,
+    "positive_rate": null
   },
   "snapshot_coverage": {
-    "files": 33,
-    "matches": 194,
-    "phases": {
-      "opening": 38,
-      "decision": 36,
-      "monitoring": 120,
-      "pre_kickoff": 0
+    "coverage_schema_version": 2,
+    "counting_units": {
+      "files": "validated_snapshot_files",
+      "matches": "validated_match_observations",
+      "phases": "validated_match_observations",
+      "unique_fixture_bindings": "full_fixture_bindings",
+      "unique_phases": "full_fixture_bindings",
+      "requested_phases": "full_fixture_bindings"
     },
-    "latest": "2026-07-18T15:11:14.053209+08:00"
+    "files": 3,
+    "matches": 16,
+    "phases": {
+      "opening": 0,
+      "decision": 2,
+      "monitoring": 0,
+      "pre_kickoff": 0,
+      "pre_kickoff_90": 0,
+      "pre_kickoff_30": 0
+    },
+    "unique_fixture_bindings": 16,
+    "unique_phases": {
+      "opening": 0,
+      "decision": 2,
+      "monitoring": 0,
+      "pre_kickoff": 0,
+      "pre_kickoff_90": 0,
+      "pre_kickoff_30": 0
+    },
+    "requested_phases": {
+      "decision": 2
+    },
+    "latest": "2026-07-24T13:36:34.216371+08:00",
+    "latest_by_phase": {
+      "decision": "2026-07-24T13:36:34.216371+08:00"
+    },
+    "latest_by_requested_phase": {
+      "decision": "2026-07-24T13:36:34.216371+08:00"
+    },
+    "bindings_by_requested_phase": {
+      "decision": [
+        [
+          "2026-07-24",
+          "瓦斯特拉",
+          "奥尔格里",
+          "2040611"
+        ],
+        [
+          "2026-07-24",
+          "雅罗",
+          "塞纳乔琪",
+          "2040610"
+        ]
+      ]
+    },
+    "latest_by_binding_by_requested_phase": {
+      "decision": [
+        {
+          "binding": [
+            "2026-07-24",
+            "瓦斯特拉",
+            "奥尔格里",
+            "2040611"
+          ],
+          "captured_at": "2026-07-24T13:36:34.216371+08:00"
+        },
+        {
+          "binding": [
+            "2026-07-24",
+            "雅罗",
+            "塞纳乔琪",
+            "2040610"
+          ],
+          "captured_at": "2026-07-24T13:36:34.216371+08:00"
+        }
+      ]
+    }
   },
   "league_draw_calibration": {}
 }
