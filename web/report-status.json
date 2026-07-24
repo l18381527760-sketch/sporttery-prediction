@@ -1,31 +1,31 @@
 {
   "schema_version": 2,
-  "report_date": "2026-07-23",
+  "report_date": "2026-07-24",
   "forecast_ready": true,
   "decision_snapshot_ready": false,
-  "settlement_ready": true,
+  "settlement_ready": false,
   "plan_ready": false,
-  "settled_through": "2026-07-22",
+  "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "settlement",
+  "report_stage": "forecast",
   "initial_report_ready": false,
   "provisional_plan_sha256": "",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
   "revalidation_ready": false,
-  "build_id": "30006011141-1-settlement",
-  "generated_at_bjt": "2026-07-23T20:12:47+08:00",
-  "image_sha256": "887b799af9ec4d8369244add2670b15b456e404566a2c40a9f60d148ab02af2e",
-  "source_commit_sha": "b8b4c4befd7b9f0c804256cf3624ee41175f1136",
-  "fixture_count": 7,
-  "official_fixture_count": 7,
-  "prediction_count": 7,
+  "build_id": "30066349869-1-forecast",
+  "generated_at_bjt": "2026-07-24T12:18:51+08:00",
+  "image_sha256": "0a51d84d9151e681c6bf2c6353334594690ea89d6e5879ec20b533ea5036737f",
+  "source_commit_sha": "a392d357683bf9376a1e2a1a8bdb198bcefd28fe",
+  "fixture_count": 2,
+  "official_fixture_count": 2,
+  "prediction_count": 2,
   "plan_count": 0,
   "ledger_count": 5,
-  "odds_covered_fixture_count": 7,
-  "official_odds_count": 7,
+  "odds_covered_fixture_count": 2,
+  "official_odds_count": 2,
   "odds_coverage": 1.0,
   "official_odds_coverage_ratio": 1.0,
   "data_quality": {
@@ -48,14 +48,68 @@
     "site_ready": true,
     "image_ready": true
   },
+  "evidence_health": {
+    "schema_version": 1,
+    "target_date": "2026-07-24",
+    "generated_at_bjt": "2026-07-24T12:18:51+08:00",
+    "identity_confirmed": 2,
+    "identity_total": 2,
+    "identity_confirmation_rate": 1.0,
+    "result_provenance_rate": null,
+    "snapshot_coverage": {
+      "coverage_schema_version": 2,
+      "counting_units": {
+        "files": "validated_snapshot_files",
+        "matches": "validated_match_observations",
+        "phases": "validated_match_observations",
+        "unique_fixture_bindings": "full_fixture_bindings",
+        "unique_phases": "full_fixture_bindings",
+        "requested_phases": "full_fixture_bindings"
+      },
+      "files": 0,
+      "matches": 0,
+      "phases": {
+        "opening": 0,
+        "decision": 0,
+        "monitoring": 0,
+        "pre_kickoff": 0,
+        "pre_kickoff_90": 0,
+        "pre_kickoff_30": 0
+      },
+      "unique_fixture_bindings": 0,
+      "unique_phases": {
+        "opening": 0,
+        "decision": 0,
+        "monitoring": 0,
+        "pre_kickoff": 0,
+        "pre_kickoff_90": 0,
+        "pre_kickoff_30": 0
+      },
+      "requested_phases": {},
+      "latest": null,
+      "latest_by_phase": {},
+      "latest_by_requested_phase": {},
+      "bindings_by_requested_phase": {},
+      "latest_by_binding_by_requested_phase": {}
+    },
+    "forecast_blockers": [],
+    "decision_blockers": [
+      "decision_snapshot_incomplete",
+      "decision_odds_stale"
+    ],
+    "hard_blockers": [
+      "decision_snapshot_incomplete",
+      "decision_odds_stale"
+    ]
+  },
   "source_status": {
     "source": "中国足彩网",
     "analysis_source": "中国足彩网专业欧赔市场",
-    "target_date": "2026-07-23",
-    "updated_at": "2026-07-23T04:17:22.149606+00:00",
+    "target_date": "2026-07-24",
+    "updated_at": "2026-07-24T04:18:50.172289+00:00",
     "fallback": true,
-    "message": "",
-    "fixture_count": 7,
+    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+    "fixture_count": 2,
     "no_fixtures": false
   }
 }

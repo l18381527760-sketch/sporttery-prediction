@@ -1,0 +1,84 @@
+{
+  "fixture_extract": {
+    "match_count": 2,
+    "rows": [
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-07-24",
+        "is_single_had": "false",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-07-25 00:00",
+        "kickoff_local": "周五201",
+        "market_odds_a": "3.04",
+        "market_odds_b": "2.08",
+        "market_odds_draw": "3.63",
+        "match_id": "2040610",
+        "match_num": "周五201",
+        "neutral": "false",
+        "odds_a": "3.15",
+        "odds_b": "1.86",
+        "odds_draw": "3.65",
+        "pool_status": "",
+        "stage": "芬超",
+        "team_a": "雅罗",
+        "team_b": "塞纳乔琪",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-07-24",
+        "is_single_had": "true",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-07-25 01:00",
+        "kickoff_local": "周五202",
+        "market_odds_a": "1.53",
+        "market_odds_b": "5.16",
+        "market_odds_draw": "4.30",
+        "match_id": "2040611",
+        "match_num": "周五202",
+        "neutral": "false",
+        "odds_a": "1.49",
+        "odds_b": "4.75",
+        "odds_draw": "4.05",
+        "pool_status": "",
+        "stage": "瑞典超",
+        "team_a": "瓦斯特拉",
+        "team_b": "奥尔格里",
+        "venue": "中国足彩网备用数据"
+      }
+    ],
+    "sha256": "19d26b892ea4232ca3232509f73d54ae45dc42e579d49ab8c97a3ff6e85f467e"
+  },
+  "generated_at_bjt": "2026-07-24T12:18:50.327247+08:00",
+  "model_inputs": {
+    "config": {
+      "bytes": 457,
+      "path": "config.json",
+      "sha256": "2d7819d1d8071390dfd11ce5e1fc5f847903790453559a9b4fc4ab3b9775529b"
+    },
+    "fixtures": {
+      "bytes": 637,
+      "path": "data/import_extracts/2026-07-24/fixtures.csv",
+      "sha256": "e10a01cbe3c228fbc759bb6d3ddbb45972be89d92f1aebcaa85a7ccffb3626f4"
+    },
+    "prediction_code": {
+      "bytes": 17359,
+      "path": "predict_today.py",
+      "sha256": "429ca146fabf12de06ab150ae66fa5455a347f19c095c2eab4a4fd4eaefa3c55"
+    },
+    "ratings": {
+      "bytes": 5895,
+      "path": "data/import_extracts/2026-07-24/ratings.csv",
+      "sha256": "2b0d694a9c64464a69b806216c899c56f8123bdc53479b4289ab0dc8ee895ea4"
+    }
+  },
+  "predictions": {
+    "bytes": 843,
+    "path": "output/predictions_2026-07-24.csv",
+    "sha256": "581a9ef9015467f4d7b8332434c3acf80ab2265fdd8396049f9a1c3f22bd1a5a"
+  },
+  "schema_version": 2,
+  "target_date": "2026-07-24"
+}
