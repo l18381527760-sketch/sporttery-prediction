@@ -8,17 +8,17 @@
   "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "forecast",
-  "initial_report_ready": false,
-  "provisional_plan_sha256": "",
+  "report_stage": "provisional",
+  "initial_report_ready": true,
+  "provisional_plan_sha256": "214ce339bbe3ad0d5b031ed3be01da907d2b691dbc1d20ab1c1628d1aa4e5620",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
-  "revalidation_ready": false,
-  "build_id": "30066349869-1-forecast",
-  "generated_at_bjt": "2026-07-24T12:18:51+08:00",
-  "image_sha256": "0a51d84d9151e681c6bf2c6353334594690ea89d6e5879ec20b533ea5036737f",
-  "source_commit_sha": "a392d357683bf9376a1e2a1a8bdb198bcefd28fe",
+  "revalidation_ready": true,
+  "build_id": "30069869558-1-provisional",
+  "generated_at_bjt": "2026-07-24T13:37:29+08:00",
+  "image_sha256": "6c8f3d5da026e962fe080aeec31a6d8acfba09c43835f086800996bd38679a12",
+  "source_commit_sha": "acb533f042327abf8ab23d2f2b784dd7a334bedb",
   "fixture_count": 2,
   "official_fixture_count": 2,
   "prediction_count": 2,
@@ -39,10 +39,10 @@
     "plan_csv_ready": false,
     "decision_ready": false,
     "plan_lock_ready": false,
-    "decision_bundle_ready": false,
-    "provisional_plan_ready": false,
-    "provisional_shadow_ready": false,
-    "provisional_state_ready": false,
+    "decision_bundle_ready": true,
+    "provisional_plan_ready": true,
+    "provisional_shadow_ready": true,
+    "provisional_state_ready": true,
     "decision_snapshot_ready": false,
     "ledger_ready": true,
     "site_ready": true,
@@ -51,7 +51,7 @@
   "evidence_health": {
     "schema_version": 1,
     "target_date": "2026-07-24",
-    "generated_at_bjt": "2026-07-24T12:18:51+08:00",
+    "generated_at_bjt": "2026-07-24T13:37:29+08:00",
     "identity_confirmed": 2,
     "identity_total": 2,
     "identity_confirmation_rate": 1.0,
@@ -66,41 +66,77 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 0,
-      "matches": 0,
+      "files": 1,
+      "matches": 2,
       "phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 2,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 0,
+      "unique_fixture_bindings": 2,
       "unique_phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 2,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {},
-      "latest": null,
-      "latest_by_phase": {},
-      "latest_by_requested_phase": {},
-      "bindings_by_requested_phase": {},
-      "latest_by_binding_by_requested_phase": {}
+      "requested_phases": {
+        "decision": 2
+      },
+      "latest": "2026-07-24T13:36:34.216371+08:00",
+      "latest_by_phase": {
+        "decision": "2026-07-24T13:36:34.216371+08:00"
+      },
+      "latest_by_requested_phase": {
+        "decision": "2026-07-24T13:36:34.216371+08:00"
+      },
+      "bindings_by_requested_phase": {
+        "decision": [
+          [
+            "2026-07-24",
+            "瓦斯特拉",
+            "奥尔格里",
+            "2040611"
+          ],
+          [
+            "2026-07-24",
+            "雅罗",
+            "塞纳乔琪",
+            "2040610"
+          ]
+        ]
+      },
+      "latest_by_binding_by_requested_phase": {
+        "decision": [
+          {
+            "binding": [
+              "2026-07-24",
+              "瓦斯特拉",
+              "奥尔格里",
+              "2040611"
+            ],
+            "captured_at": "2026-07-24T13:36:34.216371+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-24",
+              "雅罗",
+              "塞纳乔琪",
+              "2040610"
+            ],
+            "captured_at": "2026-07-24T13:36:34.216371+08:00"
+          }
+        ]
+      }
     },
     "forecast_blockers": [],
-    "decision_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ],
-    "hard_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ]
+    "decision_blockers": [],
+    "hard_blockers": []
   },
   "source_status": {
     "source": "中国足彩网",
@@ -108,7 +144,7 @@
     "target_date": "2026-07-24",
     "updated_at": "2026-07-24T04:18:50.172289+00:00",
     "fallback": true,
-    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+    "message": "",
     "fixture_count": 2,
     "no_fixtures": false
   }
