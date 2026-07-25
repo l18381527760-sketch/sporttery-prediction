@@ -205,14 +205,23 @@ the former unconditional 18:00 failure-notice rule.
 
 ## Deployment
 
-1. Merge and publish the producer, tests, documentation, and Apps Script source
-   together.
-2. Update the existing Apps Script project with the committed `Code.gs`.
-3. Run in `TEST_MODE=true` with one present fixture and one absent fixture.
-4. Set `TEST_MODE=false` only after the logs show correct opportunity state,
-   cutoff handling, and no Gmail call for the absent fixture.
-5. Observe one live Beijing business date. The system remains simulation-only
-   and does not connect to a betting account.
+The schema rollout is consumer-first and must not publish producer and consumer
+together:
+
+1. First, pause the trigger or set `TEST_MODE=true` before changing the live
+   Apps Script source.
+2. Next, deploy the schema 3 consumer in the existing Apps Script project.
+3. While the producer still publishes the old contract, prove old schema 2 makes no Gmail call and writes no sent state.
+4. Only then publish the schema 3 producer and verify present, absent, and
+   cutoff fixtures under `TEST_MODE=true`.
+5. After those checks, explicitly set `TEST_MODE=false` and perform the
+   controlled production-delivery check.
+
+Missing, misspelled, or non-exact `TEST_MODE` values fail closed. Exact
+`TEST_MODE=true` remains dry-run, exact `TEST_MODE=false` is required for
+production, and every other value results in no Gmail call and no sent-state write.
+Observe one live Beijing business date after rollout. The system remains
+simulation-only and does not connect to a betting account.
 
 ## Acceptance Criteria
 
