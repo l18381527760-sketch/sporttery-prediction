@@ -8,17 +8,17 @@
   "settled_through": "2026-07-24",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "settlement",
+  "report_stage": "forecast",
   "initial_report_ready": true,
   "provisional_plan_sha256": "214ce339bbe3ad0d5b031ed3be01da907d2b691dbc1d20ab1c1628d1aa4e5620",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
   "revalidation_ready": true,
-  "build_id": "30146332458-1-settlement",
-  "generated_at_bjt": "2026-07-25T14:01:43+08:00",
-  "image_sha256": "c90eff8d068ca5baf6caca14ab6ddd29f9cdfd7dcf688b843304d0f1b2ef7ecc",
-  "source_commit_sha": "ae0feb1434b1a6f4a768aba55e7d94e88cb226aa",
+  "build_id": "30154119851-1-forecast",
+  "generated_at_bjt": "2026-07-25T18:14:56+08:00",
+  "image_sha256": "b470da2c23cf530037b927405e8edeea1277b34c0639a6ecc255ddbc970f344c",
+  "source_commit_sha": "c2cd839d1d24bd08713892aedbf52fba2f40ceab",
   "fixture_count": 11,
   "official_fixture_count": 11,
   "prediction_count": 11,
@@ -39,10 +39,10 @@
     "plan_csv_ready": false,
     "decision_ready": false,
     "plan_lock_ready": false,
-    "decision_bundle_ready": true,
-    "provisional_plan_ready": true,
-    "provisional_shadow_ready": true,
-    "provisional_state_ready": true,
+    "decision_bundle_ready": false,
+    "provisional_plan_ready": false,
+    "provisional_shadow_ready": false,
+    "provisional_state_ready": false,
     "decision_snapshot_ready": false,
     "ledger_ready": true,
     "site_ready": true,
@@ -51,7 +51,7 @@
   "evidence_health": {
     "schema_version": 1,
     "target_date": "2026-07-25",
-    "generated_at_bjt": "2026-07-25T14:01:43+08:00",
+    "generated_at_bjt": "2026-07-25T18:14:56+08:00",
     "identity_confirmed": 11,
     "identity_total": 11,
     "identity_confirmation_rate": 1.0,
@@ -270,8 +270,12 @@
       }
     },
     "forecast_blockers": [],
-    "decision_blockers": [],
-    "hard_blockers": []
+    "decision_blockers": [
+      "decision_odds_stale"
+    ],
+    "hard_blockers": [
+      "decision_odds_stale"
+    ]
   },
   "source_status": {
     "source": "中国足彩网",
