@@ -16,7 +16,7 @@
 | `.github/workflows/odds-snapshot.yml` | 每 30 分钟 | 保存官方赔率快照。 |
 | `.github/workflows/email-report.yml` | 保持 disabled | 旧 GitHub Gmail 发送工作流仅保留为历史文件，不是生产发送方。 |
 
-正常发送不再固定在 14:00。Apps Script 从 14:00 起轮询，在 14:00 至 20:59 之间仅当 schema 3 机会闸门通过、报告完整且哈希匹配时发送：active 模拟方案或平局预警任意一个即可，shadow-only 候选不算机会；两个有效计数均为零时没有投注方案且没有平局预警时不发送邮件，未知机会证据失败关闭并保持静默。仅在 21:00 已证明存在机会但日报仍未送达时，才发送当天唯一一封不附带附件的失败通知，绝不附带旧图。
+正常发送不再固定在 14:00。Apps Script 从 14:00 起轮询，正常日报只会在 14:00 至 20:59 发送，且仅当 schema 3 机会闸门通过、报告完整且哈希匹配时发送：active 模拟方案或平局预警任意一个即可，shadow-only 候选不算机会；两个有效计数均为零时没有投注方案且没有平局预警时不发送邮件，未知机会证据失败关闭并保持静默。当前日期只在 21:00 前的正常发送路径重新验证。21:00 仅在已证明存在机会且日报仍未送达时发送当天唯一一封无附件失败通知，绝不附带旧图。
 
 ## 启用 GitHub 功能
 
@@ -32,10 +32,10 @@ Apps Script 需要一个 fine-grained token 来调用工作流。它只能授权
 
 1. 仓库路径 `web/report-status.json` 发布后对应公开地址 `https://l18381527760-sketch.github.io/sporttery-prediction/report-status.json`；`runAutomation` 按北京时间读取这个公开地址。仓库路径 `web/daily-report.png` 对应 `https://l18381527760-sketch.github.io/sporttery-prediction/daily-report.png`，报告首页对应 `https://l18381527760-sketch.github.io/sporttery-prediction/`。公共地址绝不能插入 `/web/`。
 2. Apps Script 只接受 schema 3 状态：若当天 `forecast_ready`、`initial_report_ready` 或 `settlement_ready` 对应阶段缺失，就通过相应工作流的 `workflow_dispatch` 和 `target_date` 发起运行；旧 schema 不能跳过阶段。
-3. 从 14:00 到 20:59，Apps Script 只接受 `report_date` 为当天，且 `forecast_ready`、`initial_report_ready`、`settlement_ready`、`revalidation_ready`、provisional SHA-256、数据质量和构建信息全部有效的状态，并在正常邮件发送前重新验证当天日期。
+3. 从 14:00 到 20:59，Apps Script 只接受 `report_date` 为当天，且 `forecast_ready`、`initial_report_ready`、`settlement_ready`、`revalidation_ready`、provisional SHA-256、数据质量和构建信息全部有效的状态；当前日期只在 21:00 前的正常发送路径重新验证。
 4. Apps Script 使用状态中的 `build_id` 下载 `web/daily-report.png`，计算实际 SHA-256，并与 `image_sha256` 比较。
 5. 只有状态、哈希和 schema 3 机会闸门都通过才由 Apps Script 发送正常附件；不匹配时继续等待或重跑生成阶段，不会发送旧附件。
-6. 21:00 只在已证明存在机会且日报仍未送达时发送当天唯一一封无附件失败通知；无机会或未知机会证据都保持静默。
+6. 21:00 仅在已证明存在机会且日报仍未送达时发送当天唯一一封无附件失败通知；无机会或未知机会证据都保持静默。
 
 现有 cron 定时运行与 Apps Script dispatch 彼此独立。Apps Script 在 Pages 更新前可能仍读到旧状态，于是两者可能为同一阶段各入队一次，出现额外的排队运行。它们共享并发队列；不可变导入清单、初选 generation 指针、单调候选状态和幂等账本写入保证重复运行不会把旧赔率或 provisional 金额当成已确认模拟投入，但会增加排队时间。不要删除现有 cron。
 
