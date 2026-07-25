@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
+import live_odds
 from generate_betting_plan import StrategyOutputs, _candidate_plan_row
 from provisional_plan import candidate_from_plan_row, create_provisional_outputs, read_valid_provisional_state
 from revalidation import _source_commit_sha, _target_dates, _validate_runtime_state, _write_state_atomic, due_stage, evaluate_candidate, run_due_revalidation
@@ -462,6 +463,27 @@ class RevalidationTest(TestCase):
         value = candidate()
         self.assertIsNone(due_stage(value, datetime(2026, 7, 20, 0, 14, tzinfo=BJT)))
         self.assertEqual("t90", due_stage(value, datetime(2026, 7, 20, 0, 15, tzinfo=BJT)))
+
+    def test_due_stage_uses_exact_fractional_phase_boundaries(self):
+        kickoff = datetime(2026, 7, 20, 2, 0, tzinfo=BJT)
+        cases = (
+            ("provisional", timedelta(minutes=40, seconds=59), "t90"),
+            ("provisional", timedelta(minutes=40, seconds=1), "t90"),
+            ("provisional", timedelta(minutes=40), "t90_window_missed"),
+            ("screened", timedelta(minutes=10, seconds=1), "t30"),
+            ("screened", timedelta(minutes=10), "t30_window_missed"),
+            ("provisional", timedelta(minutes=105, seconds=1), None),
+            ("provisional", timedelta(minutes=105), "t90"),
+        )
+        for state, offset, expected in cases:
+            with self.subTest(state=state, offset=offset):
+                self.assertEqual(
+                    expected,
+                    due_stage(
+                        candidate(state=state),
+                        kickoff - offset,
+                    ),
+                )
 
     def test_due_stage_cancels_missed_windows_and_never_transitions_after_kickoff(self):
         self.assertEqual("t90_window_missed", due_stage(candidate(), datetime(2026, 7, 20, 1, 20, tzinfo=BJT)))
@@ -1353,6 +1375,109 @@ class RevalidationTest(TestCase):
                     self.assertEqual(
                         "",
                         changed[0]["receipt"]["live_odds_snapshot_path"],
+                    )
+
+    def test_scheduler_binds_fractional_t90_evidence_in_single_and_mixed_batches(self):
+        checked = datetime(2026, 7, 20, 1, 19, 1, tzinfo=BJT)
+        for mixed_batch in (False, True):
+            with self.subTest(mixed_batch=mixed_batch), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "betting_config.json").write_text(
+                    json.dumps({"pre_kickoff_revalidation": config()}),
+                    encoding="utf-8",
+                )
+                value = candidate()
+                value["execution_identity"]["legs"][0]["source_record_id"] = "match-1"
+                value.pop("candidate_payload_sha256")
+                value["candidate_payload_sha256"] = canonical_digest(value)
+                source = {
+                    "report_date": DAY.isoformat(),
+                    "candidates": [value],
+                }
+
+                def provider(_root, target_date, captured_at, *, phase):
+                    matches = [
+                        {
+                            "matchId": "match-1",
+                            "matchNumStr": "Monday001",
+                            "homeTeam": "Home",
+                            "awayTeam": "Away",
+                            "matchStatus": "Selling",
+                            "kickoff_at": "2026-07-20T02:00:00+08:00",
+                            "isSingleHad": True,
+                            "isSingleHhad": False,
+                            "isSingleTtg": False,
+                        },
+                    ]
+                    if mixed_batch:
+                        matches.append({
+                            "matchId": "match-2",
+                            "matchNumStr": "Monday002",
+                            "homeTeam": "Alpha",
+                            "awayTeam": "Beta",
+                            "matchStatus": "Selling",
+                            "kickoff_at": (
+                                captured_at + timedelta(minutes=40)
+                            ).isoformat(),
+                            "isSingleHad": True,
+                            "isSingleHhad": False,
+                            "isSingleTtg": False,
+                        })
+                    return live_odds.capture_live_snapshot(
+                        _root,
+                        target_date,
+                        captured_at,
+                        phase=phase,
+                        sporttery_fetcher=lambda day: matches,
+                        sporttery_odds_fetcher=lambda match_id: {
+                            "had": {"h": "2.50"},
+                            "hhad": {},
+                            "ttg": {},
+                        },
+                    )
+
+                with patch(
+                    "revalidation.read_valid_provisional_state",
+                    return_value=source,
+                ):
+                    changed = run_due_revalidation(
+                        root,
+                        checked,
+                        target_dates=[DAY],
+                        snapshot_provider=provider,
+                    )
+
+                self.assertEqual("screened", changed[0]["state"])
+                self.assertEqual("passed", changed[0]["receipt"]["reason_code"])
+                snapshot_path = (
+                    root / changed[0]["receipt"]["live_odds_snapshot_path"]
+                )
+                published = live_odds.read_valid_live_snapshot(
+                    root,
+                    snapshot_path,
+                    DAY,
+                    checked,
+                )
+                candidate_row = next(
+                    row
+                    for row in published["matches"]
+                    if row["match_id"] == "match-1"
+                )
+                self.assertEqual(41, candidate_row["minutes_to_kickoff"])
+                self.assertEqual(
+                    "pre_kickoff_90",
+                    candidate_row["capture_phase"],
+                )
+                if mixed_batch:
+                    other_row = next(
+                        row
+                        for row in published["matches"]
+                        if row["match_id"] == "match-2"
+                    )
+                    self.assertEqual(40, other_row["minutes_to_kickoff"])
+                    self.assertEqual(
+                        "pre_kickoff_30",
+                        other_row["capture_phase"],
                     )
 
     def test_run_scans_today_and_yesterday_in_bjt_and_orders_due_candidates(self):

@@ -195,3 +195,104 @@ The commands used the exact Python and Node runtimes supplied in the task.
 - The full 771-test controller suite remains for the controller, as explicitly requested.
 - No live Apps Script or Gmail deployment was performed. Production rollout must follow the newly documented consumer-first sequence.
 - The audit-report commit SHA is reported by the parent task after this file is committed, avoiding a self-referential commit hash.
+
+## Follow-Up Finding 5: Fractional-Time Phase Boundary
+
+### Root cause
+
+`revalidation.due_stage` compared the exact seconds remaining before kickoff,
+while `live_odds._minutes_to_kickoff` floored the same duration before assigning
+the per-match snapshot phase. At 40:01 through 40:59, the scheduler therefore
+requested T-90 while publication labeled the fixture T-30. The same
+representation also labeled 105:01 through 105:59 as T-90 instead of too early.
+
+### RED evidence
+
+The first focused command was:
+
+```powershell
+& 'C:\Users\87562\AppData\Local\Temp\sporttery-test-venv\Scripts\python.exe' -m unittest tests.test_live_odds.LiveOddsTest.test_snapshot_labels_exact_fractional_phase_boundaries tests.test_live_odds.LiveOddsTest.test_fractional_t90_publication_uses_correct_single_and_mixed_fixture tests.test_revalidation.RevalidationTest.test_due_stage_uses_exact_fractional_phase_boundaries tests.test_revalidation.RevalidationTest.test_scheduler_binds_fractional_t90_evidence_in_single_and_mixed_batches -v
+```
+
+It ran four test methods and failed as expected:
+
+- the direct snapshot assertion observed integer `40` instead of `41` at
+  40:59;
+- single-fixture and mixed-batch T-90 publication raised
+  `requested pre-kickoff phase is outside its timing window`;
+- both end-to-end scheduler cases failed at the same publication boundary;
+- the scheduler-only exact-time matrix passed, isolating the defect to snapshot
+  representation.
+
+The ceiling conversion exposed a possible regression in the helper's existing
+negative-time guard. This additional focused RED command:
+
+```powershell
+& 'C:\Users\87562\AppData\Local\Temp\sporttery-test-venv\Scripts\python.exe' -m unittest tests.test_live_odds.LiveOddsTest.test_minutes_to_kickoff_still_rejects_fractional_past_time -v
+```
+
+ran one test and failed because `ceil(-1 second / 60)` returned zero instead of
+raising. The implementation was then tightened to reject negative exact seconds
+before applying the ceiling.
+
+### Implementation
+
+- Keep the scheduler's existing exact-time comparisons unchanged.
+- Publish `minutes_to_kickoff` as the ceiling of positive exact seconds divided
+  by 60.
+- Preserve exact integer boundaries:
+  - more than 105:00 is too early;
+  - 105:00 through strictly more than 40:00 is T-90;
+  - 40:00 through strictly more than 10:00 is T-30;
+  - scheduler missed-window behavior remains at `<=40:00` for provisional
+    candidates and `<=10:00` for screened candidates.
+- Preserve rejection of negative fractional kickoff time.
+- Exercise actual publication and revalidation with one fixture and a mixed
+  T-90/T-30 batch, asserting that the candidate binds its own correctly phased
+  row.
+
+### GREEN evidence
+
+The final focused command covered all five regression methods and passed 5/5.
+
+The required affected-suite command:
+
+```powershell
+& 'C:\Users\87562\AppData\Local\Temp\sporttery-test-venv\Scripts\python.exe' -m unittest tests.test_live_odds tests.test_revalidation -v
+```
+
+passed 58 tests with zero failures or errors.
+
+The final compile command:
+
+```powershell
+& 'C:\Users\87562\AppData\Local\Temp\sporttery-test-venv\Scripts\python.exe' -m py_compile live_odds.py revalidation.py tests/test_live_odds.py tests/test_revalidation.py
+```
+
+passed, and `git diff --check` passed with only the repository's existing
+LF-to-CRLF conversion notices.
+
+### Files changed
+
+- `live_odds.py`
+- `tests/test_live_odds.py`
+- `tests/test_revalidation.py`
+- `.superpowers/sdd/email-final-fix-report.md`
+
+### Commit
+
+- Parent SHA: `e440d38d815bfde76708dbfc9a929ca6e23a500a`.
+- Fractional-boundary fix SHA: this report's containing logical fix commit; its
+  exact SHA is returned by the parent task because a commit cannot embed its own
+  content-derived hash.
+
+### Follow-up self-review
+
+- `revalidation.py` required no runtime change; its exact fractional comparisons
+  already matched the intended windows.
+- Existing integer-boundary tests remain unchanged and passing.
+- Snapshot construction and validation both use the same ceiling
+  representation.
+- Requested-phase publication still requires at least one row in that exact
+  phase, while candidate evaluation binds the complete fixture identity.
+- No shared helper module or unrelated refactor was introduced.
