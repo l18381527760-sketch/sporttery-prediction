@@ -296,3 +296,64 @@ LF-to-CRLF conversion notices.
 - Requested-phase publication still requires at least one row in that exact
   phase, while candidate evaluation binds the complete fixture identity.
 - No shared helper module or unrelated refactor was introduced.
+
+## Follow-Up Finding 6: Legacy Model-Metrics Fixture
+
+### RED evidence
+
+After the approved T-90/T-30 boundary change, the unchanged controller test was
+run first:
+
+```powershell
+& 'C:\Users\87562\AppData\Local\Temp\sporttery-test-venv\Scripts\python.exe' -m unittest tests.test_model_metrics.ModelMetricsTest.test_counts_nested_live_pre_kickoff_phases_once_per_match -v
+```
+
+It failed deterministically:
+
+```text
+AssertionError: 1 != 2
+Ran 1 test
+FAILED (failures=1)
+```
+
+The fixture used 16:45 and 17:15 captures for an 18:00 kickoff. Both are now
+correctly T-90 because both are strictly more than 40 minutes before kickoff.
+
+### Fixture correction
+
+Only `tests/test_model_metrics.py` changed. The second capture moved from 17:15
+to 17:25, placing it 35 minutes before kickoff in the approved T-30 window.
+Assertions remain unchanged: the test still requires two files, two match
+observations, one unique fixture binding, one T-90 phase, one T-30 phase, and
+one requested decision-phase binding.
+
+### GREEN evidence
+
+The focused test passed after the fixture correction:
+
+```powershell
+& 'C:\Users\87562\AppData\Local\Temp\sporttery-test-venv\Scripts\python.exe' -m unittest tests.test_model_metrics.ModelMetricsTest.test_counts_nested_live_pre_kickoff_phases_once_per_match -v
+```
+
+```text
+Ran 1 test
+OK
+```
+
+The complete affected command was:
+
+```powershell
+& 'C:\Users\87562\AppData\Local\Temp\sporttery-test-venv\Scripts\python.exe' -m unittest tests.test_model_metrics tests.test_live_odds tests.test_revalidation -v
+```
+
+It passed 67 tests with zero failures or errors. `git diff --check` also passed
+with only the repository's existing LF-to-CRLF conversion notice.
+
+### Scope and commit
+
+- Test fixture: `tests/test_model_metrics.py`
+- Required evidence report:
+  `.superpowers/sdd/email-final-fix-report.md`
+- Parent SHA: `40c3b554df2be4bf947e70c7ea8ebaa275658ffb`
+- The focused correction commit SHA is returned by the parent task after this
+  report is committed.
