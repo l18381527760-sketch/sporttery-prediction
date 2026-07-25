@@ -885,6 +885,13 @@ class DeploymentDocumentationTest(unittest.TestCase):
         ROOT / "CLOUD_SETUP.md",
         APPS_SCRIPT_README,
     )
+    ROLLOUT_DOCS = OPERATOR_DOCS + (
+        ROOT
+        / "docs"
+        / "superpowers"
+        / "specs"
+        / "2026-07-24-opportunity-gated-email-design.md",
+    )
     REQUIRED_CONFIG_PROPERTIES = (
         "GITHUB_OWNER",
         "GITHUB_REPO",
@@ -1146,20 +1153,41 @@ class DeploymentDocumentationTest(unittest.TestCase):
             failure.index("GmailApp.sendEmail"),
             failure.index('setProperty("LAST_FAILURE_NOTICE_DATE"'),
         )
-        normal_test_mode = re.search(
-            r'if \(properties\.getProperty\("TEST_MODE"\) === "true"\) \{(?P<body>.*?)\} else',
-            normal,
-            re.DOTALL,
+        mode = self.function_body(code, "mailDeliveryMode_")
+        self.assertIn('value === "true"', mode)
+        self.assertIn('value === "false"', mode)
+        self.assertIn('return "disabled"', mode)
+        for function_name in (
+            "sendNormalReport_",
+            "sendFailureNotice_",
+            "sendRevalidationUpdate_",
+        ):
+            body = self.function_body(code, function_name)
+            self.assertLess(
+                body.index("mailDeliveryMode_"),
+                body.index("GmailApp.sendEmail"),
+            )
+
+    def test_schema_three_mail_rollout_is_consumer_first_and_fail_closed(self):
+        rollout_order = (
+            "pause the trigger or set `TEST_MODE=true`",
+            "deploy the schema 3 consumer",
+            "prove old schema 2 makes no Gmail call",
+            "publish the schema 3 producer",
+            "explicitly set `TEST_MODE=false`",
         )
-        failure_test_mode = re.search(
-            r'if \(properties\.getProperty\("TEST_MODE"\) === "true"\) \{(?P<body>.*?)\} else',
-            failure,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(normal_test_mode)
-        self.assertIsNotNone(failure_test_mode)
-        self.assertNotIn("setProperty", normal_test_mode.group("body"))
-        self.assertNotIn("setProperty", failure_test_mode.group("body"))
+        for path in self.ROLLOUT_DOCS:
+            with self.subTest(path=path):
+                text = self.read_doc(path)
+                self.assert_text_in_order(text, rollout_order)
+                self.assertIn(
+                    "Missing, misspelled, or non-exact `TEST_MODE` values fail closed",
+                    text,
+                )
+                self.assertIn(
+                    "no Gmail call and no sent-state write",
+                    text,
+                )
 
     def test_edited_docs_and_apps_script_contain_no_token_shaped_secrets(self):
         sensitive_files = self.OPERATOR_DOCS + (self.CODE_PATH,)
@@ -1189,18 +1217,22 @@ class DeploymentDocumentationTest(unittest.TestCase):
             text,
             (
                 "打开现有 Apps Script 项目",
+                "pause the trigger or set `TEST_MODE=true`",
+                "deploy the schema 3 consumer",
                 "`apps-script/Code.gs`",
                 "`apps-script/appsscript.json`",
                 "配置上述 8 项 Script Properties",
-                "`TEST_MODE=true`",
                 "手动运行 `runAutomation`",
                 "批准权限",
+                "prove old schema 2 makes no Gmail call",
                 "既有每 10 分钟运行的 `runAutomation` 触发器保持可用",
                 "不需要新建触发器",
+                "publish the schema 3 producer",
                 "`workflow_dispatch`",
                 "当天北京时间日期",
                 "`web/report-status.json`",
                 "PNG 的 SHA-256",
+                "explicitly set `TEST_MODE=false`",
                 "`TEST_MODE=false`",
                 "`.github/workflows/email-report.yml`",
                 "GitHub Actions",

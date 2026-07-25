@@ -57,7 +57,7 @@ Settlement retries may update only pending ledger rows; terminal outcomes remain
 
 ### 测试开关与自动状态
 
-`TEST_MODE` 是临时部署开关，不计入上述 8 项必填配置。首次部署时手工新增 `TEST_MODE` 并设为字符串 `true`；验收完成后改成字符串 `false`。`TEST_MODE=true` 可做同一天安全试运行：它会记录拟发送的初始邮件、赛前更新或失败通知，但不调用 Gmail。它不会写入 `LAST_INITIAL_SENT_DATE`，不会写入 `LAST_SENT_IMAGE_SHA256`，不会写入 `SENT_REVALIDATION_DIGESTS`，不会写入 `LAST_FAILURE_NOTICE_DATE`，也不会写入 `LAST_SENT_DATE`。切换到 `TEST_MODE=false` 后，同一北京时间日期仍可发送真实邮件，成功后才写入对应生产去重状态。
+`TEST_MODE` 是临时部署开关，不计入上述 8 项必填配置。首次部署时手工新增 `TEST_MODE` 并设为字符串 `true`；验收完成后改成字符串 `false`。`TEST_MODE=true` 可做同一天安全试运行：它会记录拟发送的初始邮件、赛前更新或失败通知，但不调用 Gmail。它不会写入 `LAST_INITIAL_SENT_DATE`，不会写入 `LAST_SENT_IMAGE_SHA256`，不会写入 `SENT_REVALIDATION_DIGESTS`，不会写入 `LAST_FAILURE_NOTICE_DATE`，也不会写入 `LAST_SENT_DATE`。切换到 `TEST_MODE=false` 后，同一北京时间日期仍可发送真实邮件，成功后才写入对应生产去重状态。Missing, misspelled, or non-exact `TEST_MODE` values fail closed：只有精确字符串 `false` 允许生产 Gmail 调用；属性缺失、拼写错误、大小写错误、空白或其他值都会 no Gmail call and no sent-state write。
 
 TEST_MODE 不测试 Gmail 实际投递，也不能证明 Gmail 授权、额度、收件地址或投递链路正常。GitHub dispatch 仍会真实执行，并继续写入阶段 dispatch 冷却状态，避免测试模式反复入队同一阶段。
 
@@ -65,18 +65,18 @@ TEST_MODE 不测试 Gmail 实际投递，也不能证明 Gmail 授权、额度�
 
 ## 首次部署顺序
 
-严格按下面顺序操作，先测试、再启用定时触发器、最后进入生产模式。
+严格按下面顺序操作，邮件契约升级必须 consumer-first，最后才进入生产模式。
 
-1. 打开现有 Apps Script 项目，不要新建第二个生产项目，也不需要新建触发器。
-2. 把仓库中已提交的 `apps-script/Code.gs` 全部粘贴到在线编辑器的 `Code.gs`。随后打开 **Project Settings**，勾选显示 `appsscript.json` 清单文件，并用已提交的 `apps-script/appsscript.json` 更新在线清单；确认时区显示 `Asia/Shanghai`。
-3. 在 **Project Settings -> Script Properties** 配置上述 8 项 Script Properties。再次确认源码和日志里没有令牌、密钥或私人邮箱值。
-4. 按“GitHub 仓库设置”创建仅限目标仓库的 fine-grained token，并把它放进 `GITHUB_TOKEN`，不要放进 GitHub Actions secrets 或源码。
-5. 新增临时属性 `TEST_MODE=true`。回到编辑器，选择并手动运行 `runAutomation`；首次运行时按 Google 提示批准权限，包括外部 HTTPS 请求、管理项目触发器和代表当前 Google 账号发送 Gmail。检查 **Executions** 日志，确认只记录动作，没有实际 Gmail 发送。
-6. 打开左侧 **Triggers** 页面，确认既有每 10 分钟运行的 `runAutomation` 触发器保持可用；部署只更新现有 `Code.gs`，不需要新建触发器。
-7. 在 GitHub 打开 **Actions**，选中 `Daily Sporttery Forecast`，点击 **Run workflow**，分支选 `main`，通过 `workflow_dispatch` 输入当天北京时间日期（`YYYY-MM-DD`）。按当天缺少的阶段继续手动运行 `Draw Alert Refresh` 和 `Afternoon Sporttery Settlement`。完成后检查仓库路径 `web/report-status.json`，并打开公开地址 `https://l18381527760-sketch.github.io/sporttery-prediction/report-status.json`，确认 `report_date` 是当天日期、阶段状态为 `true`、`build_id` 非空；从 `https://l18381527760-sketch.github.io/sporttery-prediction/daily-report.png` 下载同一构建的 PNG，在 PowerShell 运行 `Get-FileHash .\daily-report.png -Algorithm SHA256`，确认结果与状态文件中的 `image_sha256`（PNG 的 SHA-256）一致。报告首页是 `https://l18381527760-sketch.github.io/sporttery-prediction/`。
-8. 选中 `Pre-Kickoff Revalidation`。手动恢复时，`target_date` 必须是要处理的业务日 `YYYY-MM-DD`，`now_bjt` 必须是带时区的北京时间，例如 `2026-07-20T00:10:00+08:00`；生产实时处理通常留空 `now_bjt` 让工作流取当前时间。运行后检查 `web/revalidation-index.json`、`web/revalidation/DATE/status.json` 和状态指定的 `web/revalidation/DATE/revision-N-DIGEST.png`；公开 URL 需去掉路径开头的 `web/`。确认索引的 `status_sha256` 等于状态文件原始字节 SHA-256，状态的 `report_image_sha256` 等于 revision PNG 原始字节 SHA-256。
-9. 回到 Apps Script，多运行几次 `runAutomation`，核对 dry-run 日志中的日期、调度优先级、初始邮件、赛前更新和条件式 21:00 失败路径都符合预期。只有日志正确后，才把属性改为 `TEST_MODE=false`。测试模式不会占用生产发送状态；真实投递必须在生产模式单独验证。
-10. 确认 `.github/workflows/email-report.yml` 在 GitHub Actions 中保持 disabled：在 Actions 左侧选择 `Email Daily Betting Report`，页面应显示该工作流已禁用，并提供 **Enable workflow** 而不是 **Disable workflow**。再检查最近运行记录，确认部署后没有新的定时邮件运行。不要只查看仓库中的 YAML，因为文件仍保留用于审计和回滚参考。
+1. 打开现有 Apps Script 项目，不要新建第二个生产项目。修改源码前先 pause the trigger or set `TEST_MODE=true`：推荐先在 **Triggers** 暂停或删除 `runAutomation` 触发器；若保留触发器，则必须先把 Script Property 设为精确字符串 `TEST_MODE=true`。
+2. deploy the schema 3 consumer：把仓库中已提交的 `apps-script/Code.gs` 全部粘贴到在线编辑器的 `Code.gs`。随后打开 **Project Settings**，勾选显示 `appsscript.json` 清单文件，并用已提交的 `apps-script/appsscript.json` 更新在线清单；确认时区显示 `Asia/Shanghai`。此时不要发布 schema 3 producer，也不要设置生产模式。
+3. 在 **Project Settings -> Script Properties** 配置上述 8 项 Script Properties。按“GitHub 仓库设置”创建仅限目标仓库的 fine-grained token，并放进 `GITHUB_TOKEN`；再次确认源码和日志里没有令牌、密钥或私人邮箱值。
+4. 保持 `TEST_MODE=true`，回到编辑器并手动运行 `runAutomation`；首次运行时按 Google 提示批准权限，包括外部 HTTPS 请求、管理项目触发器和代表当前 Google 账号发送 Gmail。检查 **Executions** 日志，确认只记录 dry-run 动作，没有实际 Gmail 发送。
+5. 在 producer 仍发布旧契约时 prove old schema 2 makes no Gmail call：运行 Node Apps Script 回归，并对当前公开 schema 2 状态做一次受控 `runAutomation`；确认 Gmail 调用数和所有发送状态写入均为零。若触发器曾暂停，此项通过后可恢复并确认既有每 10 分钟运行的 `runAutomation` 触发器保持可用；不需要新建触发器。
+6. 确认 `.github/workflows/email-report.yml` 在 GitHub Actions 中保持 disabled：在 Actions 左侧选择 `Email Daily Betting Report`，页面应显示该工作流已禁用，并提供 **Enable workflow** 而不是 **Disable workflow**。
+7. publish the schema 3 producer：在 GitHub 打开 **Actions**，选中 `Daily Sporttery Forecast`，点击 **Run workflow**，分支选 `main`，通过 `workflow_dispatch` 输入当天北京时间日期（`YYYY-MM-DD`）。按当天缺少的阶段继续手动运行 `Draw Alert Refresh` 和 `Afternoon Sporttery Settlement`。完成后检查仓库路径 `web/report-status.json`，确认公开状态已经是 schema 3、`report_date` 是当天日期、阶段状态为 `true`、`build_id` 非空。
+8. 从 `https://l18381527760-sketch.github.io/sporttery-prediction/daily-report.png` 下载同一构建的 PNG，在 PowerShell 运行 `Get-FileHash .\daily-report.png -Algorithm SHA256`，确认结果与状态文件中的 `image_sha256`（PNG 的 SHA-256）一致。再运行 `Pre-Kickoff Revalidation` 并核对 `web/revalidation-index.json`、按日状态、revision PNG 及两个 SHA-256。
+9. 回到 Apps Script，在 `TEST_MODE=true` 下分别验证 present、absent、旧 schema 2 和 21:00 cutoff；确认 absent 与旧 schema 2 都没有 Gmail 或状态写入。只有这些证据正确后，才 explicitly set `TEST_MODE=false`。测试模式不会占用生产发送状态；真实投递必须在生产模式单独验证。
+10. 设置精确字符串 `TEST_MODE=false` 后做一次受控生产验证，并再次确认 `.github/workflows/email-report.yml` 在 GitHub Actions 中保持 disabled。其他、缺失或拼写错误的 `TEST_MODE` 值必须保持失败关闭。
 
 ## 日常核对
 

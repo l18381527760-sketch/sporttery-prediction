@@ -117,6 +117,8 @@ Broader 30-day evidence maturity remains required before model or profitability 
 
 部署后，Apps Script 是唯一的邮件发送方，`.github/workflows/email-report.yml` 在 GitHub Actions 中保持 disabled。GitHub Actions 负责生成和发布报告，Apps Script 负责调度、轮询、校验和发信；两边都在云端运行，所以电脑可以关机。部署时只更新现有 Apps Script 的 `Code.gs`，不需要新建触发器。云端设置请阅读 [CLOUD_SETUP.md](CLOUD_SETUP.md)，Apps Script 的逐步部署与恢复请阅读 [apps-script/README.md](apps-script/README.md)。不需要 Google 日历。
 
+Schema 3 邮件闸门必须按 consumer-first 顺序上线：先 pause the trigger or set `TEST_MODE=true`，再 deploy the schema 3 consumer；在 producer 仍发布旧状态时 prove old schema 2 makes no Gmail call，然后 publish the schema 3 producer，验收 present 与 absent 两种状态后才 explicitly set `TEST_MODE=false`。Missing, misspelled, or non-exact `TEST_MODE` values fail closed：只有精确字符串 `false` 允许生产发信，精确字符串 `true` 是 dry-run，其他值一律 no Gmail call and no sent-state write。
+
 现有工作流 cron 与 Apps Script dispatch 彼此独立，可能在 Pages 尚未更新时为同一阶段各排队一次；共享并发队列、写入前方案锁检查和同日幂等状态使额外运行保持安全。仓库中的 `web/` 是 Pages artifact 根目录，所以公开状态和图片 URL 不包含 `/web/`。
 
 ## 常用文件

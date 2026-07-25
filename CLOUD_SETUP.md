@@ -75,6 +75,10 @@ Broader 30-day evidence maturity remains required before model or profitability 
 
 预测、刷新、结算和赔率快照仍共享 `sporttery-repository` 并发队列，避免多个写入任务互相覆盖。可选市场来源失败时，采集器记录错误并保留仍通过验证的来源；独立可选步骤失败不会补造数据。状态文件和图片哈希在发送前提供最终的一致性检查。
 
+### Schema 3 邮件安全上线
+
+升级邮件契约时必须 consumer-first：先 pause the trigger or set `TEST_MODE=true`，再 deploy the schema 3 consumer；保持 producer 仍发布旧契约并 prove old schema 2 makes no Gmail call，然后 publish the schema 3 producer，完成 present、absent 和 cutoff 验收后才 explicitly set `TEST_MODE=false`。Missing, misspelled, or non-exact `TEST_MODE` values fail closed：只有精确字符串 `false` 进入生产 Gmail 路径，精确字符串 `true` 只记录 dry-run，其他或缺失值都是 no Gmail call and no sent-state write。
+
 ## 手动运行和验收
 
 1. 打开仓库的 **Actions** 页面。
