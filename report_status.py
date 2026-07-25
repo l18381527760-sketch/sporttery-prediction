@@ -19,7 +19,7 @@ from provisional_plan import read_valid_provisional_state
 
 
 BEIJING = timezone(timedelta(hours=8))
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PHASES = ("forecast", "decision", "provisional", "settlement")
 FIXTURE_REQUIRED_FIELDS = frozenset(
     {
@@ -43,6 +43,18 @@ LEDGER_REQUIRED_FIELDS = frozenset(
     {
         "date", "strategy_version", "stage", "match", "play", "selection",
         "probability", "odds", "stake", "status", "profit",
+    }
+)
+DRAW_ALERT_REQUIRED_FIELDS = frozenset(
+    {
+        "date", "rank", "match_id", "match", "team_a", "team_b", "stage",
+        "subtype", "selection", "domestic_draw_odds",
+        "market_draw_probability", "model_draw_probability", "draw_edge",
+        "expected_value", "xg_total", "global_calibrated_draw_probability",
+        "league_calibration_samples", "league_calibration_enabled",
+        "evidence_json", "data_quality", "captured_at", "alert_level",
+        "additional_stake", "linked_main_stake", "hypothetical_stake",
+        "settlement_mode", "strategy_version", "feature_version",
     }
 )
 OFFICIAL_FIXTURE_SOURCES = frozenset({"竞彩网", "中国足彩网", "sporttery", "zgzcw"})
@@ -206,6 +218,62 @@ def _csv_with_header(path: Path, required_fields: frozenset[str]) -> tuple[bool,
         return False, 0
 
 
+def _draw_alert_artifact(path: Path, report_date: date) -> tuple[bool, int]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if (
+                not reader.fieldnames
+                or not DRAW_ALERT_REQUIRED_FIELDS.issubset(reader.fieldnames)
+            ):
+                return False, 0
+            rows = list(reader)
+    except OSError:
+        return False, 0
+    for row in rows:
+        if row.get("date") != report_date.isoformat():
+            return False, 0
+        try:
+            rank = int(row.get("rank", ""))
+        except (TypeError, ValueError):
+            return False, 0
+        if rank < 1 or any(
+            not str(row.get(field, "")).strip()
+            for field in (
+                "match_id", "match", "team_a", "team_b", "subtype", "selection",
+                "strategy_version",
+            )
+        ):
+            return False, 0
+    return True, len(rows)
+
+
+def _email_opportunity(state: dict) -> dict:
+    plan_ready = state.get("provisional_state_ready") is True
+    alert_ready = state.get("draw_alert_ready") is True
+    plan_count = state.get("provisional_plan_count") if plan_ready else None
+    alert_count = state.get("draw_alert_count") if alert_ready else None
+    reasons = []
+    if not plan_ready:
+        reasons.append("actionable_plan_unavailable")
+    if not alert_ready:
+        reasons.append("draw_alert_unavailable")
+    if (isinstance(plan_count, int) and plan_count > 0) or (
+        isinstance(alert_count, int) and alert_count > 0
+    ):
+        opportunity_state = "present"
+    elif plan_ready and alert_ready and plan_count == 0 and alert_count == 0:
+        opportunity_state = "absent"
+    else:
+        opportunity_state = "unknown"
+    return {
+        "state": opportunity_state,
+        "actionable_plan_count": plan_count,
+        "draw_alert_count": alert_count,
+        "reasons": reasons,
+    }
+
+
 def _matching_decision_snapshot(root: Path, report_date: date) -> tuple[bool, str]:
     prefix = f"{report_date.isoformat()}-"
     suffix = "-decision.json"
@@ -355,6 +423,9 @@ def artifact_state(
     plan_csv_ready, plan_count = _csv_with_header(
         output / f"betting_plan_{date_text}.csv", PLAN_REQUIRED_FIELDS
     )
+    draw_alert_ready, draw_alert_count = _draw_alert_artifact(
+        output / f"draw_alert_{date_text}.csv", report_date
+    )
     decision_payload = _read_json(output / f"daily_decision_{date_text}.json")
     decision_ready = (
         isinstance(decision_payload, dict)
@@ -410,6 +481,8 @@ def artifact_state(
         "prediction_count": prediction_count,
         "plan_csv_ready": plan_csv_ready,
         "plan_count": plan_count,
+        "draw_alert_ready": draw_alert_ready,
+        "draw_alert_count": draw_alert_count,
         "decision_ready": decision_ready,
         "plan_lock_ready": lock_payload is not None,
         "plan_locked_at_bjt": lock_payload.get("locked_at_bjt", "") if lock_payload else "",
@@ -437,7 +510,7 @@ def artifact_state(
 def _previous_status(root: Path, report_date: date) -> dict:
     previous = _read_json(root / "web" / "report-status.json")
     if isinstance(previous, dict) and (
-        previous.get("schema_version") in {1, SCHEMA_VERSION}
+        previous.get("schema_version") in {1, 2, SCHEMA_VERSION}
         and previous.get("report_date") == report_date.isoformat()
     ):
         return {**base_status(report_date), **previous}
@@ -643,6 +716,7 @@ def publish_status(
             "provisional_candidate_count": (
                 state["provisional_plan_count"] + state["provisional_shadow_count"]
             ),
+            "email_opportunity": _email_opportunity(state),
             "data_quality": _data_quality(state),
             "evidence_health": health,
             "source_status": state["source_status"],
