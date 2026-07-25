@@ -91,8 +91,9 @@ class LiveOddsTest(TestCase):
 
     def test_match_phase_uses_each_required_boundary(self):
         expected = {
-            45: "pre_kickoff_30",
-            46: "pre_kickoff_90",
+            40: "pre_kickoff_30",
+            41: "pre_kickoff_90",
+            45: "pre_kickoff_90",
             105: "pre_kickoff_90",
             106: "decision",
         }
@@ -102,9 +103,9 @@ class LiveOddsTest(TestCase):
 
     def test_pre_kickoff_request_cannot_assert_a_phase_outside_its_window(self):
         cases = (
-            ("pre_kickoff_30", 46),
+            ("pre_kickoff_30", 41),
             ("pre_kickoff_30", 106),
-            ("pre_kickoff_90", 45),
+            ("pre_kickoff_90", 40),
             ("pre_kickoff_90", 106),
         )
         for phase, minutes in cases:
@@ -125,8 +126,9 @@ class LiveOddsTest(TestCase):
 
     def test_pre_kickoff_requests_accept_exact_window_boundaries(self):
         cases = (
-            ("pre_kickoff_30", 45),
-            ("pre_kickoff_90", 46),
+            ("pre_kickoff_30", 40),
+            ("pre_kickoff_90", 41),
+            ("pre_kickoff_90", 45),
             ("pre_kickoff_90", 105),
         )
         for phase, minutes in cases:

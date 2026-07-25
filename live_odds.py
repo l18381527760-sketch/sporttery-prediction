@@ -309,7 +309,7 @@ def _minutes_to_kickoff(kickoff: datetime, captured: datetime) -> int:
 
 
 def _match_phase(requested: str, minutes: int) -> str:
-    if minutes <= 45:
+    if minutes <= 40:
         return "pre_kickoff_30"
     if minutes <= 105:
         return "pre_kickoff_90"
