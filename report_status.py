@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image, UnidentifiedImageError
 
 from betting_ledger import resolve_ledger_path
-from decision_bundle import read_valid_decision_bundle
+from decision_bundle import decision_evidence_window, read_valid_decision_bundle
 from evidence_health import build_evidence_health
 from import_sporttery import read_valid_import_manifest
 from legacy_snapshot import read_valid_legacy_snapshot
@@ -439,8 +439,14 @@ def artifact_state(
     ledger_ready, ledger_count = _csv_with_header(
         output / "betting_ledger.csv", LEDGER_REQUIRED_FIELDS
     )
+    decision_expected_bindings = None
+    decision_evaluated_at = None
     try:
-        read_valid_decision_bundle(root, report_date)
+        decision_bundle = read_valid_decision_bundle(root, report_date)
+        (
+            decision_expected_bindings,
+            decision_evaluated_at,
+        ) = decision_evidence_window(decision_bundle)
         decision_bundle_ready = True
     except ValueError:
         decision_bundle_ready = False
@@ -491,6 +497,8 @@ def artifact_state(
         "ledger_ready": ledger_ready,
         "ledger_count": ledger_count,
         "decision_bundle_ready": decision_bundle_ready,
+        "_decision_expected_bindings": decision_expected_bindings,
+        "_decision_evaluated_at": decision_evaluated_at,
         "provisional_plan_ready": provisional_plan_ready,
         "provisional_plan_count": provisional_plan_count,
         "provisional_shadow_ready": provisional_shadow_ready,
@@ -595,6 +603,8 @@ def publish_status(
         report_date,
         generated_at,
         zero_fixture_verified=verified_zero_fixture_day(root, report_date),
+        decision_expected_bindings=state.get("_decision_expected_bindings"),
+        decision_evaluated_at=state.get("_decision_evaluated_at"),
     )
     status = _previous_status(root, report_date)
     forecast_ready = all(

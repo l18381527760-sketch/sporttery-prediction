@@ -335,6 +335,64 @@ class EvidenceHealthTest(unittest.TestCase):
         self.assertIn("decision_odds_stale", health["decision_blockers"])
         self.assertEqual(NOW, snapshot_health.call_args.kwargs["not_after"])
 
+    def test_decision_coverage_uses_immutable_future_fixture_universe(self):
+        future_binding = (DAY.isoformat(), "Home 2", "Away 2", "2")
+        future_only = coverage(
+            decision_bindings=(list(future_binding),),
+            decision_count=1,
+            decision_at="2026-07-21T13:45:00+08:00",
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("evidence_health.fixture_match_ids", return_value={
+                (DAY.isoformat(), "Home 1", "Away 1"): frozenset({"1"}),
+                (DAY.isoformat(), "Home 2", "Away 2"): frozenset({"2"}),
+            }),
+            patch(
+                "evidence_health.snapshot_coverage",
+                return_value=future_only,
+            ),
+        ):
+            health = build_evidence_health(
+                Path(tmp),
+                DAY,
+                NOW + timedelta(hours=2),
+                zero_fixture_verified=False,
+                decision_expected_bindings=frozenset({future_binding}),
+                decision_evaluated_at=NOW,
+            )
+
+        self.assertEqual(2, health["identity_total"])
+        self.assertEqual([], health["decision_blockers"])
+
+    def test_immutable_decision_context_preserves_stale_at_lock_detection(self):
+        binding = (DAY.isoformat(), "Home 1", "Away 1", "1")
+        stale = coverage(
+            decision_bindings=(list(binding),),
+            decision_count=1,
+            decision_at="2026-07-21T13:29:59+08:00",
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("evidence_health.fixture_match_ids", return_value={
+                (DAY.isoformat(), "Home 1", "Away 1"): frozenset({"1"}),
+            }),
+            patch("evidence_health.snapshot_coverage", return_value=stale),
+        ):
+            health = build_evidence_health(
+                Path(tmp),
+                DAY,
+                NOW + timedelta(hours=2),
+                zero_fixture_verified=False,
+                decision_expected_bindings=frozenset({binding}),
+                decision_evaluated_at=NOW,
+            )
+
+        self.assertEqual(
+            ["decision_odds_stale"],
+            health["decision_blockers"],
+        )
+
     def test_now_must_include_a_timezone(self):
         with self.assertRaisesRegex(ValueError, "timezone"):
             build_evidence_health(
