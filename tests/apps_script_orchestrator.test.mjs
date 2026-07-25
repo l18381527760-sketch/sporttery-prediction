@@ -212,6 +212,7 @@ function makeHarness({
     REVALIDATION_INDEX_URL: "https://example.test/revalidation-index.json",
     REPORT_SITE_URL: "https://example.test/",
     RECIPIENT_EMAIL: "recipient@example.test",
+    TEST_MODE: "false",
     ...initialProperties,
   }));
   const calls = { fetch: [], mail: [], logs: [], lock: [], deleted: [], triggerBuilder: [] };
@@ -1244,6 +1245,21 @@ test("21:00 sends one failure notice only for a proven opportunity", () => {
   }
 });
 
+test("21:00 ignores prior-date and unsupported-schema opportunity statuses", () => {
+  for (const status of [
+    readyStatus({ report_date: "2026-07-15" }),
+    readyStatus({ schema_version: 2 }),
+  ]) {
+    const { context, calls, properties } = makeHarness({
+      now: "2026-07-16T13:00:00.000Z",
+      status,
+    });
+    context.runAutomation();
+    assert.equal(calls.mail.length, 0);
+    assert.equal(properties.has("LAST_FAILURE_NOTICE_DATE"), false);
+  }
+});
+
 test("workflow dispatch retries stop at 21:00 instead of 18:00", () => {
   const incomplete = dispatchStatus({ forecast_ready: false });
   const before = makeHarness({
@@ -1278,6 +1294,53 @@ test("21:00 failure notice includes report timestamp and dashboard without attac
   assert.match(calls.mail[0][3].htmlBody, /href="https:\/\/example\.test\/"/);
   assert.match(calls.mail[0][2], /21:00/);
   assert.equal(calls.mail[0][3].attachments, undefined);
+});
+
+test("21:00 failure notice includes readiness, revalidation, and opportunity diagnostics", () => {
+  const status = readyStatus({
+    settlement_ready: false,
+    provisional_candidate_count: 1,
+    email_opportunity: {
+      state: "present",
+      actionable_plan_count: 1,
+      draw_alert_count: null,
+      reasons: ["draw_alert_unavailable"],
+    },
+    data_quality: {
+      ...readyStatus().data_quality,
+      ledger_ready: false,
+    },
+  });
+  const unavailable = makeHarness({
+    now: "2026-07-16T13:00:00.000Z",
+    status,
+    revalidationIndexValue: { schema_version: 99, dates: [] },
+  });
+  unavailable.context.runAutomation();
+
+  assert.equal(unavailable.calls.mail.length, 1);
+  assert.match(unavailable.calls.mail[0][2], /settlement not ready/);
+  assert.match(unavailable.calls.mail[0][2], /data quality invalid: ledger_ready/);
+  assert.match(unavailable.calls.mail[0][2], /revalidation index unavailable/);
+  assert.match(unavailable.calls.mail[0][2], /draw_alert_unavailable/);
+  assert.equal(
+    unavailable.calls.fetch.some((call) => call.url.includes("daily-report.png")),
+    false,
+  );
+
+  const uncovered = makeHarness({
+    now: "2026-07-16T13:00:00.000Z",
+    status: readyStatus({ provisional_candidate_count: 1 }),
+  });
+  uncovered.context.runAutomation();
+  assert.match(
+    uncovered.calls.mail[0][2],
+    /revalidation index does not cover report/,
+  );
+  assert.equal(
+    uncovered.calls.fetch.some((call) => call.url.includes("daily-report.png")),
+    false,
+  );
 });
 
 test("21:00 malformed status JSON does not send without a proven opportunity", () => {
@@ -1372,6 +1435,39 @@ test("TEST_MODE failure dry run leaves production mail state untouched and permi
   assert.equal(calls.mail[0][3]?.attachments, undefined);
   assert.equal(properties.get("LAST_FAILURE_NOTICE_DATE"), REPORT_DATE);
   assert.equal(properties.has("LAST_SENT_DATE"), false);
+});
+
+test("missing or misspelled TEST_MODE fails closed for every Gmail path", () => {
+  for (const testMode of [undefined, "False", "flase"]) {
+    const normal = makeHarness({
+      initialProperties: { TEST_MODE: testMode },
+    });
+    normal.context.runAutomation();
+    assert.equal(normal.calls.mail.length, 0);
+    assert.equal(normal.properties.has("LAST_INITIAL_SENT_DATE"), false);
+    assert.equal(normal.properties.has("LAST_SENT_IMAGE_SHA256"), false);
+
+    const failure = makeHarness({
+      now: "2026-07-16T13:00:00.000Z",
+      initialProperties: { TEST_MODE: testMode },
+    });
+    failure.context.runAutomation();
+    assert.equal(failure.calls.mail.length, 0);
+    assert.equal(failure.properties.has("LAST_FAILURE_NOTICE_DATE"), false);
+
+    const fixture = revalidationFixture(REPORT_DATE);
+    const update = makeHarness({
+      initialProperties: {
+        LAST_INITIAL_SENT_DATE: REPORT_DATE,
+        TEST_MODE: testMode,
+      },
+      revalidationIndexValue: fixture.index,
+      revalidationStatuses: fixture.statuses,
+    });
+    update.context.runAutomation();
+    assert.equal(update.calls.mail.length, 0);
+    assert.equal(update.properties.has("SENT_REVALIDATION_DIGESTS"), false);
+  }
 });
 
 test("installAutomationTrigger deletes both legacy handlers and creates one 10-minute trigger", () => {
