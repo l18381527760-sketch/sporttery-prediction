@@ -139,6 +139,13 @@ function emailOpportunity_(status) {
   return { state: block.state, reasons: block.reasons.slice() };
 }
 
+function currentEmailOpportunity_(status, expectedDate) {
+  if (!status || status.schema_version !== 3 || status.report_date !== expectedDate) {
+    return { state: "unknown", reasons: ["email opportunity status identity invalid"] };
+  }
+  return emailOpportunity_(status);
+}
+
 function missingReasons_(status, expectedDate) {
   var reasons = [];
   if (!status || typeof status !== "object" || Array.isArray(status)) {
@@ -562,7 +569,17 @@ function fetchImage_(properties, buildId) {
   return { bytes: bytes, blob: blob, reason: "" };
 }
 
+function mailDeliveryMode_(properties) {
+  var value = properties.getProperty("TEST_MODE");
+  if (value === "true") return "dry-run";
+  if (value === "false") return "production";
+  Logger.log("TEST_MODE must be exactly true or false; Gmail delivery is disabled");
+  return "disabled";
+}
+
 function sendNormalReport_(properties, clock, imageBlob, imageSha256) {
+  var mode = mailDeliveryMode_(properties);
+  if (mode === "disabled") return false;
   var recipient = requiredProperty_(properties, "RECIPIENT_EMAIL");
   var siteUrl = requiredProperty_(properties, "REPORT_SITE_URL");
   var subject = "Daily report " + clock.date;
@@ -571,13 +588,14 @@ function sendNormalReport_(properties, clock, imageBlob, imageSha256) {
     htmlBody: "<p>The verified daily report is attached.</p><p><a href=\"" + siteUrl + "\">Open dashboard</a></p>",
     attachments: [imageBlob],
   };
-  if (properties.getProperty("TEST_MODE") === "true") {
+  if (mode === "dry-run") {
     Logger.log("TEST_MODE normal report send for " + clock.date);
-  } else {
-    GmailApp.sendEmail(recipient, subject, body, options);
-    properties.setProperty("LAST_INITIAL_SENT_DATE", clock.date);
-    properties.setProperty("LAST_SENT_IMAGE_SHA256", imageSha256);
+    return false;
   }
+  GmailApp.sendEmail(recipient, subject, body, options);
+  properties.setProperty("LAST_INITIAL_SENT_DATE", clock.date);
+  properties.setProperty("LAST_SENT_IMAGE_SHA256", imageSha256);
+  return true;
 }
 
 function escapeHtml_(value) {
@@ -585,6 +603,8 @@ function escapeHtml_(value) {
 }
 
 function sendFailureNotice_(properties, clock, reasons, status) {
+  var mode = mailDeliveryMode_(properties);
+  if (mode === "disabled") return false;
   var recipient = requiredProperty_(properties, "RECIPIENT_EMAIL");
   var siteUrl = requiredProperty_(properties, "REPORT_SITE_URL");
   var subject = "Daily report unavailable by 21:00 " + clock.date;
@@ -597,12 +617,13 @@ function sendFailureNotice_(properties, clock, reasons, status) {
       "</p><p>Last generated at (Beijing): " + escapeHtml_(generatedAt) +
       "</p><p><a href=\"" + escapeHtml_(siteUrl) + "\">Open dashboard</a></p>",
   };
-  if (properties.getProperty("TEST_MODE") === "true") {
+  if (mode === "dry-run") {
     Logger.log("TEST_MODE failure notice send for " + clock.date);
-  } else {
-    GmailApp.sendEmail(recipient, subject, body, options);
-    properties.setProperty("LAST_FAILURE_NOTICE_DATE", clock.date);
+    return false;
   }
+  GmailApp.sendEmail(recipient, subject, body, options);
+  properties.setProperty("LAST_FAILURE_NOTICE_DATE", clock.date);
+  return true;
 }
 
 function uniqueReasons_(reasons) {
@@ -627,8 +648,8 @@ function tryVerifiedSend_(properties, clock, status) {
   var computedHash = sha256Hex_(image.bytes);
   var readiness = reportReadiness_(status, clock.date, computedHash);
   if (!readiness.ready) return { sent: false, reasons: readiness.reasons };
-  sendNormalReport_(properties, clock, image.blob, computedHash);
-  return { sent: true, reasons: [] };
+  var sent = sendNormalReport_(properties, clock, image.blob, computedHash);
+  return { sent: sent, reasons: [] };
 }
 
 function initialReportSent_(reportDate, state) {
@@ -706,6 +727,8 @@ function sendRevalidationUpdate_(entry, status, imageBytes, config) {
   var properties = config.properties;
   var clock = config.clock;
   if (!imageBytes || !imageBytes.length || sha256Hex_(imageBytes) !== status.report_image_sha256) return false;
+  var mode = mailDeliveryMode_(properties);
+  if (mode === "disabled") return false;
   var candidateIds = status.changed_candidates.map(function (candidate) { return candidate.candidate_id; });
   var summary = status.changed_candidates.map(function (candidate) {
     return candidate.candidate_id + ": " + candidate.state;
@@ -721,7 +744,7 @@ function sendRevalidationUpdate_(entry, status, imageBytes, config) {
       escapeHtml_(siteUrl) + "\">Open dashboard</a></p>",
     attachments: [config.imageBlob],
   };
-  if (properties.getProperty("TEST_MODE") === "true") {
+  if (mode === "dry-run") {
     Logger.log("TEST_MODE revalidation update for " + status.report_date);
     return true;
   }
@@ -750,10 +773,14 @@ function runAutomation() {
     var clock = beijingClock_(new Date());
     var state = properties.getProperties();
     var revalidationIndex = null;
+    var revalidationReasons = [];
     try {
       revalidationIndex = revalidationIndex_({ properties: properties, clock: clock });
     } catch (error) {
+      var revalidationReason = "revalidation index unavailable: " +
+        String(error && error.message ? error.message : error);
       Logger.log("revalidation index unavailable");
+      revalidationReasons.push(revalidationReason);
     }
 
     var revalidationDispatch = chooseRevalidationDispatch_(clock, revalidationIndex, state);
@@ -778,14 +805,28 @@ function runAutomation() {
 
     var fetched = fetchStatus_(properties, clock);
     var status = fetched.status;
-    var opportunity = emailOpportunity_(status);
+    var opportunity = currentEmailOpportunity_(status, clock.date);
     var revalidationCoversReport = revalidationIndexCoversReport_(revalidationIndex, status);
     if (clock.minutes >= EMAIL_CUTOFF_MINUTES_) {
       if (opportunity.state === "present") {
+        var readiness = reportReadiness_(
+          status,
+          clock.date,
+          status && status.image_sha256
+        );
+        var coverageReasons = revalidationIndex && !revalidationCoversReport ?
+          ["revalidation index does not cover report"] : [];
         sendFailureNotice_(
           properties,
           clock,
-          uniqueReasons_(fetched.reasons.concat(["normal report missed 21:00 cutoff"])),
+          uniqueReasons_(
+            fetched.reasons
+              .concat(readiness.reasons)
+              .concat(revalidationReasons)
+              .concat(coverageReasons)
+              .concat(opportunity.reasons)
+              .concat(["normal report missed 21:00 cutoff"])
+          ),
           status
         );
       }
