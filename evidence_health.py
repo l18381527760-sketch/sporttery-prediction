@@ -16,10 +16,21 @@ def build_evidence_health(
     now: datetime,
     *,
     zero_fixture_verified: bool,
+    decision_expected_bindings: frozenset[
+        tuple[str, str, str, str]
+    ] | None = None,
+    decision_evaluated_at: datetime | None = None,
 ) -> dict:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("evidence health now must include a timezone")
+    if (decision_expected_bindings is None) != (decision_evaluated_at is None):
+        raise ValueError("decision evidence context is incomplete")
     now_bjt = now.astimezone(BEIJING)
+    decision_at_bjt = (
+        now_bjt
+        if decision_evaluated_at is None
+        else _required_aware(decision_evaluated_at, "decision_evaluated_at")
+    )
     confirmed, total, expected_bindings = _fixture_evidence(
         root,
         target_date,
@@ -42,6 +53,14 @@ def build_evidence_health(
         target_date,
         not_after=now_bjt,
     )
+    decision_coverage = coverage
+    if decision_at_bjt != now_bjt:
+        decision_coverage = snapshot_coverage(
+            root / "data" / "odds_snapshots",
+            root / "data" / "live_odds_snapshots",
+            target_date,
+            not_after=decision_at_bjt,
+        )
 
     identity_rate = (
         confirmed / total
@@ -54,27 +73,33 @@ def build_evidence_health(
     if identity_rate < 1.0:
         forecast_blockers.append("identity_not_unique")
 
-    decision_bindings = _decision_coverage_bindings(coverage)
-    decision_captures = _decision_capture_times(coverage)
-    covered_bindings = (
+    expected_decision_bindings = (
         expected_bindings
+        if decision_expected_bindings is None
+        else set(decision_expected_bindings)
+    )
+    decision_total = len(expected_decision_bindings)
+    decision_bindings = _decision_coverage_bindings(decision_coverage)
+    decision_captures = _decision_capture_times(decision_coverage)
+    covered_bindings = (
+        expected_decision_bindings
         & decision_bindings
         & set(decision_captures)
     )
     decision_count = len(covered_bindings)
-    if total and decision_count < total:
+    if decision_total and decision_count < decision_total:
         decision_blockers.append("decision_snapshot_incomplete")
     capture_times = [
         decision_captures[binding]
         for binding in covered_bindings
     ]
-    has_future = any(captured > now_bjt for captured in capture_times)
+    has_future = any(captured > decision_at_bjt for captured in capture_times)
     if has_future:
         decision_blockers.append("decision_odds_from_future")
-    if total and not has_future and (
-        len(capture_times) < total
+    if decision_total and not has_future and (
+        len(capture_times) < decision_total
         or any(
-            now_bjt - captured > timedelta(minutes=30)
+            decision_at_bjt - captured > timedelta(minutes=30)
             for captured in capture_times
         )
     ):
@@ -209,4 +234,17 @@ def _aware(value: object) -> datetime | None:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
+    return parsed.astimezone(BEIJING)
+
+
+def _required_aware(value: object, name: str) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = _aware(value)
+        if parsed is not None:
+            return parsed
+        raise ValueError(f"{name} must include a timezone")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{name} must include a timezone")
     return parsed.astimezone(BEIJING)

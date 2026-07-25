@@ -14,6 +14,7 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 import import_sporttery
+import decision_bundle as decision_bundle_module
 from decision_bundle import (
     create_decision_bundle,
     read_valid_decision_bundle,
@@ -1501,6 +1502,93 @@ class ReportStatusTest(unittest.TestCase):
         self.assertTrue(decision["forecast_ready"])
         self.assertFalse(decision["decision_snapshot_ready"])
         self.assertEqual(blocked, decision["evidence_health"])
+
+    def test_decision_evidence_window_excludes_fixtures_started_before_capture(self):
+        bundle = {
+            "target_date": REPORT_DATE.isoformat(),
+            "locked_at_bjt": "2026-07-16T14:00:00+08:00",
+            "decision_snapshot": {
+                "captured_at_bjt": "2026-07-16T13:45:00+08:00",
+            },
+            "fixture_extract": {
+                "rows": [
+                    {
+                        "match_id": "started",
+                        "team_a": "Started A",
+                        "team_b": "Started B",
+                        "kickoff_at": "2026-07-16T13:40:00+08:00",
+                    },
+                    {
+                        "match_id": "future",
+                        "team_a": "Future A",
+                        "team_b": "Future B",
+                        "kickoff_at": "2026-07-16T18:00:00+08:00",
+                    },
+                ],
+            },
+        }
+
+        expected, evaluated_at = (
+            decision_bundle_module.decision_evidence_window(bundle)
+        )
+
+        self.assertEqual(
+            frozenset({
+                (
+                    REPORT_DATE.isoformat(),
+                    "Future A",
+                    "Future B",
+                    "future",
+                ),
+            }),
+            expected,
+        )
+        self.assertEqual(
+            datetime(2026, 7, 16, 14, 0, tzinfo=BJT),
+            evaluated_at,
+        )
+
+    def test_settlement_retry_does_not_age_out_valid_locked_decision_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            self.make_lock(root)
+            bundle = read_valid_decision_bundle(root, REPORT_DATE)
+            with patch(
+                "provisional_plan.strategy_outputs_from_bundle",
+                return_value=StrategyOutputs([], [], [], {}),
+            ):
+                create_provisional_outputs(
+                    root,
+                    REPORT_DATE,
+                    GENERATED_AT,
+                    bundle,
+                )
+            provisional = self.publish(root, "provisional")
+            self.assertTrue(provisional["initial_report_ready"])
+
+            build_id = "123456-1-settlement-retry"
+            self.write_report_image(
+                root,
+                REPORT_DATE,
+                "settlement",
+                build_id,
+            )
+            settlement = publish_status(
+                root,
+                REPORT_DATE,
+                "settlement",
+                build_id,
+                "abc123",
+                datetime(2026, 7, 16, 15, 0, tzinfo=BJT),
+                settled_through=date(2026, 7, 15),
+            )
+
+        self.assertTrue(settlement["initial_report_ready"])
+        self.assertNotIn(
+            "decision_odds_stale",
+            settlement["evidence_health"]["decision_blockers"],
+        )
 
     def test_empty_health_blockers_preserve_existing_decision_readiness(self):
         health = {
