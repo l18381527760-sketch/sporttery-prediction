@@ -97,7 +97,7 @@ function readyStatus(overrides = {}) {
     image_ready: true,
   };
   const status = {
-    schema_version: 2,
+    schema_version: 3,
     report_date: REPORT_DATE,
     forecast_ready: true,
     decision_snapshot_ready: false,
@@ -119,6 +119,12 @@ function readyStatus(overrides = {}) {
     official_fixture_count: 2,
     official_odds_count: 2,
     official_odds_coverage_ratio: 1,
+    email_opportunity: {
+      state: "present",
+      actionable_plan_count: 1,
+      draw_alert_count: 0,
+      reasons: [],
+    },
     data_quality: quality,
   };
   return {
@@ -128,7 +134,7 @@ function readyStatus(overrides = {}) {
   };
 }
 
-function schema2ReadyStatus(overrides = {}) {
+function schema3ReadyStatus(overrides = {}) {
   return readyStatus(overrides);
 }
 
@@ -156,7 +162,7 @@ function zeroFixtureReadyStatus(overrides = {}) {
 
 function dispatchStatus(overrides = {}) {
   return {
-    schema_version: 2,
+    schema_version: 3,
     report_date: REPORT_DATE,
     forecast_ready: false,
     initial_report_ready: false,
@@ -357,6 +363,67 @@ function revalidationFixture(reportDate, {
   };
 }
 
+test("emailOpportunity_ validates present absent and unknown states", () => {
+  const { context } = makeHarness();
+  assert.equal(context.emailOpportunity_(readyStatus()).state, "present");
+  assert.equal(context.emailOpportunity_(readyStatus({
+    email_opportunity: {
+      state: "absent",
+      actionable_plan_count: 0,
+      draw_alert_count: 0,
+      reasons: [],
+    },
+  })).state, "absent");
+  assert.equal(context.emailOpportunity_(readyStatus({
+    email_opportunity: {
+      state: "unknown",
+      actionable_plan_count: 0,
+      draw_alert_count: null,
+      reasons: ["draw_alert_unavailable"],
+    },
+  })).state, "unknown");
+});
+
+test("emailOpportunity_ fails closed for contradictory or malformed blocks", () => {
+  const { context } = makeHarness();
+  const invalid = [
+    undefined,
+    { state: "present", actionable_plan_count: 0, draw_alert_count: 0, reasons: [] },
+    { state: "absent", actionable_plan_count: 1, draw_alert_count: 0, reasons: [] },
+    { state: "unknown", actionable_plan_count: -1, draw_alert_count: null, reasons: [] },
+  ];
+  invalid.forEach((email_opportunity) => {
+    assert.equal(context.emailOpportunity_(readyStatus({ email_opportunity })).state, "unknown");
+  });
+});
+
+test("pending revalidation email requires current date and pre-cutoff clock", () => {
+  const { context } = makeHarness();
+  const state = {
+    LAST_INITIAL_SENT_DATE: REPORT_DATE,
+    SENT_REVALIDATION_DIGESTS: "[]",
+  };
+  const verifiedIndex = (reportDate) => {
+    const fixture = revalidationFixture(reportDate);
+    return {
+      ...fixture.index,
+      dates: fixture.index.dates.map((entry) => ({ ...entry, status: fixture.status })),
+    };
+  };
+  assert.equal(
+    context.pendingRevalidationEmails_(verifiedIndex(REPORT_DATE), state, clockAt(20, 59)).length,
+    1
+  );
+  assert.equal(
+    context.pendingRevalidationEmails_(verifiedIndex(REPORT_DATE), state, clockAt(21, 0)).length,
+    0
+  );
+  assert.equal(
+    context.pendingRevalidationEmails_(verifiedIndex("2026-07-15"), state, clockAt(10, 0)).length,
+    0
+  );
+});
+
 test("12:14 does not dispatch", () => {
   const { context } = makeHarness();
   assert.equal(context.chooseDispatch_(clockAt(12, 14), dispatchStatus(), {}), null);
@@ -380,11 +447,11 @@ test("13:45 waits for provisional report before settlement", () => {
   assert.equal(context.chooseDispatch_(clockAt(13, 45), { ...forecastOnly, initial_report_ready: true, settlement_ready: false }, {}), "noon-settlement.yml");
 });
 
-test("schema 2 advances from provisional readiness to settlement", () => {
+test("schema 3 advances from provisional readiness to settlement", () => {
   const { context } = makeHarness();
   const status = {
     ...dispatchStatus(),
-    schema_version: 2,
+    schema_version: 3,
     forecast_ready: true,
     initial_report_ready: true,
     decision_snapshot_ready: false,
@@ -396,7 +463,7 @@ test("schema 2 advances from provisional readiness to settlement", () => {
   assert.equal(context.chooseDispatch_(clockAt(13, 45), status, {}), "noon-settlement.yml");
 });
 
-test("legacy schema 1 cannot skip schema 2 dispatch phases", () => {
+test("legacy schema 1 cannot skip schema 3 dispatch phases", () => {
   const { context } = makeHarness();
   const legacy = {
     ...dispatchStatus(),
@@ -465,21 +532,21 @@ test("reportReadiness_ accepts only the complete current report with exact hash"
   assert.equal(context.reportReadiness_(readyStatus(), REPORT_DATE, "0".repeat(64)).ready, false);
 });
 
-test("schema 2 report readiness accepts the provisional and settlement contract", () => {
+test("schema 3 report readiness accepts the provisional and settlement contract", () => {
   const { context } = makeHarness();
-  const status = schema2ReadyStatus();
+  const status = schema3ReadyStatus();
 
   assert.equal(context.reportReadiness_(status, REPORT_DATE, IMAGE_HASH).ready, true);
   assert.equal(context.reportReadiness_(status, REPORT_DATE, "0".repeat(64)).ready, false);
 });
 
-test("schema 2 report readiness requires initial evidence and revalidation publication", () => {
+test("schema 3 report readiness requires initial evidence and revalidation publication", () => {
   const { context } = makeHarness();
   const cases = [
-    schema2ReadyStatus({ initial_report_ready: false }),
-    schema2ReadyStatus({ revalidation_ready: false }),
-    schema2ReadyStatus({ provisional_plan_sha256: "" }),
-    schema2ReadyStatus({ report_stage: "provisional" }),
+    schema3ReadyStatus({ initial_report_ready: false }),
+    schema3ReadyStatus({ revalidation_ready: false }),
+    schema3ReadyStatus({ provisional_plan_sha256: "" }),
+    schema3ReadyStatus({ report_stage: "provisional" }),
   ];
 
   for (const status of cases) {
@@ -487,9 +554,9 @@ test("schema 2 report readiness requires initial evidence and revalidation publi
   }
 });
 
-test("schema 2 report readiness ignores obsolete plan lock flags and timestamps", () => {
+test("schema 3 report readiness ignores obsolete plan lock flags and timestamps", () => {
   const { context } = makeHarness();
-  const status = schema2ReadyStatus({
+  const status = schema3ReadyStatus({
     decision_snapshot_ready: false,
     plan_ready: false,
     decision_odds_at_bjt: "",
@@ -633,7 +700,7 @@ test("reportReadiness_ accepts valid offsets and fractional report generation ti
 
 test("missingReasons_ identifies incomplete phases and malformed status", () => {
   const { context } = makeHarness();
-  const reasons = context.missingReasons_({ schema_version: 2, report_date: REPORT_DATE, forecast_ready: true }, REPORT_DATE);
+  const reasons = context.missingReasons_({ schema_version: 3, report_date: REPORT_DATE, forecast_ready: true }, REPORT_DATE);
   assert.ok(reasons.includes("initial report not ready"));
   assert.ok(reasons.includes("settlement not ready"));
   assert.ok(reasons.includes("revalidation status not ready"));
@@ -878,7 +945,7 @@ test("sent revalidation digests prune to the latest 30 business dates", () => {
   assert.equal(sent.some((entry) => entry.report_date === "2026-06-02"), false);
 });
 
-test("today's initial failure cutoff does not block a previous-date update", () => {
+test("previous-date revalidation updates are filtered before image fetch", () => {
   const reportDate = "2026-07-19";
   const fixture = revalidationFixture(reportDate);
   const { context, calls } = makeHarness({
@@ -893,8 +960,8 @@ test("today's initial failure cutoff does not block a previous-date update", () 
 
   context.runAutomation();
 
-  assert.equal(calls.mail.length, 1);
-  assert.equal(calls.mail[0][1], `[\u4e34\u573a\u786e\u8ba4] ${reportDate} \u535a\u5f08\u9884\u6d4b\u65b9\u6848\u66f4\u65b0`);
+  assert.equal(calls.mail.length, 0);
+  assert.equal(calls.fetch.some((call) => call.url.includes("/revision-")), false);
 });
 
 test("TEST_MODE revalidation dry run does not call Gmail or write sent digests", () => {
@@ -1056,6 +1123,62 @@ test("ready status plus matching image hash sends once and persists after Gmail"
   assert.equal(properties.get("LAST_SENT_IMAGE_SHA256"), IMAGE_HASH);
 });
 
+test("plan-only and draw-alert-only opportunities each send once", () => {
+  for (const email_opportunity of [
+    { state: "present", actionable_plan_count: 1, draw_alert_count: 0, reasons: [] },
+    { state: "present", actionable_plan_count: 0, draw_alert_count: 1, reasons: [] },
+  ]) {
+    const { context, calls } = makeHarness({
+      now: "2026-07-16T06:00:00.000Z",
+      status: readyStatus({ email_opportunity }),
+    });
+    context.runAutomation();
+    assert.equal(calls.mail.length, 1);
+  }
+});
+
+test("absent and unknown opportunities never fetch the image or send", () => {
+  const blocks = [
+    {
+      state: "absent",
+      actionable_plan_count: 0,
+      draw_alert_count: 0,
+      reasons: [],
+    },
+    {
+      state: "unknown",
+      actionable_plan_count: 0,
+      draw_alert_count: null,
+      reasons: ["draw_alert_unavailable"],
+    },
+  ];
+  for (const email_opportunity of blocks) {
+    const { context, calls } = makeHarness({
+      now: "2026-07-16T06:00:00.000Z",
+      status: readyStatus({ email_opportunity }),
+    });
+    context.runAutomation();
+    assert.equal(calls.mail.length, 0);
+    assert.equal(calls.fetch.some((call) => call.url.includes("daily-report.png")), false);
+  }
+});
+
+test("positive opportunity sends even when the other source is unavailable", () => {
+  const { context, calls } = makeHarness({
+    now: "2026-07-16T06:00:00.000Z",
+    status: readyStatus({
+      email_opportunity: {
+        state: "present",
+        actionable_plan_count: 1,
+        draw_alert_count: null,
+        reasons: ["draw_alert_unavailable"],
+      },
+    }),
+  });
+  context.runAutomation();
+  assert.equal(calls.mail.length, 1);
+});
+
 test("mismatched image hash never sends", () => {
   const { context, calls, properties } = makeHarness({ now: "2026-07-16T06:00:00.000Z", imageBytes: [...Buffer.from("tampered")] });
   context.runAutomation();
@@ -1069,21 +1192,63 @@ test("empty image bytes never send", () => {
   assert.equal(calls.mail.length, 0);
 });
 
-test("18:00 incomplete state sends one attachment-free failure notice", () => {
-  const { context, calls, properties } = makeHarness({ now: "2026-07-16T10:00:00.000Z", status: { schema_version: 1, report_date: REPORT_DATE, forecast_ready: false } });
-  context.runAutomation();
+test("20:59 may send a ready present report", () => {
+  const { context, calls } = makeHarness({ now: "2026-07-16T12:59:00.000Z" });
   context.runAutomation();
   assert.equal(calls.mail.length, 1);
-  assert.equal(calls.mail[0][3]?.attachments, undefined);
-  assert.equal(properties.get("LAST_FAILURE_NOTICE_DATE"), REPORT_DATE);
-  assert.equal(calls.fetch.some((call) => call.url.includes("api.github.com")), false);
+  assert.equal(calls.mail[0][3].attachments.length, 1);
 });
 
-test("18:00 failure notice includes report timestamp and dashboard without attachments", () => {
+test("21:00 never sends a normal report", () => {
+  const { context, calls } = makeHarness({ now: "2026-07-16T13:00:00.000Z" });
+  context.runAutomation();
+  assert.equal(calls.mail[0][3]?.attachments, undefined);
+});
+
+test("21:00 sends one failure notice only for a proven opportunity", () => {
+  const present = makeHarness({ now: "2026-07-16T13:00:00.000Z" });
+  present.context.runAutomation();
+  present.context.runAutomation();
+  assert.equal(present.calls.mail.length, 1);
+  assert.equal(present.calls.mail[0][3]?.attachments, undefined);
+  assert.equal(present.properties.get("LAST_FAILURE_NOTICE_DATE"), REPORT_DATE);
+
+  for (const email_opportunity of [
+    { state: "absent", actionable_plan_count: 0, draw_alert_count: 0, reasons: [] },
+    { state: "unknown", actionable_plan_count: 0, draw_alert_count: null, reasons: ["draw_alert_unavailable"] },
+  ]) {
+    const harness = makeHarness({
+      now: "2026-07-16T13:00:00.000Z",
+      status: readyStatus({ email_opportunity }),
+    });
+    harness.context.runAutomation();
+    assert.equal(harness.calls.mail.length, 0);
+    assert.equal(harness.properties.has("LAST_FAILURE_NOTICE_DATE"), false);
+  }
+});
+
+test("workflow dispatch retries stop at 21:00 instead of 18:00", () => {
+  const incomplete = dispatchStatus({ forecast_ready: false });
+  const before = makeHarness({
+    now: "2026-07-16T12:59:00.000Z",
+    status: incomplete,
+  });
+  before.context.runAutomation();
+  assert.equal(before.calls.fetch.some((call) => call.url.includes("api.github.com")), true);
+
+  const cutoff = makeHarness({
+    now: "2026-07-16T13:00:00.000Z",
+    status: incomplete,
+  });
+  cutoff.context.runAutomation();
+  assert.equal(cutoff.calls.fetch.some((call) => call.url.includes("api.github.com")), false);
+});
+
+test("21:00 failure notice includes report timestamp and dashboard without attachments", () => {
   const generatedAt = "2026-07-16T17:42:00+08:00";
   const { context, calls } = makeHarness({
-    now: "2026-07-16T10:00:00.000Z",
-    status: dispatchStatus({ generated_at_bjt: generatedAt }),
+    now: "2026-07-16T13:00:00.000Z",
+    status: readyStatus({ generated_at_bjt: generatedAt }),
   });
 
   context.runAutomation();
@@ -1094,30 +1259,18 @@ test("18:00 failure notice includes report timestamp and dashboard without attac
   assert.match(calls.mail[0][2], /https:\/\/example\.test\//);
   assert.match(calls.mail[0][3].htmlBody, new RegExp(generatedAt.replace(/[+]/g, "\\+")));
   assert.match(calls.mail[0][3].htmlBody, /href="https:\/\/example\.test\/"/);
+  assert.match(calls.mail[0][2], /21:00/);
   assert.equal(calls.mail[0][3].attachments, undefined);
 });
 
-test("18:00 gives a currently ready normal report priority", () => {
-  const { context, calls, properties } = makeHarness({ now: "2026-07-16T10:00:00.000Z" });
-  context.runAutomation();
-  assert.equal(calls.mail.length, 1);
-  assert.equal(calls.mail[0][3].attachments.length, 1);
-  assert.equal(properties.get("LAST_INITIAL_SENT_DATE"), REPORT_DATE);
-  assert.equal(properties.has("LAST_SENT_DATE"), false);
-  assert.equal(properties.has("LAST_FAILURE_NOTICE_DATE"), false);
-  assert.equal(calls.fetch.some((call) => call.url.includes("api.github.com")), false);
-});
-
-test("18:00 treats malformed status JSON as incomplete and records the reason", () => {
+test("21:00 malformed status JSON does not send without a proven opportunity", () => {
   const { context, calls, properties } = makeHarness({
-    now: "2026-07-16T10:00:00.000Z",
+    now: "2026-07-16T13:00:00.000Z",
     fetchHandler: () => response({ text: "{" }),
   });
   context.runAutomation();
-  assert.equal(calls.mail.length, 1);
-  assert.match(calls.mail[0][2], /status fetch\/parse failed/);
-  assert.equal(calls.mail[0][2].match(/status fetch\/parse failed/g)?.length, 1);
-  assert.equal(properties.get("LAST_FAILURE_NOTICE_DATE"), REPORT_DATE);
+  assert.equal(calls.mail.length, 0);
+  assert.equal(properties.has("LAST_FAILURE_NOTICE_DATE"), false);
 });
 
 test("a report becoming ready after failure notice does not send or dispatch late", () => {
@@ -1145,7 +1298,10 @@ test("failed Gmail call does not write normal sent state", () => {
 });
 
 test("failed failure-notice Gmail call does not write notice state", () => {
-  const { context, properties } = makeHarness({ now: "2026-07-16T10:00:00.000Z", status: {}, gmailError: new Error("gmail unavailable") });
+  const { context, properties } = makeHarness({
+    now: "2026-07-16T13:00:00.000Z",
+    gmailError: new Error("gmail unavailable"),
+  });
   assert.throws(() => context.runAutomation(), /gmail unavailable/);
   assert.equal(properties.has("LAST_FAILURE_NOTICE_DATE"), false);
 });
@@ -1182,8 +1338,7 @@ test("TEST_MODE normal dry run leaves production mail state untouched and permit
 
 test("TEST_MODE failure dry run leaves production mail state untouched and permits same-day notice", () => {
   const { context, calls, properties } = makeHarness({
-    now: "2026-07-16T10:00:00.000Z",
-    status: dispatchStatus(),
+    now: "2026-07-16T13:00:00.000Z",
     initialProperties: { TEST_MODE: "true" },
   });
   context.runAutomation();
