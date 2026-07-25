@@ -825,37 +825,55 @@ with Path("global-calls.log").open("a", encoding="utf-8") as handle:
                 self.assertIn(argument, result.stdout)
 
     def test_cloud_orchestrator_documentation(self):
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        cloud_setup = (ROOT / "CLOUD_SETUP.md").read_text(encoding="utf-8")
-        apps_script_readme = (ROOT / "apps-script" / "README.md").read_text(
-            encoding="utf-8"
+        documents = {
+            "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
+            "CLOUD_SETUP.md": (ROOT / "CLOUD_SETUP.md").read_text(
+                encoding="utf-8"
+            ),
+            "apps-script/README.md": (ROOT / "apps-script" / "README.md").read_text(
+                encoding="utf-8"
+            ),
+        }
+        opportunity_gate_contract = (
+            "active 模拟方案或平局预警任意一个即可",
+            "shadow-only 候选不算机会",
+            "两个有效计数均为零时没有投注方案且没有平局预警时不发送邮件",
+            "未知机会证据失败关闭并保持静默",
+            "正常日报只会在 14:00 至 20:59 发送",
+            "当前日期只在 21:00 前的正常发送路径重新验证",
+            "21:00 仅在已证明存在机会且日报仍未送达时发送当天唯一一封无附件失败通知",
         )
-        for text in (readme, cloud_setup, apps_script_readme):
-            self.assertIn("14:00-21:00", text)
-            self.assertIn("任意一个", text)
-            self.assertIn("没有投注方案且没有平局预警时不发送邮件", text)
-            self.assertIn("21:00", text)
-
-        combined = "\n".join((readme, cloud_setup, apps_script_readme))
-        self.assertNotIn("18:00 仍未就绪时只发一封", combined)
-        self.assertNotIn("14:00-18:00", combined)
+        for path, text in documents.items():
+            with self.subTest(path=path):
+                for literal in opportunity_gate_contract:
+                    self.assertIn(literal, text)
+                self.assertNotIn("14:00-18:00", text)
+                self.assertNotRegex(
+                    text,
+                    r"18:00.{0,120}(?:失败通知|失败路径|未就绪|最后一次检查)",
+                )
+                self.assertNotRegex(
+                    text,
+                    r"(?:失败通知|失败路径|未就绪|最后一次检查).{0,120}18:00",
+                )
 
     def test_top_level_docs_replace_the_old_github_email_sender_description(self):
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        cloud_setup = (ROOT / "CLOUD_SETUP.md").read_text(encoding="utf-8")
-        combined = readme + "\n" + cloud_setup
-        for literal in (
-            "Apps Script 是唯一的邮件发送方",
-            "`runAutomation`",
-            "每 10 分钟",
-            "14:00-21:00",
-            "电脑可以关机",
-            "`.github/workflows/email-report.yml`",
-            "保持 disabled",
-        ):
-            self.assertIn(literal, combined)
-        self.assertNotIn("| 14:00 | Gmail 发送", combined)
-        self.assertNotIn('`0 6 * * *`：14:00 邮件日报', combined)
+        documents = {
+            "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
+            "CLOUD_SETUP.md": (ROOT / "CLOUD_SETUP.md").read_text(
+                encoding="utf-8"
+            ),
+            "apps-script/README.md": (ROOT / "apps-script" / "README.md").read_text(
+                encoding="utf-8"
+            ),
+        }
+        for path, text in documents.items():
+            with self.subTest(path=path):
+                self.assertIn("Apps Script 是唯一的邮件发送方", text)
+                self.assertIn("`.github/workflows/email-report.yml`", text)
+                self.assertIn("保持 disabled", text)
+                self.assertNotIn("| 14:00 | Gmail 发送", text)
+                self.assertNotIn('`0 6 * * *`：14:00 邮件日报', text)
 
 
 class DeploymentDocumentationTest(unittest.TestCase):

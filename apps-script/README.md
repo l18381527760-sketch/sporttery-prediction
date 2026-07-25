@@ -13,7 +13,7 @@
 - Apps Script 仅接受规范 UTF-8 JSON 字节、最多两个业务日的索引、与索引 SHA-256 一致的 `status.json`，以及与状态 SHA-256 一致的不可变 revision PNG。任一字节、schema、路径、日期、revision 或哈希不匹配都不发送更新。
 - 赛前更新只有在同一 `report_date` 的初始日报已发送时才能发送。同一 revision 中的新终态候选会合并成一封邮件；即使确认时赔率和金额未变，也仍发一封最终确认。这是模拟报告，不会执行任何投注操作。
 - 正常邮件发送窗口是北京时间 14:00-21:00，其中正常日报只会在 14:00 至 20:59 发送。schema 3 机会闸门要求 active 模拟方案或平局预警任意一个即可；shadow-only 候选不算机会。两个有效计数均为零时没有投注方案且没有平局预警时不发送邮件；未知机会证据失败关闭并保持静默。只有当天 `web/report-status.json` 完整、日报 PNG 可下载且实际 SHA-256 与状态文件一致时，才发送附件。
-- 21:00 时仅在已证明存在机会且日报仍未送达时发送当天唯一一封失败通知，不附带附件，绝不附带昨天或其他旧版本的图片；无机会或未知机会证据不发送失败通知。当天日期只在 21:00 前的正常发送路径重新验证。
+- 当前日期只在 21:00 前的正常发送路径重新验证。21:00 仅在已证明存在机会且日报仍未送达时发送当天唯一一封无附件失败通知，绝不附带昨天或其他旧版本的图片；无机会或未知机会证据不发送失败通知。
 - `LAST_INITIAL_SENT_DATE` 和 `LAST_FAILURE_NOTICE_DATE` 保证同一北京时间日期最多出现一封初始日报或一封失败通知。`LAST_SENT_DATE` 仅作为迁移期只读别名，新代码不再写它。`SENT_REVALIDATION_DIGESTS` 以 `report_date + change_digest` 去重，并仅保留最近 30 个业务日。
 
 14:00 初选是 provisional，provisional 金额不计入盈亏。T-90 只做筛查，T-30 才做最终确认；最终金额只能保持或降低，错过窗口必须取消。更新允许跨北京时间午夜，并继续使用原 `report_date`。预测证据、执行赔率、provisional candidates、confirmed simulated bets 和 observation-only shadow rows 是五类不同数据，不能互相替代；只有已成功导入账本的 confirmed active 候选才进入模拟盈亏。
