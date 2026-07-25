@@ -503,6 +503,27 @@ class ReportStatusTest(unittest.TestCase):
             )
             self.assertEqual((False, 0), _draw_alert_artifact(path, REPORT_DATE))
 
+    def test_draw_alert_artifact_rejects_invalid_utf8(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "output").mkdir()
+            path = root / "output" / f"draw_alert_{REPORT_DATE.isoformat()}.csv"
+            path.write_bytes(b"\xff")
+            self.assertEqual((False, 0), _draw_alert_artifact(path, REPORT_DATE))
+
+    def test_draw_alert_artifact_rejects_csv_parser_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "output").mkdir()
+            path = self.write_draw_alert(root, [])
+            previous_limit = csv.field_size_limit(1)
+            try:
+                self.assertEqual(
+                    (False, 0), _draw_alert_artifact(path, REPORT_DATE)
+                )
+            finally:
+                csv.field_size_limit(previous_limit)
+
     def test_email_opportunity_uses_three_state_or_semantics(self):
         cases = [
             (
@@ -610,7 +631,7 @@ class ReportStatusTest(unittest.TestCase):
         self.assertEqual(1, status["email_opportunity"]["actionable_plan_count"])
         self.assertEqual("present", status["email_opportunity"]["state"])
 
-    def test_published_status_does_not_carry_prior_date_opportunity(self):
+    def test_published_status_replaces_prior_same_date_opportunity(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_artifacts(root)
@@ -637,6 +658,26 @@ class ReportStatusTest(unittest.TestCase):
             with patch("report_status.artifact_state", return_value=state):
                 status = self.publish(root, "forecast")
         self.assertEqual("absent", status["email_opportunity"]["state"])
+
+    def test_published_status_treats_malformed_draw_alert_as_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            path = root / "output" / f"draw_alert_{REPORT_DATE.isoformat()}.csv"
+            path.write_bytes(b"\xff")
+            status = self.publish(root, "forecast")
+        self.assertEqual("unknown", status["email_opportunity"]["state"])
+        self.assertIn("draw_alert_unavailable", status["email_opportunity"]["reasons"])
+
+    def test_published_status_uses_header_only_draw_alert_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            state = artifact_state(root, REPORT_DATE)
+            status = self.publish(root, "forecast")
+        self.assertEqual((True, 0), (state["draw_alert_ready"], state["draw_alert_count"]))
+        self.assertEqual(0, status["email_opportunity"]["draw_alert_count"])
+        self.assertEqual("unknown", status["email_opportunity"]["state"])
 
     def test_provisional_status_uses_bundle_and_provisional_artifacts_without_plan_lock(self):
         with tempfile.TemporaryDirectory() as tmp:

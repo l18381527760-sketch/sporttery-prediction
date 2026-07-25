@@ -228,7 +228,7 @@ def _draw_alert_artifact(path: Path, report_date: date) -> tuple[bool, int]:
             ):
                 return False, 0
             rows = list(reader)
-    except OSError:
+    except (OSError, UnicodeDecodeError, csv.Error):
         return False, 0
     for row in rows:
         if row.get("date") != report_date.isoformat():
