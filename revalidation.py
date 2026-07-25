@@ -252,6 +252,8 @@ def run_due_revalidation(
 
         snapshots_by_stage = {}
         for _effective, _old_entry, stage in needs_evaluation:
+            if stage.endswith("_window_missed"):
+                continue
             actual_stage = "t90" if stage.startswith("t90") else "t30"
             if actual_stage in snapshots_by_stage:
                 continue
@@ -281,10 +283,12 @@ def run_due_revalidation(
         for effective, old_entry, stage in needs_evaluation:
             entry = entries_by_id[effective["candidate_id"]]
             actual_stage = "t90" if stage.startswith("t90") else "t30"
-            snapshot, snapshot_rel, snapshot_sha = snapshots_by_stage[actual_stage]
             if stage.endswith("_window_missed"):
                 result = _missed_window_result(effective, stage, checked)
+                snapshot_rel = ""
+                snapshot_sha = ""
             else:
+                snapshot, snapshot_rel, snapshot_sha = snapshots_by_stage[actual_stage]
                 caps = {"previous_stake": old_entry.get("last_stake", effective["provisional_stake"])}
                 result = evaluate_candidate(effective, snapshot, stage, checked, settings, caps)
             receipt = result["receipt"]
@@ -528,14 +532,15 @@ def _replay_receipt_result(
     expected_due = reason if reason in {"t90_window_missed", "t30_window_missed"} else stage
     if due_stage(candidate, checked_at) != expected_due:
         raise ValueError("revalidation receipt was not due at its recorded time")
-    if validated_snapshot is None:
+    missed_window = reason in {"t90_window_missed", "t30_window_missed"}
+    if validated_snapshot is None and not missed_window:
         snapshot_path = (root / receipt["live_odds_snapshot_path"]).resolve()
         snapshot = read_valid_live_snapshot(
             root, snapshot_path, target_date, checked_at
         )
     else:
         snapshot = validated_snapshot
-    if expected_due.endswith("_window_missed"):
+    if missed_window:
         result = _missed_window_result(candidate, expected_due, checked_at)
     else:
         caps = {"previous_stake": previous_entry.get("last_stake", candidate["provisional_stake"])}
@@ -680,7 +685,7 @@ def _require_strict_phase_snapshot(
         minutes = row.get("minutes_to_kickoff")
         if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes < 0:
             raise ValueError("revalidation snapshot match phase minutes are invalid")
-        if minutes <= 45:
+        if minutes <= 40:
             match_phase = "pre_kickoff_30"
         elif minutes <= 105:
             match_phase = "pre_kickoff_90"
@@ -1136,6 +1141,14 @@ def _validate_receipt_file(
         raise ValueError("revalidation receipt candidate or stake binding is invalid")
     snapshot_path = receipt.get("live_odds_snapshot_path")
     snapshot_sha = receipt.get("live_odds_snapshot_sha256")
+    missed_window = receipt["reason_code"] in {
+        "t90_window_missed",
+        "t30_window_missed",
+    }
+    if missed_window and snapshot_path == "" and snapshot_sha == "":
+        if receipt.get("snapshot_source") is not None:
+            raise ValueError("missed-window receipt snapshot state is invalid")
+        return receipt
     if not isinstance(snapshot_path, str) or not snapshot_path:
         raise ValueError("revalidation receipt snapshot path is invalid")
     snapshot_absolute = (root / snapshot_path).resolve()
@@ -1150,7 +1163,7 @@ def _validate_receipt_file(
     snapshot_bytes = _canonical_bytes(snapshot)
     if _sha256_bytes(snapshot_bytes) != snapshot_sha:
         raise ValueError("revalidation receipt snapshot digest is invalid")
-    if receipt["reason_code"] in {"t90_window_missed", "t30_window_missed"}:
+    if missed_window:
         if receipt.get("snapshot_source") is not None:
             raise ValueError("missed-window receipt snapshot state is invalid")
     elif (

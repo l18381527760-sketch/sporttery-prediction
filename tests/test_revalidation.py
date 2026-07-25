@@ -204,7 +204,7 @@ def actual_parlay_candidate():
 
 
 def _match_phase(minutes_to_kickoff, requested_phase="monitoring"):
-    if minutes_to_kickoff <= 45:
+    if minutes_to_kickoff <= 40:
         return "pre_kickoff_30"
     if minutes_to_kickoff <= 105:
         return "pre_kickoff_90"
@@ -1284,10 +1284,76 @@ class RevalidationTest(TestCase):
                 )
                 changed = run_due_revalidation(
                     root, datetime(2026, 7, 20, 1, 50, tzinfo=BJT),
-                    target_dates=[DAY], snapshot_provider=provider,
+                    target_dates=[DAY],
+                    snapshot_provider=lambda *_args, **_kwargs: self.fail(
+                        "missed T-30 window must not fetch market evidence"
+                    ),
                 )
             self.assertEqual("cancelled", changed[0]["state"])
+            self.assertEqual(0, changed[0]["stake"])
             self.assertEqual("t30_window_missed", changed[0]["receipt"]["reason_code"])
+            self.assertEqual("", changed[0]["receipt"]["live_odds_snapshot_path"])
+            self.assertEqual("", changed[0]["receipt"]["live_odds_snapshot_sha256"])
+
+    def test_scheduler_resolves_t90_transition_boundaries_without_dead_zone(self):
+        for minutes, expected_state, expected_reason in (
+            (45, "screened", "passed"),
+            (41, "screened", "passed"),
+            (40, "cancelled", "t90_window_missed"),
+        ):
+            with self.subTest(minutes=minutes), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "betting_config.json").write_text(
+                    json.dumps({"pre_kickoff_revalidation": config()}),
+                    encoding="utf-8",
+                )
+                value = candidate()
+                source = {
+                    "report_date": DAY.isoformat(),
+                    "candidates": [value],
+                }
+                checked = datetime.fromisoformat(
+                    value["earliest_kickoff_at_bjt"]
+                ) - timedelta(minutes=minutes)
+                requested_phases = []
+
+                def provider(_root, target_date, captured_at, *, phase):
+                    requested_phases.append(phase)
+                    return requested_snapshot_provider(
+                        _root,
+                        target_date,
+                        captured_at,
+                        phase=phase,
+                    )
+
+                if minutes == 40:
+                    provider = lambda *_args, **_kwargs: self.fail(
+                        "missed T-90 window must not fetch market evidence"
+                    )
+
+                with patch(
+                    "revalidation.read_valid_provisional_state",
+                    return_value=source,
+                ):
+                    changed = run_due_revalidation(
+                        root,
+                        checked,
+                        target_dates=[DAY],
+                        snapshot_provider=provider,
+                    )
+
+                self.assertEqual(expected_state, changed[0]["state"])
+                self.assertEqual(expected_reason, changed[0]["receipt"]["reason_code"])
+                self.assertLessEqual(changed[0]["stake"], value["provisional_stake"])
+                if minutes > 40:
+                    self.assertEqual(["pre_kickoff_90"], requested_phases)
+                    self.assertTrue(changed[0]["receipt"]["live_odds_snapshot_path"])
+                else:
+                    self.assertEqual(0, changed[0]["stake"])
+                    self.assertEqual(
+                        "",
+                        changed[0]["receipt"]["live_odds_snapshot_path"],
+                    )
 
     def test_run_scans_today_and_yesterday_in_bjt_and_orders_due_candidates(self):
         yesterday = DAY - timedelta(days=1)
