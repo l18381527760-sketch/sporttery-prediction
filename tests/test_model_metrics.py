@@ -190,7 +190,7 @@ class ModelMetricsTest(unittest.TestCase):
             legacy.mkdir()
             for captured_at in (
                 datetime(2026, 7, 21, 16, 45, tzinfo=BJT),
-                datetime(2026, 7, 21, 17, 15, tzinfo=BJT),
+                datetime(2026, 7, 21, 17, 25, tzinfo=BJT),
             ):
                 live_odds.capture_live_snapshot(
                     root,
