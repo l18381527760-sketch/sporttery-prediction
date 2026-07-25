@@ -8,17 +8,17 @@
   "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "forecast",
-  "initial_report_ready": false,
-  "provisional_plan_sha256": "",
+  "report_stage": "provisional",
+  "initial_report_ready": true,
+  "provisional_plan_sha256": "214ce339bbe3ad0d5b031ed3be01da907d2b691dbc1d20ab1c1628d1aa4e5620",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
-  "revalidation_ready": false,
-  "build_id": "30143722981-1-forecast",
-  "generated_at_bjt": "2026-07-25T12:17:14+08:00",
-  "image_sha256": "e373254c32949e0fa48b4c156380f6f73d240f779c44593259d5b5e25c5e8450",
-  "source_commit_sha": "70d8cdbc4581fa1b1439f8195e25aac16d9fb0dc",
+  "revalidation_ready": true,
+  "build_id": "30146044915-1-provisional",
+  "generated_at_bjt": "2026-07-25T13:38:35+08:00",
+  "image_sha256": "fd76194c000fdc1d90deb0dfb4f3fa580d3aaf4bf5b796c7f64e60543a32c118",
+  "source_commit_sha": "8f8623f4ce8a503ad93991168f96f36e04006eaf",
   "fixture_count": 11,
   "official_fixture_count": 11,
   "prediction_count": 11,
@@ -39,10 +39,10 @@
     "plan_csv_ready": false,
     "decision_ready": false,
     "plan_lock_ready": false,
-    "decision_bundle_ready": false,
-    "provisional_plan_ready": false,
-    "provisional_shadow_ready": false,
-    "provisional_state_ready": false,
+    "decision_bundle_ready": true,
+    "provisional_plan_ready": true,
+    "provisional_shadow_ready": true,
+    "provisional_state_ready": true,
     "decision_snapshot_ready": false,
     "ledger_ready": true,
     "site_ready": true,
@@ -51,7 +51,7 @@
   "evidence_health": {
     "schema_version": 1,
     "target_date": "2026-07-25",
-    "generated_at_bjt": "2026-07-25T12:17:14+08:00",
+    "generated_at_bjt": "2026-07-25T13:38:35+08:00",
     "identity_confirmed": 11,
     "identity_total": 11,
     "identity_confirmation_rate": 1.0,
@@ -66,41 +66,212 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 0,
-      "matches": 0,
+      "files": 1,
+      "matches": 11,
       "phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 11,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 0,
+      "unique_fixture_bindings": 11,
       "unique_phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 11,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {},
-      "latest": null,
-      "latest_by_phase": {},
-      "latest_by_requested_phase": {},
-      "bindings_by_requested_phase": {},
-      "latest_by_binding_by_requested_phase": {}
+      "requested_phases": {
+        "decision": 11
+      },
+      "latest": "2026-07-25T13:37:21.072064+08:00",
+      "latest_by_phase": {
+        "decision": "2026-07-25T13:37:21.072064+08:00"
+      },
+      "latest_by_requested_phase": {
+        "decision": "2026-07-25T13:37:21.072064+08:00"
+      },
+      "bindings_by_requested_phase": {
+        "decision": [
+          [
+            "2026-07-25",
+            "代格福什",
+            "佐加顿斯",
+            "2040614"
+          ],
+          [
+            "2026-07-25",
+            "克里斯蒂",
+            "斯达",
+            "2040616"
+          ],
+          [
+            "2026-07-25",
+            "卡尔马",
+            "米亚尔比",
+            "2040618"
+          ],
+          [
+            "2026-07-25",
+            "圣何塞",
+            "洛城银河",
+            "2040622"
+          ],
+          [
+            "2026-07-25",
+            "圣地亚哥",
+            "达拉斯",
+            "2040621"
+          ],
+          [
+            "2026-07-25",
+            "巴竞技",
+            "巴西国际",
+            "2040619"
+          ],
+          [
+            "2026-07-25",
+            "库普斯",
+            "瓦萨",
+            "2040617"
+          ],
+          [
+            "2026-07-25",
+            "桑托斯",
+            "沙佩科",
+            "2040620"
+          ],
+          [
+            "2026-07-25",
+            "浦项制铁",
+            "全北现代",
+            "2040613"
+          ],
+          [
+            "2026-07-25",
+            "玛丽港",
+            "奥卢",
+            "2040615"
+          ],
+          [
+            "2026-07-25",
+            "金泉尚武",
+            "大田市民",
+            "2040612"
+          ]
+        ]
+      },
+      "latest_by_binding_by_requested_phase": {
+        "decision": [
+          {
+            "binding": [
+              "2026-07-25",
+              "代格福什",
+              "佐加顿斯",
+              "2040614"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-25",
+              "克里斯蒂",
+              "斯达",
+              "2040616"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-25",
+              "卡尔马",
+              "米亚尔比",
+              "2040618"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-25",
+              "圣何塞",
+              "洛城银河",
+              "2040622"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-25",
+              "圣地亚哥",
+              "达拉斯",
+              "2040621"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-25",
+              "巴竞技",
+              "巴西国际",
+              "2040619"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-25",
+              "库普斯",
+              "瓦萨",
+              "2040617"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-25",
+              "桑托斯",
+              "沙佩科",
+              "2040620"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-25",
+              "浦项制铁",
+              "全北现代",
+              "2040613"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-25",
+              "玛丽港",
+              "奥卢",
+              "2040615"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-25",
+              "金泉尚武",
+              "大田市民",
+              "2040612"
+            ],
+            "captured_at": "2026-07-25T13:37:21.072064+08:00"
+          }
+        ]
+      }
     },
     "forecast_blockers": [],
-    "decision_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ],
-    "hard_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ]
+    "decision_blockers": [],
+    "hard_blockers": []
   },
   "source_status": {
     "source": "中国足彩网",
@@ -108,7 +279,7 @@
     "target_date": "2026-07-25",
     "updated_at": "2026-07-25T04:17:13.826537+00:00",
     "fallback": true,
-    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+    "message": "",
     "fixture_count": 11,
     "no_fixtures": false
   }
