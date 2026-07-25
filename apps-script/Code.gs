@@ -132,7 +132,10 @@ function emailOpportunity_(status) {
   if (!validCount(plan) || !validCount(alert)) return invalid;
   if (block.state === "present" && !((plan !== null && plan > 0) || (alert !== null && alert > 0))) return invalid;
   if (block.state === "absent" && !(plan === 0 && alert === 0 && block.reasons.length === 0)) return invalid;
-  if (block.state === "unknown" && plan !== null && alert !== null) return invalid;
+  if (block.state === "unknown" && (
+      (plan !== null && plan > 0) ||
+      (alert !== null && alert > 0) ||
+      (plan !== null && alert !== null))) return invalid;
   return { state: block.state, reasons: block.reasons.slice() };
 }
 

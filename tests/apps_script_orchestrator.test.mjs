@@ -386,15 +386,32 @@ test("emailOpportunity_ validates present absent and unknown states", () => {
 
 test("emailOpportunity_ fails closed for contradictory or malformed blocks", () => {
   const { context } = makeHarness();
+  const contradictory = {
+    state: "unknown",
+    actionable_plan_count: 1,
+    draw_alert_count: null,
+    reasons: ["draw_alert_unavailable"],
+  };
   const invalid = [
     undefined,
     { state: "present", actionable_plan_count: 0, draw_alert_count: 0, reasons: [] },
     { state: "absent", actionable_plan_count: 1, draw_alert_count: 0, reasons: [] },
     { state: "unknown", actionable_plan_count: -1, draw_alert_count: null, reasons: [] },
+    contradictory,
   ];
   invalid.forEach((email_opportunity) => {
-    assert.equal(context.emailOpportunity_(readyStatus({ email_opportunity })).state, "unknown");
+    const normalized = context.emailOpportunity_(readyStatus({ email_opportunity }));
+    assert.equal(normalized.state, "unknown");
+    assert.ok(normalized.reasons.includes("email opportunity invalid"));
   });
+  assert.equal(
+    context.reportReadiness_(
+      readyStatus({ email_opportunity: contradictory }),
+      REPORT_DATE,
+      IMAGE_HASH
+    ).ready,
+    false
+  );
 });
 
 test("pending revalidation email requires current date and pre-cutoff clock", () => {
