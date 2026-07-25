@@ -14,6 +14,7 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 import import_sporttery
+import decision_bundle as decision_bundle_module
 from decision_bundle import (
     create_decision_bundle,
     read_valid_decision_bundle,
@@ -24,6 +25,8 @@ from plan_lock import lock_plan
 from provisional_plan import create_provisional_outputs
 from report_status import (
     OFFICIAL_FIXTURE_SOURCES,
+    _draw_alert_artifact,
+    _email_opportunity,
     _matching_decision_snapshot,
     artifact_state,
     base_status,
@@ -61,9 +64,43 @@ LEDGER_FIELDS = [
     "odds", "market_probability", "value_edge", "expected_value", "stake", "status",
     "profit", "reason", "legs_json",
 ]
+DRAW_ALERT_FIELDS = [
+    "date", "rank", "match_id", "match", "team_a", "team_b", "stage",
+    "subtype", "selection", "domestic_draw_odds",
+    "market_draw_probability", "model_draw_probability", "draw_edge",
+    "expected_value", "xg_total", "global_calibrated_draw_probability",
+    "league_calibration_samples", "league_calibration_enabled",
+    "evidence_json", "data_quality", "captured_at", "alert_level",
+    "additional_stake", "linked_main_stake", "hypothetical_stake",
+    "settlement_mode", "strategy_version", "feature_version",
+]
 
 
 class ReportStatusTest(unittest.TestCase):
+    def draw_alert_row(self, **overrides) -> dict:
+        row = {field: "value" for field in DRAW_ALERT_FIELDS}
+        row.update({
+            "date": REPORT_DATE.isoformat(),
+            "rank": "1",
+            "match_id": "001",
+            "match": "A vs B",
+            "team_a": "A",
+            "team_b": "B",
+            "subtype": "balanced_draw",
+            "selection": "draw",
+            "strategy_version": "draw-v1",
+        })
+        row.update(overrides)
+        return row
+
+    def write_draw_alert(self, root: Path, rows: list[dict]) -> Path:
+        path = root / "output" / f"draw_alert_{REPORT_DATE.isoformat()}.csv"
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=DRAW_ALERT_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
     def write_report_image(
         self, root: Path, report_date: date, report_stage: str, build_id: str
     ) -> Path:
@@ -142,6 +179,7 @@ class ReportStatusTest(unittest.TestCase):
             "w", encoding="utf-8", newline=""
         ) as handle:
             csv.DictWriter(handle, fieldnames=PLAN_FIELDS).writeheader()
+        self.write_draw_alert(root, [])
         (root / "config.json").write_text("{}\n", encoding="utf-8")
         betting_config = json.loads(
             (REPO_ROOT / "betting_config.json").read_text(encoding="utf-8")
@@ -419,7 +457,7 @@ class ReportStatusTest(unittest.TestCase):
     def test_base_status_contains_the_machine_readable_defaults(self):
         self.assertEqual(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "report_date": "2026-07-16",
                 "forecast_ready": False,
                 "decision_snapshot_ready": False,
@@ -438,6 +476,209 @@ class ReportStatusTest(unittest.TestCase):
             },
             base_status(REPORT_DATE),
         )
+
+    def test_draw_alert_artifact_accepts_header_only_as_known_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "output").mkdir()
+            path = self.write_draw_alert(root, [])
+            self.assertEqual((True, 0), _draw_alert_artifact(path, REPORT_DATE))
+
+    def test_draw_alert_artifact_counts_valid_same_date_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "output").mkdir()
+            path = self.write_draw_alert(root, [self.draw_alert_row()])
+            self.assertEqual((True, 1), _draw_alert_artifact(path, REPORT_DATE))
+
+    def test_draw_alert_artifact_rejects_cross_date_and_malformed_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "output").mkdir()
+            path = self.write_draw_alert(
+                root, [self.draw_alert_row(date="2026-07-15")]
+            )
+            self.assertEqual((False, 0), _draw_alert_artifact(path, REPORT_DATE))
+            path = self.write_draw_alert(
+                root, [self.draw_alert_row(match_id="")]
+            )
+            self.assertEqual((False, 0), _draw_alert_artifact(path, REPORT_DATE))
+
+    def test_draw_alert_artifact_rejects_invalid_utf8(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "output").mkdir()
+            path = root / "output" / f"draw_alert_{REPORT_DATE.isoformat()}.csv"
+            path.write_bytes(b"\xff")
+            self.assertEqual((False, 0), _draw_alert_artifact(path, REPORT_DATE))
+
+    def test_draw_alert_artifact_rejects_csv_parser_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "output").mkdir()
+            path = self.write_draw_alert(root, [])
+            previous_limit = csv.field_size_limit(1)
+            try:
+                self.assertEqual(
+                    (False, 0), _draw_alert_artifact(path, REPORT_DATE)
+                )
+            finally:
+                csv.field_size_limit(previous_limit)
+
+    def test_email_opportunity_uses_three_state_or_semantics(self):
+        cases = [
+            (
+                {
+                    "provisional_state_ready": True,
+                    "provisional_plan_count": 1,
+                    "draw_alert_ready": False,
+                    "draw_alert_count": 0,
+                },
+                {
+                    "state": "present",
+                    "actionable_plan_count": 1,
+                    "draw_alert_count": None,
+                    "reasons": ["draw_alert_unavailable"],
+                },
+            ),
+            (
+                {
+                    "provisional_state_ready": False,
+                    "provisional_plan_count": 0,
+                    "draw_alert_ready": True,
+                    "draw_alert_count": 1,
+                },
+                {
+                    "state": "present",
+                    "actionable_plan_count": None,
+                    "draw_alert_count": 1,
+                    "reasons": ["actionable_plan_unavailable"],
+                },
+            ),
+            (
+                {
+                    "provisional_state_ready": True,
+                    "provisional_plan_count": 0,
+                    "draw_alert_ready": True,
+                    "draw_alert_count": 0,
+                },
+                {
+                    "state": "absent",
+                    "actionable_plan_count": 0,
+                    "draw_alert_count": 0,
+                    "reasons": [],
+                },
+            ),
+            (
+                {
+                    "provisional_state_ready": True,
+                    "provisional_plan_count": 0,
+                    "draw_alert_ready": False,
+                    "draw_alert_count": 0,
+                },
+                {
+                    "state": "unknown",
+                    "actionable_plan_count": 0,
+                    "draw_alert_count": None,
+                    "reasons": ["draw_alert_unavailable"],
+                },
+            ),
+        ]
+        for state, expected in cases:
+            with self.subTest(expected=expected["state"]):
+                self.assertEqual(expected, _email_opportunity(state))
+
+    def test_shadow_candidates_never_make_email_opportunity_present(self):
+        state = {
+            "provisional_state_ready": True,
+            "provisional_plan_count": 0,
+            "provisional_shadow_count": 4,
+            "draw_alert_ready": True,
+            "draw_alert_count": 0,
+        }
+        self.assertEqual("absent", _email_opportunity(state)["state"])
+
+    def test_published_status_contains_absent_opportunity_for_two_known_zero_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            state = artifact_state(root, REPORT_DATE)
+            state.update({
+                "provisional_state_ready": True,
+                "provisional_plan_count": 0,
+                "provisional_shadow_count": 0,
+                "draw_alert_ready": True,
+                "draw_alert_count": 0,
+            })
+            with patch("report_status.artifact_state", return_value=state):
+                status = self.publish(root, "forecast")
+        self.assertEqual(3, status["schema_version"])
+        self.assertEqual("absent", status["email_opportunity"]["state"])
+
+    def test_published_status_counts_active_candidates_but_not_shadow_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            state = artifact_state(root, REPORT_DATE)
+            state.update({
+                "provisional_state_ready": True,
+                "provisional_plan_count": 1,
+                "provisional_shadow_count": 3,
+                "draw_alert_ready": True,
+                "draw_alert_count": 0,
+            })
+            with patch("report_status.artifact_state", return_value=state):
+                status = self.publish(root, "forecast")
+        self.assertEqual(1, status["email_opportunity"]["actionable_plan_count"])
+        self.assertEqual("present", status["email_opportunity"]["state"])
+
+    def test_published_status_replaces_prior_same_date_opportunity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            (root / "web" / "report-status.json").write_text(
+                json.dumps({
+                    **base_status(REPORT_DATE),
+                    "email_opportunity": {
+                        "state": "present",
+                        "actionable_plan_count": 4,
+                        "draw_alert_count": 0,
+                        "reasons": [],
+                    },
+                }),
+                encoding="utf-8",
+            )
+            state = artifact_state(root, REPORT_DATE)
+            state.update({
+                "provisional_state_ready": True,
+                "provisional_plan_count": 0,
+                "provisional_shadow_count": 0,
+                "draw_alert_ready": True,
+                "draw_alert_count": 0,
+            })
+            with patch("report_status.artifact_state", return_value=state):
+                status = self.publish(root, "forecast")
+        self.assertEqual("absent", status["email_opportunity"]["state"])
+
+    def test_published_status_treats_malformed_draw_alert_as_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            path = root / "output" / f"draw_alert_{REPORT_DATE.isoformat()}.csv"
+            path.write_bytes(b"\xff")
+            status = self.publish(root, "forecast")
+        self.assertEqual("unknown", status["email_opportunity"]["state"])
+        self.assertIn("draw_alert_unavailable", status["email_opportunity"]["reasons"])
+
+    def test_published_status_uses_header_only_draw_alert_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            state = artifact_state(root, REPORT_DATE)
+            status = self.publish(root, "forecast")
+        self.assertEqual((True, 0), (state["draw_alert_ready"], state["draw_alert_count"]))
+        self.assertEqual(0, status["email_opportunity"]["draw_alert_count"])
+        self.assertEqual("unknown", status["email_opportunity"]["state"])
 
     def test_provisional_status_uses_bundle_and_provisional_artifacts_without_plan_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -471,7 +712,7 @@ class ReportStatusTest(unittest.TestCase):
 
             status = self.publish(root, "provisional")
 
-            self.assertEqual(2, status["schema_version"])
+            self.assertEqual(3, status["schema_version"])
             self.assertEqual("provisional", status["report_stage"])
             self.assertTrue(status["initial_report_ready"])
             self.assertRegex(status["provisional_plan_sha256"], r"^[0-9a-f]{64}$")
@@ -593,7 +834,23 @@ class ReportStatusTest(unittest.TestCase):
                 encoding="utf-8",
             )
             status = self.publish(root, "forecast")
-            self.assertEqual(2, status["schema_version"])
+            self.assertEqual(3, status["schema_version"])
+            self.assertTrue(status["forecast_ready"])
+
+    def test_schema_two_status_keeps_prior_forecast_readiness_on_decision_publish(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            (root / "web" / "report-status.json").write_text(
+                json.dumps({
+                    **base_status(REPORT_DATE),
+                    "schema_version": 2,
+                    "forecast_ready": True,
+                }),
+                encoding="utf-8",
+            )
+            status = self.publish(root, "decision")
+            self.assertEqual(3, status["schema_version"])
             self.assertTrue(status["forecast_ready"])
 
     def test_new_business_date_discards_yesterdays_flags(self):
@@ -631,7 +888,7 @@ class ReportStatusTest(unittest.TestCase):
             self.publish(root, "decision")
             status = self.publish(root, "settlement", settled_through=date(2026, 7, 15))
 
-            self.assertEqual(2, status["schema_version"])
+            self.assertEqual(3, status["schema_version"])
             self.assertEqual("2026-07-16", status["report_date"])
             self.assertTrue(status["forecast_ready"])
             self.assertTrue(status["decision_snapshot_ready"])
@@ -1211,7 +1468,7 @@ class ReportStatusTest(unittest.TestCase):
 
             status = self.publish(root, "forecast")
 
-        self.assertEqual(2, status["schema_version"])
+        self.assertEqual(3, status["schema_version"])
         self.assertFalse(status["forecast_ready"])
         self.assertEqual(health, status["evidence_health"])
 
@@ -1245,6 +1502,93 @@ class ReportStatusTest(unittest.TestCase):
         self.assertTrue(decision["forecast_ready"])
         self.assertFalse(decision["decision_snapshot_ready"])
         self.assertEqual(blocked, decision["evidence_health"])
+
+    def test_decision_evidence_window_excludes_fixtures_started_before_capture(self):
+        bundle = {
+            "target_date": REPORT_DATE.isoformat(),
+            "locked_at_bjt": "2026-07-16T14:00:00+08:00",
+            "decision_snapshot": {
+                "captured_at_bjt": "2026-07-16T13:45:00+08:00",
+            },
+            "fixture_extract": {
+                "rows": [
+                    {
+                        "match_id": "started",
+                        "team_a": "Started A",
+                        "team_b": "Started B",
+                        "kickoff_at": "2026-07-16T13:40:00+08:00",
+                    },
+                    {
+                        "match_id": "future",
+                        "team_a": "Future A",
+                        "team_b": "Future B",
+                        "kickoff_at": "2026-07-16T18:00:00+08:00",
+                    },
+                ],
+            },
+        }
+
+        expected, evaluated_at = (
+            decision_bundle_module.decision_evidence_window(bundle)
+        )
+
+        self.assertEqual(
+            frozenset({
+                (
+                    REPORT_DATE.isoformat(),
+                    "Future A",
+                    "Future B",
+                    "future",
+                ),
+            }),
+            expected,
+        )
+        self.assertEqual(
+            datetime(2026, 7, 16, 14, 0, tzinfo=BJT),
+            evaluated_at,
+        )
+
+    def test_settlement_retry_does_not_age_out_valid_locked_decision_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_artifacts(root)
+            self.make_lock(root)
+            bundle = read_valid_decision_bundle(root, REPORT_DATE)
+            with patch(
+                "provisional_plan.strategy_outputs_from_bundle",
+                return_value=StrategyOutputs([], [], [], {}),
+            ):
+                create_provisional_outputs(
+                    root,
+                    REPORT_DATE,
+                    GENERATED_AT,
+                    bundle,
+                )
+            provisional = self.publish(root, "provisional")
+            self.assertTrue(provisional["initial_report_ready"])
+
+            build_id = "123456-1-settlement-retry"
+            self.write_report_image(
+                root,
+                REPORT_DATE,
+                "settlement",
+                build_id,
+            )
+            settlement = publish_status(
+                root,
+                REPORT_DATE,
+                "settlement",
+                build_id,
+                "abc123",
+                datetime(2026, 7, 16, 15, 0, tzinfo=BJT),
+                settled_through=date(2026, 7, 15),
+            )
+
+        self.assertTrue(settlement["initial_report_ready"])
+        self.assertNotIn(
+            "decision_odds_stale",
+            settlement["evidence_health"]["decision_blockers"],
+        )
 
     def test_empty_health_blockers_preserve_existing_decision_readiness(self):
         health = {

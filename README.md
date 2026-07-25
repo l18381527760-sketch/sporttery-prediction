@@ -98,7 +98,7 @@ python build_daily_image.py
 | 13:30 | 重新导入竞彩数据并刷新决策时点快照、预测、方案与方案锁；这些必需步骤任一失败都会停止发布。只有市场证据采集和平局预警刷新是可选步骤，失败时保留最近有效结果并继续构建。 |
 | 13:45 | 结算前一天的 90 分钟结果，更新指标、训练模型并重建报告。 |
 | 14:05 | 再次尝试结算，处理结果延迟或首次任务未完成的情况。 |
-| 14:00-18:00 | Apps Script 的 `runAutomation` 每 10 分钟读取当天 `web/report-status.json`，校验日报 PNG 的 SHA-256 后发送；18:00 仍未就绪时只发一封不带附件的失败通知。 |
+| 14:00-21:00 | Apps Script 的 `runAutomation` 每 10 分钟按 `Asia/Shanghai` 读取当天 `web/report-status.json`。正常日报只会在 14:00 至 20:59 发送，且仅在 schema 3 机会闸门通过和图片哈希匹配时发送：active 模拟方案或平局预警任意一个即可，shadow-only 候选不算机会；两个有效计数均为零时没有投注方案且没有平局预警时不发送邮件，未知机会证据失败关闭并保持静默。当前日期只在 21:00 前的正常发送路径重新验证。21:00 仅在已证明存在机会且日报仍未送达时发送当天唯一一封无附件失败通知。 |
 | T-90 / T-30 | `pre-kickoff-revalidation.yml` 按候选最早开赛时间采集新的国内赔率，完成筛查、确认或取消，并发布按业务日绑定的不可变更新图片。 |
 | 每 30 分钟 | 保存仍未开赛比赛的官方赔率快照；开赛前一小时内自动标记为临场快照，供 CLV 与复盘使用。 |
 
@@ -110,12 +110,14 @@ before status publication or commit when any upstream contract fails.
 
 GitHub Actions retries do not duplicate canonical results, simulated ledger
 entries, or mail. Apps Script remains the sole email sender in the Beijing
-14:00-18:00 window; GitHub Actions only generates and publishes artifacts.
+14:00-21:00 window; GitHub Actions only generates and publishes artifacts.
 
 Phase 1 acceptance requires seven successful daily production runs before Project 2 planning.
 Broader 30-day evidence maturity remains required before model or profitability claims.
 
-部署后，Apps Script 是唯一的邮件发送方，`.github/workflows/email-report.yml` 在 GitHub Actions 中保持 disabled。GitHub Actions 负责生成和发布报告，Apps Script 负责调度、轮询、校验和发信；两边都在云端运行，所以电脑可以关机。云端设置请阅读 [CLOUD_SETUP.md](CLOUD_SETUP.md)，Apps Script 的逐步部署与恢复请阅读 [apps-script/README.md](apps-script/README.md)。不需要 Google 日历。
+部署后，Apps Script 是唯一的邮件发送方，`.github/workflows/email-report.yml` 在 GitHub Actions 中保持 disabled。GitHub Actions 负责生成和发布报告，Apps Script 负责调度、轮询、校验和发信；两边都在云端运行，所以电脑可以关机。部署时只更新现有 Apps Script 的 `Code.gs`，不需要新建触发器。云端设置请阅读 [CLOUD_SETUP.md](CLOUD_SETUP.md)，Apps Script 的逐步部署与恢复请阅读 [apps-script/README.md](apps-script/README.md)。不需要 Google 日历。
+
+Schema 3 邮件闸门必须按 consumer-first 顺序上线：先 pause the trigger or set `TEST_MODE=true`，再 deploy the schema 3 consumer；在 producer 仍发布旧状态时 prove old schema 2 makes no Gmail call，然后 publish the schema 3 producer，验收 present 与 absent 两种状态后才 explicitly set `TEST_MODE=false`。Missing, misspelled, or non-exact `TEST_MODE` values fail closed：只有精确字符串 `false` 允许生产发信，精确字符串 `true` 是 dry-run，其他值一律 no Gmail call and no sent-state write。
 
 现有工作流 cron 与 Apps Script dispatch 彼此独立，可能在 Pages 尚未更新时为同一阶段各排队一次；共享并发队列、写入前方案锁检查和同日幂等状态使额外运行保持安全。仓库中的 `web/` 是 Pages artifact 根目录，所以公开状态和图片 URL 不包含 `/web/`。
 

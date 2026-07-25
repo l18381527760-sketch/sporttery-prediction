@@ -1,8 +1,8 @@
 # 云端自动运行设置
 
-本项目由 GitHub Actions 生成和发布每日预测、平局预警、结算、学习结果与日报图片，由 Google Apps Script 调度缺失阶段、校验当天报告并发送邮件。部署完成后，Apps Script 是唯一的邮件发送方；`runAutomation` 每 10 分钟运行，在北京时间 14:00-18:00 校验并尝试发送。电脑可以关机，也不需要 Google 日历或任何日历集成。
+本项目由 GitHub Actions 生成和发布每日预测、平局预警、结算、学习结果与日报图片，由 Google Apps Script 调度缺失阶段、校验当天报告并发送邮件。部署完成后，Apps Script 是唯一的邮件发送方；`runAutomation` 每 10 分钟按 `Asia/Shanghai` 运行，并在北京时间 14:00-21:00 执行邮件机会闸门。电脑可以关机，也不需要 Google 日历或任何日历集成。
 
-系统仅做概率分析和模拟记账，不保证盈利或任何比赛结果。竞彩和外部市场来源可能暂时不可用，缺失数据不能当作有效市场证据。
+系统仅做概率分析和模拟记账，不保证盈利或任何比赛结果。竞彩和外部市场来源可能暂时不可用，缺失数据不能当作有效市场证据。部署时只更新现有 Apps Script 的 `Code.gs`，不需要新建触发器。
 
 ## 云端职责
 
@@ -16,7 +16,7 @@
 | `.github/workflows/odds-snapshot.yml` | 每 30 分钟 | 保存官方赔率快照。 |
 | `.github/workflows/email-report.yml` | 保持 disabled | 旧 GitHub Gmail 发送工作流仅保留为历史文件，不是生产发送方。 |
 
-正常发送不再固定在 14:00。Apps Script 从 14:00 起轮询，报告在 18:00 前任何一次检查中完整且哈希匹配即可发送；到 18:00 仍不完整时，只发送一封不附带附件的失败通知，避免把旧图片当成今天的报告。
+正常发送不再固定在 14:00。Apps Script 从 14:00 起轮询，正常日报只会在 14:00 至 20:59 发送，且仅当 schema 3 机会闸门通过、报告完整且哈希匹配时发送：active 模拟方案或平局预警任意一个即可，shadow-only 候选不算机会；两个有效计数均为零时没有投注方案且没有平局预警时不发送邮件，未知机会证据失败关闭并保持静默。当前日期只在 21:00 前的正常发送路径重新验证。21:00 仅在已证明存在机会且日报仍未送达时发送当天唯一一封无附件失败通知，绝不附带旧图。
 
 ## 启用 GitHub 功能
 
@@ -31,11 +31,11 @@ Apps Script 需要一个 fine-grained token 来调用工作流。它只能授权
 ## 可靠日报路径
 
 1. 仓库路径 `web/report-status.json` 发布后对应公开地址 `https://l18381527760-sketch.github.io/sporttery-prediction/report-status.json`；`runAutomation` 按北京时间读取这个公开地址。仓库路径 `web/daily-report.png` 对应 `https://l18381527760-sketch.github.io/sporttery-prediction/daily-report.png`，报告首页对应 `https://l18381527760-sketch.github.io/sporttery-prediction/`。公共地址绝不能插入 `/web/`。
-2. Apps Script 只接受 schema 2 状态：若当天 `forecast_ready`、`initial_report_ready` 或 `settlement_ready` 对应阶段缺失，就通过相应工作流的 `workflow_dispatch` 和 `target_date` 发起运行；旧 schema 1 不能跳过阶段。
-3. 从 14:00 起，Apps Script 只接受 `report_date` 为当天，且 `forecast_ready`、`initial_report_ready`、`settlement_ready`、`revalidation_ready`、provisional SHA-256、数据质量和构建信息全部有效的状态。
+2. Apps Script 只接受 schema 3 状态：若当天 `forecast_ready`、`initial_report_ready` 或 `settlement_ready` 对应阶段缺失，就通过相应工作流的 `workflow_dispatch` 和 `target_date` 发起运行；旧 schema 不能跳过阶段。
+3. 从 14:00 到 20:59，Apps Script 只接受 `report_date` 为当天，且 `forecast_ready`、`initial_report_ready`、`settlement_ready`、`revalidation_ready`、provisional SHA-256、数据质量和构建信息全部有效的状态；当前日期只在 21:00 前的正常发送路径重新验证。
 4. Apps Script 使用状态中的 `build_id` 下载 `web/daily-report.png`，计算实际 SHA-256，并与 `image_sha256` 比较。
-5. 只有状态和哈希都通过才由 Apps Script 发送正常附件；不匹配时继续等待或重跑生成阶段，不会发送旧附件。
-6. 18:00 做最后一次检查。报告完整时仍可发送正常日报；否则只发送当天唯一一封无附件失败通知。
+5. 只有状态、哈希和 schema 3 机会闸门都通过才由 Apps Script 发送正常附件；不匹配时继续等待或重跑生成阶段，不会发送旧附件。
+6. 21:00 仅在已证明存在机会且日报仍未送达时发送当天唯一一封无附件失败通知；无机会或未知机会证据都保持静默。
 
 现有 cron 定时运行与 Apps Script dispatch 彼此独立。Apps Script 在 Pages 更新前可能仍读到旧状态，于是两者可能为同一阶段各入队一次，出现额外的排队运行。它们共享并发队列；不可变导入清单、初选 generation 指针、单调候选状态和幂等账本写入保证重复运行不会把旧赔率或 provisional 金额当成已确认模拟投入，但会增加排队时间。不要删除现有 cron。
 
@@ -48,7 +48,7 @@ fails.
 
 GitHub Actions retries do not duplicate canonical results, simulated ledger
 entries, or mail. Apps Script remains the sole email sender in the Beijing
-14:00-18:00 window; `.github/workflows/email-report.yml` remains disabled.
+14:00-21:00 window; `.github/workflows/email-report.yml` remains disabled.
 
 Phase 1 acceptance requires seven successful daily production runs before Project 2 planning.
 Broader 30-day evidence maturity remains required before model or profitability claims.
@@ -65,7 +65,7 @@ Broader 30-day evidence maturity remains required before model or profitability 
 
 上线时保持 `pre_kickoff_revalidation.mode="shadow"`，完整观察一个包含错峰开赛的业务日，核对实时来源时间、两阶段凭证顺序、取消原因、跨午夜状态和邮件去重。只有这些证据全部通过，才允许用单独的审查提交切换为 `active`；`value_strategy.activation_mode` 仍独立保持 shadow，`real_money_automation` 必须保持 `false`。
 
-### Schema 2 阶段契约
+### Schema 3 阶段契约
 
 - 基础预测完成时发布 `forecast_ready=true`。它要求当天不可变导入清单有效，当前赛程、国内赔率和评级文件与清单字节及 SHA-256 完全一致，并在非零比赛日达到 100% 官方场次赔率覆盖；同时要求预测、网站和带构建元数据的图片有效。它不要求旧的日期级方案或决策文件。
 - 刷新流程必须使用新抓取的竞彩网赔率或经过赛程身份精确映射的中国足彩网赔率，生成不可变 decision bundle 和 provisional generation；完成标志是 `initial_report_ready=true`。
@@ -74,6 +74,10 @@ Broader 30-day evidence maturity remains required before model or profitability 
 - 两个获准的国内临场来源都不可用时必须失败关闭；不得把中午导入赔率、缓存或外部分析赔率伪装成实时国内赔率。
 
 预测、刷新、结算和赔率快照仍共享 `sporttery-repository` 并发队列，避免多个写入任务互相覆盖。可选市场来源失败时，采集器记录错误并保留仍通过验证的来源；独立可选步骤失败不会补造数据。状态文件和图片哈希在发送前提供最终的一致性检查。
+
+### Schema 3 邮件安全上线
+
+升级邮件契约时必须 consumer-first：先 pause the trigger or set `TEST_MODE=true`，再 deploy the schema 3 consumer；保持 producer 仍发布旧契约并 prove old schema 2 makes no Gmail call，然后 publish the schema 3 producer，完成 present、absent 和 cutoff 验收后才 explicitly set `TEST_MODE=false`。Missing, misspelled, or non-exact `TEST_MODE` values fail closed：只有精确字符串 `false` 进入生产 Gmail 路径，精确字符串 `true` 只记录 dry-run，其他或缺失值都是 no Gmail call and no sent-state write。
 
 ## 手动运行和验收
 
@@ -86,7 +90,7 @@ Broader 30-day evidence maturity remains required before model or profitability 
 
 手动运行 `Pre-Kickoff Revalidation` 时，`target_date` 输入原业务日 `YYYY-MM-DD`。实时恢复留空 `now_bjt`；只有确定性演练才输入例如 `2026-07-20T00:30:00+08:00` 的 aware 时间。运行后必须核对索引、状态、revision PNG、两个哈希和对应 receipt，不能通过修改索引或发送状态强制补发。
 
-Apps Script 的完整首次部署顺序还包括粘贴已提交的 `Code.gs`、更新 `appsscript.json`、批准 Google 权限、运行 `installAutomationTrigger`、确认恰好一个 10 分钟触发器，以及验证 GitHub 邮件工作流仍为 disabled。请按 [apps-script/README.md](apps-script/README.md) 操作，不要跳步。
+Apps Script 的完整首次部署顺序还包括更新现有 `Code.gs`、更新 `appsscript.json`、批准 Google 权限、确认既有 10 分钟触发器保持可用而不新建触发器，以及验证 GitHub 邮件工作流仍为 disabled。请按 [apps-script/README.md](apps-script/README.md) 操作，不要跳步。
 
 ## 恢复入口
 
@@ -108,7 +112,7 @@ GitHub Actions 的 cron 使用 UTC，Apps Script 业务时间固定为 `Asia/Sha
 - `5 6 * * *`：14:05 结算重试。
 - `*/30 * * * *`：每 30 分钟赔率快照。
 
-`.github/workflows/email-report.yml` 中保留的 `0 6 * * *` 不再是生产发送计划；该工作流在 GitHub Actions UI 中必须保持 disabled。生产邮件由每 10 分钟运行的 Apps Script 在 14:00-18:00 窗口内决定。
+`.github/workflows/email-report.yml` 中保留的 `0 6 * * *` 不再是生产发送计划；该工作流在 GitHub Actions UI 中必须保持 disabled。生产邮件由每 10 分钟运行的 Apps Script 在 14:00-21:00 窗口内决定。
 
 ## 模拟使用说明
 

@@ -91,8 +91,9 @@ class LiveOddsTest(TestCase):
 
     def test_match_phase_uses_each_required_boundary(self):
         expected = {
-            45: "pre_kickoff_30",
-            46: "pre_kickoff_90",
+            40: "pre_kickoff_30",
+            41: "pre_kickoff_90",
+            45: "pre_kickoff_90",
             105: "pre_kickoff_90",
             106: "decision",
         }
@@ -100,11 +101,107 @@ class LiveOddsTest(TestCase):
             with self.subTest(minutes=minutes):
                 self.assertEqual(phase, live_odds._match_phase("decision", minutes))
 
+    def test_snapshot_labels_exact_fractional_phase_boundaries(self):
+        cases = (
+            (timedelta(minutes=40, seconds=59), 41, "pre_kickoff_90"),
+            (timedelta(minutes=40, seconds=1), 41, "pre_kickoff_90"),
+            (timedelta(minutes=40), 40, "pre_kickoff_30"),
+            (timedelta(minutes=10, seconds=1), 11, "pre_kickoff_30"),
+            (timedelta(minutes=10), 10, "pre_kickoff_30"),
+            (timedelta(minutes=105, seconds=1), 106, "monitoring"),
+            (timedelta(minutes=105), 105, "pre_kickoff_90"),
+        )
+        for offset, expected_minutes, expected_phase in cases:
+            with self.subTest(offset=offset), TemporaryDirectory() as tmp:
+                kickoff = NOW + offset
+                path = live_odds.capture_live_snapshot(
+                    Path(tmp),
+                    DAY,
+                    NOW,
+                    phase="monitoring",
+                    sporttery_fetcher=lambda day, value=kickoff: [
+                        sporttery_match(kickoff_at=value.isoformat())
+                    ],
+                    sporttery_odds_fetcher=lambda match_id: had_odds(),
+                )
+                payload = live_odds.read_valid_live_snapshot(
+                    Path(tmp), path, DAY, NOW
+                )
+
+            self.assertEqual(
+                expected_minutes,
+                payload["matches"][0]["minutes_to_kickoff"],
+            )
+            self.assertEqual(
+                expected_phase,
+                payload["matches"][0]["capture_phase"],
+            )
+
+    def test_minutes_to_kickoff_still_rejects_fractional_past_time(self):
+        with self.assertRaisesRegex(ValueError, "kickoff is not future"):
+            live_odds._minutes_to_kickoff(
+                NOW - timedelta(seconds=1),
+                NOW,
+            )
+
+    def test_fractional_t90_publication_uses_correct_single_and_mixed_fixture(self):
+        fixture_batches = (
+            (
+                [timedelta(minutes=40, seconds=59)],
+                [("Sunday001", 41, "pre_kickoff_90")],
+            ),
+            (
+                [
+                    timedelta(minutes=40, seconds=59),
+                    timedelta(minutes=40),
+                ],
+                [
+                    ("Sunday001", 41, "pre_kickoff_90"),
+                    ("Sunday002", 40, "pre_kickoff_30"),
+                ],
+            ),
+        )
+        for offsets, expected in fixture_batches:
+            with self.subTest(offsets=offsets), TemporaryDirectory() as tmp:
+                matches = [
+                    sporttery_match(
+                        matchId=f"m{index}",
+                        matchNumStr=f"Sunday00{index}",
+                        homeTeam=f"Home {index}",
+                        awayTeam=f"Away {index}",
+                        kickoff_at=(NOW + offset).isoformat(),
+                    )
+                    for index, offset in enumerate(offsets, 1)
+                ]
+                path = live_odds.capture_live_snapshot(
+                    Path(tmp),
+                    DAY,
+                    NOW,
+                    phase="pre_kickoff_90",
+                    sporttery_fetcher=lambda day, rows=matches: rows,
+                    sporttery_odds_fetcher=lambda match_id: had_odds(),
+                )
+                payload = live_odds.read_valid_live_snapshot(
+                    Path(tmp), path, DAY, NOW
+                )
+
+                self.assertEqual(
+                    expected,
+                    [
+                        (
+                            row["match_num"],
+                            row["minutes_to_kickoff"],
+                            row["capture_phase"],
+                        )
+                        for row in payload["matches"]
+                    ],
+                )
+
     def test_pre_kickoff_request_cannot_assert_a_phase_outside_its_window(self):
         cases = (
-            ("pre_kickoff_30", 46),
+            ("pre_kickoff_30", 41),
             ("pre_kickoff_30", 106),
-            ("pre_kickoff_90", 45),
+            ("pre_kickoff_90", 40),
             ("pre_kickoff_90", 106),
         )
         for phase, minutes in cases:
@@ -125,8 +222,9 @@ class LiveOddsTest(TestCase):
 
     def test_pre_kickoff_requests_accept_exact_window_boundaries(self):
         cases = (
-            ("pre_kickoff_30", 45),
-            ("pre_kickoff_90", 46),
+            ("pre_kickoff_30", 40),
+            ("pre_kickoff_90", 41),
+            ("pre_kickoff_90", 45),
             ("pre_kickoff_90", 105),
         )
         for phase, minutes in cases:

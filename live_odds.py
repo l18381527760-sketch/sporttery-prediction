@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -300,16 +301,16 @@ def _match_row(
 
 
 def _minutes_to_kickoff(kickoff: datetime, captured: datetime) -> int:
-    minutes = int(
-        (kickoff.astimezone(BEIJING) - captured.astimezone(BEIJING)).total_seconds() // 60
-    )
-    if minutes < 0:
+    seconds = (
+        kickoff.astimezone(BEIJING) - captured.astimezone(BEIJING)
+    ).total_seconds()
+    if seconds < 0:
         raise ValueError("live snapshot kickoff is not future")
-    return minutes
+    return math.ceil(seconds / 60)
 
 
 def _match_phase(requested: str, minutes: int) -> str:
-    if minutes <= 45:
+    if minutes <= 40:
         return "pre_kickoff_30"
     if minutes <= 105:
         return "pre_kickoff_90"

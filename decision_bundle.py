@@ -430,6 +430,56 @@ def read_valid_decision_bundle(
     return payload
 
 
+def decision_evidence_window(
+    bundle: object,
+) -> tuple[frozenset[tuple[str, str, str, str]], datetime]:
+    if not isinstance(bundle, dict):
+        raise ValueError("decision bundle is invalid")
+    target_text = bundle.get("target_date")
+    try:
+        target_date = date.fromisoformat(target_text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("decision bundle target date is invalid") from exc
+    if target_text != target_date.isoformat():
+        raise ValueError("decision bundle target date is invalid")
+
+    snapshot = bundle.get("decision_snapshot")
+    fixtures = bundle.get("fixture_extract")
+    if (
+        not isinstance(snapshot, dict)
+        or not isinstance(fixtures, dict)
+        or not isinstance(fixtures.get("rows"), list)
+    ):
+        raise ValueError("decision bundle evidence window is invalid")
+    captured = _aware_datetime(
+        snapshot.get("captured_at_bjt"),
+        "decision snapshot captured_at",
+    ).astimezone(BEIJING)
+    locked = _aware_datetime(
+        bundle.get("locked_at_bjt"),
+        "decision bundle locked_at",
+    ).astimezone(BEIJING)
+    if captured > locked:
+        raise ValueError("decision snapshot was captured after lock")
+
+    bindings = set()
+    for row in fixtures["rows"]:
+        if not isinstance(row, dict):
+            raise ValueError("decision bundle fixture extract is invalid")
+        if _match_datetime(row.get("kickoff_at"), "fixture kickoff_at") <= captured:
+            continue
+        binding = (
+            target_text,
+            _required_text(row.get("team_a"), "fixture team_a"),
+            _required_text(row.get("team_b"), "fixture team_b"),
+            _canonical_match_id(row.get("match_id")),
+        )
+        if binding in bindings:
+            raise ValueError("decision bundle fixture identities are duplicated")
+        bindings.add(binding)
+    return frozenset(bindings), locked
+
+
 def _validate_prediction_metadata(
     root: Path,
     payload: object,
