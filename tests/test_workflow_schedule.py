@@ -824,6 +824,39 @@ with Path("global-calls.log").open("a", encoding="utf-8") as handle:
             for argument in expected:
                 self.assertIn(argument, result.stdout)
 
+    def test_cloud_orchestrator_documentation(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        cloud_setup = (ROOT / "CLOUD_SETUP.md").read_text(encoding="utf-8")
+        apps_script_readme = (ROOT / "apps-script" / "README.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (readme, cloud_setup, apps_script_readme):
+            self.assertIn("14:00-21:00", text)
+            self.assertIn("任意一个", text)
+            self.assertIn("没有投注方案且没有平局预警时不发送邮件", text)
+            self.assertIn("21:00", text)
+
+        combined = "\n".join((readme, cloud_setup, apps_script_readme))
+        self.assertNotIn("18:00 仍未就绪时只发一封", combined)
+        self.assertNotIn("14:00-18:00", combined)
+
+    def test_top_level_docs_replace_the_old_github_email_sender_description(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        cloud_setup = (ROOT / "CLOUD_SETUP.md").read_text(encoding="utf-8")
+        combined = readme + "\n" + cloud_setup
+        for literal in (
+            "Apps Script 是唯一的邮件发送方",
+            "`runAutomation`",
+            "每 10 分钟",
+            "14:00-21:00",
+            "电脑可以关机",
+            "`.github/workflows/email-report.yml`",
+            "保持 disabled",
+        ):
+            self.assertIn(literal, combined)
+        self.assertNotIn("| 14:00 | Gmail 发送", combined)
+        self.assertNotIn('`0 6 * * *`：14:00 邮件日报', combined)
+
 
 class DeploymentDocumentationTest(unittest.TestCase):
     APPS_SCRIPT_README = ROOT / "apps-script" / "README.md"
@@ -871,8 +904,8 @@ class DeploymentDocumentationTest(unittest.TestCase):
             "Apps Script 是唯一的邮件发送方",
             "`runAutomation` 每 10 分钟运行一次",
             "`Asia/Shanghai`",
-            "14:00-18:00",
-            "18:00",
+            "14:00-21:00",
+            "21:00",
             "不附带附件",
             "电脑可以关机",
             "仅用于概率分析和模拟记账",
@@ -1049,7 +1082,7 @@ class DeploymentDocumentationTest(unittest.TestCase):
         for misleading in ("cron 后备", "后备触发", "cron fallback", "补调度"):
             self.assertNotIn(misleading, combined)
 
-    def test_docs_define_the_schema_two_stage_contract(self):
+    def test_docs_define_the_schema_three_stage_contract(self):
         apps_readme = self.read_doc(self.APPS_SCRIPT_README)
         cloud_setup = self.read_doc(ROOT / "CLOUD_SETUP.md")
         self.assertIn(
@@ -1058,7 +1091,7 @@ class DeploymentDocumentationTest(unittest.TestCase):
         )
         for text in (apps_readme, cloud_setup):
             for literal in (
-                "schema 2",
+                "schema 3",
                 "`forecast_ready`",
                 "`initial_report_ready`",
                 "`settlement_ready`",
@@ -1144,8 +1177,8 @@ class DeploymentDocumentationTest(unittest.TestCase):
                 "`TEST_MODE=true`",
                 "手动运行 `runAutomation`",
                 "批准权限",
-                "运行 `installAutomationTrigger`",
-                "恰好一个每 10 分钟运行的 `runAutomation` 触发器",
+                "既有每 10 分钟运行的 `runAutomation` 触发器保持可用",
+                "不需要新建触发器",
                 "`workflow_dispatch`",
                 "当天北京时间日期",
                 "`web/report-status.json`",
@@ -1175,23 +1208,6 @@ class DeploymentDocumentationTest(unittest.TestCase):
                 "再恢复之前唯一的每日 `sendDailyReport` 触发器",
             ),
         )
-
-    def test_top_level_docs_replace_the_old_github_email_sender_description(self):
-        readme = self.read_doc(ROOT / "README.md")
-        cloud_setup = self.read_doc(ROOT / "CLOUD_SETUP.md")
-        combined = readme + "\n" + cloud_setup
-        for literal in (
-            "Apps Script 是唯一的邮件发送方",
-            "`runAutomation`",
-            "每 10 分钟",
-            "14:00-18:00",
-            "电脑可以关机",
-            "`.github/workflows/email-report.yml`",
-            "保持 disabled",
-        ):
-            self.assertIn(literal, combined)
-        self.assertNotIn("| 14:00 | Gmail 发送", combined)
-        self.assertNotIn('`0 6 * * *`：14:00 邮件日报', combined)
 
     def test_operator_docs_include_the_required_verification_commands(self):
         text = self.read_doc(self.APPS_SCRIPT_README)
