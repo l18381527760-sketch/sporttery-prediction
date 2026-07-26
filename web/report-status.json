@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "report_date": "2026-07-25",
   "forecast_ready": true,
   "decision_snapshot_ready": false,
@@ -8,17 +8,17 @@
   "settled_through": "2026-07-24",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "settlement",
+  "report_stage": "forecast",
   "initial_report_ready": false,
   "provisional_plan_sha256": "",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
   "revalidation_ready": false,
-  "build_id": "30155283048-1-settlement",
-  "generated_at_bjt": "2026-07-25T19:16:27+08:00",
-  "image_sha256": "1c5e44349f90a906da537df09153a8f14a67760719ad263ef1951638c5fccf6b",
-  "source_commit_sha": "822c285dfb5aff92d4dbe0f3027e2e16a1c23a90",
+  "build_id": "30183198391-1-forecast",
+  "generated_at_bjt": "2026-07-26T09:38:10+08:00",
+  "image_sha256": "f04494d1813e0eaa12e72535af773bd147a3380548a8ac6c79f6aa7e3014d151",
+  "source_commit_sha": "8c6d04b09c6eb4cc3e73f4ff75b1ec97ba447c74",
   "fixture_count": 11,
   "official_fixture_count": 11,
   "prediction_count": 11,
@@ -51,7 +51,7 @@
   "evidence_health": {
     "schema_version": 1,
     "target_date": "2026-07-25",
-    "generated_at_bjt": "2026-07-25T19:16:27+08:00",
+    "generated_at_bjt": "2026-07-26T09:38:10+08:00",
     "identity_confirmed": 11,
     "identity_total": 11,
     "identity_confirmation_rate": 1.0,
@@ -66,214 +66,39 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 1,
-      "matches": 11,
+      "files": 0,
+      "matches": 0,
       "phases": {
         "opening": 0,
-        "decision": 11,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 11,
+      "unique_fixture_bindings": 0,
       "unique_phases": {
         "opening": 0,
-        "decision": 11,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {
-        "decision": 11
-      },
-      "latest": "2026-07-25T13:37:21.072064+08:00",
-      "latest_by_phase": {
-        "decision": "2026-07-25T13:37:21.072064+08:00"
-      },
-      "latest_by_requested_phase": {
-        "decision": "2026-07-25T13:37:21.072064+08:00"
-      },
-      "bindings_by_requested_phase": {
-        "decision": [
-          [
-            "2026-07-25",
-            "代格福什",
-            "佐加顿斯",
-            "2040614"
-          ],
-          [
-            "2026-07-25",
-            "克里斯蒂",
-            "斯达",
-            "2040616"
-          ],
-          [
-            "2026-07-25",
-            "卡尔马",
-            "米亚尔比",
-            "2040618"
-          ],
-          [
-            "2026-07-25",
-            "圣何塞",
-            "洛城银河",
-            "2040622"
-          ],
-          [
-            "2026-07-25",
-            "圣地亚哥",
-            "达拉斯",
-            "2040621"
-          ],
-          [
-            "2026-07-25",
-            "巴竞技",
-            "巴西国际",
-            "2040619"
-          ],
-          [
-            "2026-07-25",
-            "库普斯",
-            "瓦萨",
-            "2040617"
-          ],
-          [
-            "2026-07-25",
-            "桑托斯",
-            "沙佩科",
-            "2040620"
-          ],
-          [
-            "2026-07-25",
-            "浦项制铁",
-            "全北现代",
-            "2040613"
-          ],
-          [
-            "2026-07-25",
-            "玛丽港",
-            "奥卢",
-            "2040615"
-          ],
-          [
-            "2026-07-25",
-            "金泉尚武",
-            "大田市民",
-            "2040612"
-          ]
-        ]
-      },
-      "latest_by_binding_by_requested_phase": {
-        "decision": [
-          {
-            "binding": [
-              "2026-07-25",
-              "代格福什",
-              "佐加顿斯",
-              "2040614"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-25",
-              "克里斯蒂",
-              "斯达",
-              "2040616"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-25",
-              "卡尔马",
-              "米亚尔比",
-              "2040618"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-25",
-              "圣何塞",
-              "洛城银河",
-              "2040622"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-25",
-              "圣地亚哥",
-              "达拉斯",
-              "2040621"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-25",
-              "巴竞技",
-              "巴西国际",
-              "2040619"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-25",
-              "库普斯",
-              "瓦萨",
-              "2040617"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-25",
-              "桑托斯",
-              "沙佩科",
-              "2040620"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-25",
-              "浦项制铁",
-              "全北现代",
-              "2040613"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-25",
-              "玛丽港",
-              "奥卢",
-              "2040615"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-25",
-              "金泉尚武",
-              "大田市民",
-              "2040612"
-            ],
-            "captured_at": "2026-07-25T13:37:21.072064+08:00"
-          }
-        ]
-      }
+      "requested_phases": {},
+      "latest": null,
+      "latest_by_phase": {},
+      "latest_by_requested_phase": {},
+      "bindings_by_requested_phase": {},
+      "latest_by_binding_by_requested_phase": {}
     },
     "forecast_blockers": [],
     "decision_blockers": [
+      "decision_snapshot_incomplete",
       "decision_odds_stale"
     ],
     "hard_blockers": [
+      "decision_snapshot_incomplete",
       "decision_odds_stale"
     ]
   },
@@ -286,5 +111,13 @@
     "message": "",
     "fixture_count": 11,
     "no_fixtures": false
+  },
+  "email_opportunity": {
+    "state": "unknown",
+    "actionable_plan_count": null,
+    "draw_alert_count": 0,
+    "reasons": [
+      "actionable_plan_unavailable"
+    ]
   }
 }
