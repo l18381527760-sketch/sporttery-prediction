@@ -8,17 +8,17 @@
   "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "forecast",
-  "initial_report_ready": false,
-  "provisional_plan_sha256": "",
+  "report_stage": "provisional",
+  "initial_report_ready": true,
+  "provisional_plan_sha256": "214ce339bbe3ad0d5b031ed3be01da907d2b691dbc1d20ab1c1628d1aa4e5620",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
-  "revalidation_ready": false,
-  "build_id": "30187508127-1-forecast",
-  "generated_at_bjt": "2026-07-26T12:18:50+08:00",
-  "image_sha256": "87939cc3c98562d06ade2afee2e55aeadc00beb1977c9f8c25da00d00ec91aad",
-  "source_commit_sha": "2c9eeb659a67baebf91eae5efd730987f40e2548",
+  "revalidation_ready": true,
+  "build_id": "30189642288-1-provisional",
+  "generated_at_bjt": "2026-07-26T13:38:22+08:00",
+  "image_sha256": "39b9b986af6954f77b76543f62cc1ad4a504cca0ec7f1235cabc422f99efaa92",
+  "source_commit_sha": "c3e04564ca2f656a220fcfbfeed534d7e9c709d6",
   "fixture_count": 18,
   "official_fixture_count": 18,
   "prediction_count": 18,
@@ -29,12 +29,10 @@
   "odds_coverage": 1.0,
   "official_odds_coverage_ratio": 1.0,
   "email_opportunity": {
-    "state": "unknown",
-    "actionable_plan_count": null,
+    "state": "absent",
+    "actionable_plan_count": 0,
     "draw_alert_count": 0,
-    "reasons": [
-      "actionable_plan_unavailable"
-    ]
+    "reasons": []
   },
   "data_quality": {
     "source_ready": true,
@@ -47,10 +45,10 @@
     "plan_csv_ready": false,
     "decision_ready": false,
     "plan_lock_ready": false,
-    "decision_bundle_ready": false,
-    "provisional_plan_ready": false,
-    "provisional_shadow_ready": false,
-    "provisional_state_ready": false,
+    "decision_bundle_ready": true,
+    "provisional_plan_ready": true,
+    "provisional_shadow_ready": true,
+    "provisional_state_ready": true,
     "decision_snapshot_ready": false,
     "ledger_ready": true,
     "site_ready": true,
@@ -59,7 +57,7 @@
   "evidence_health": {
     "schema_version": 1,
     "target_date": "2026-07-26",
-    "generated_at_bjt": "2026-07-26T12:18:50+08:00",
+    "generated_at_bjt": "2026-07-26T13:38:22+08:00",
     "identity_confirmed": 18,
     "identity_total": 18,
     "identity_confirmation_rate": 1.0,
@@ -74,41 +72,317 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 0,
-      "matches": 0,
+      "files": 1,
+      "matches": 18,
       "phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 18,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 0,
+      "unique_fixture_bindings": 18,
       "unique_phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 18,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {},
-      "latest": null,
-      "latest_by_phase": {},
-      "latest_by_requested_phase": {},
-      "bindings_by_requested_phase": {},
-      "latest_by_binding_by_requested_phase": {}
+      "requested_phases": {
+        "decision": 18
+      },
+      "latest": "2026-07-26T13:37:46.718153+08:00",
+      "latest_by_phase": {
+        "decision": "2026-07-26T13:37:46.718153+08:00"
+      },
+      "latest_by_requested_phase": {
+        "decision": "2026-07-26T13:37:46.718153+08:00"
+      },
+      "bindings_by_requested_phase": {
+        "decision": [
+          [
+            "2026-07-26",
+            "FC安养",
+            "江原FC",
+            "2040626"
+          ],
+          [
+            "2026-07-26",
+            "KF奥斯陆",
+            "莫尔德",
+            "2040636"
+          ],
+          [
+            "2026-07-26",
+            "仁川联队",
+            "富川FC",
+            "2040624"
+          ],
+          [
+            "2026-07-26",
+            "光州FC",
+            "济州SK",
+            "2040625"
+          ],
+          [
+            "2026-07-26",
+            "国际图尔",
+            "赫尔火花",
+            "2040629"
+          ],
+          [
+            "2026-07-26",
+            "埃尔维斯",
+            "拉赫蒂",
+            "2040630"
+          ],
+          [
+            "2026-07-26",
+            "天狼星",
+            "哥德堡",
+            "2040628"
+          ],
+          [
+            "2026-07-26",
+            "奥勒松",
+            "维京",
+            "2040638"
+          ],
+          [
+            "2026-07-26",
+            "布兰",
+            "瓦勒伦加",
+            "2040631"
+          ],
+          [
+            "2026-07-26",
+            "布鲁马波",
+            "哈马比",
+            "2040627"
+          ],
+          [
+            "2026-07-26",
+            "弗拉门戈",
+            "圣保罗",
+            "2040639"
+          ],
+          [
+            "2026-07-26",
+            "格雷米奥",
+            "弗鲁米嫩",
+            "2040640"
+          ],
+          [
+            "2026-07-26",
+            "桑纳菲",
+            "博德闪耀",
+            "2040637"
+          ],
+          [
+            "2026-07-26",
+            "盖斯",
+            "哈斯塔德",
+            "2040633"
+          ],
+          [
+            "2026-07-26",
+            "萨普斯堡",
+            "汉坎",
+            "2040635"
+          ],
+          [
+            "2026-07-26",
+            "赫尔辛基",
+            "图尔库",
+            "2040632"
+          ],
+          [
+            "2026-07-26",
+            "首尔FC",
+            "蔚山现代",
+            "2040623"
+          ],
+          [
+            "2026-07-26",
+            "马尔默",
+            "埃夫斯堡",
+            "2040634"
+          ]
+        ]
+      },
+      "latest_by_binding_by_requested_phase": {
+        "decision": [
+          {
+            "binding": [
+              "2026-07-26",
+              "FC安养",
+              "江原FC",
+              "2040626"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "KF奥斯陆",
+              "莫尔德",
+              "2040636"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "仁川联队",
+              "富川FC",
+              "2040624"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "光州FC",
+              "济州SK",
+              "2040625"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "国际图尔",
+              "赫尔火花",
+              "2040629"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "埃尔维斯",
+              "拉赫蒂",
+              "2040630"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "天狼星",
+              "哥德堡",
+              "2040628"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "奥勒松",
+              "维京",
+              "2040638"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "布兰",
+              "瓦勒伦加",
+              "2040631"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "布鲁马波",
+              "哈马比",
+              "2040627"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "弗拉门戈",
+              "圣保罗",
+              "2040639"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "格雷米奥",
+              "弗鲁米嫩",
+              "2040640"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "桑纳菲",
+              "博德闪耀",
+              "2040637"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "盖斯",
+              "哈斯塔德",
+              "2040633"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "萨普斯堡",
+              "汉坎",
+              "2040635"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "赫尔辛基",
+              "图尔库",
+              "2040632"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "首尔FC",
+              "蔚山现代",
+              "2040623"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-26",
+              "马尔默",
+              "埃夫斯堡",
+              "2040634"
+            ],
+            "captured_at": "2026-07-26T13:37:46.718153+08:00"
+          }
+        ]
+      }
     },
     "forecast_blockers": [],
-    "decision_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ],
-    "hard_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ]
+    "decision_blockers": [],
+    "hard_blockers": []
   },
   "source_status": {
     "source": "中国足彩网",
@@ -116,7 +390,7 @@
     "target_date": "2026-07-26",
     "updated_at": "2026-07-26T04:18:49.579507+00:00",
     "fallback": true,
-    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+    "message": "",
     "fixture_count": 18,
     "no_fixtures": false
   }

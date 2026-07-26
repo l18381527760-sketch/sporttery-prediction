@@ -4,7 +4,7 @@
   "target_date": "2026-07-26",
   "updated_at": "2026-07-26T04:18:49.579507+00:00",
   "fallback": true,
-  "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+  "message": "",
   "fixture_count": 18,
   "no_fixtures": false
 }
