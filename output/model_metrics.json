@@ -133,34 +133,34 @@
       "unique_phases": "full_fixture_bindings",
       "requested_phases": "full_fixture_bindings"
     },
-    "files": 3,
-    "matches": 32,
+    "files": 4,
+    "matches": 34,
     "phases": {
       "opening": 0,
-      "decision": 18,
+      "decision": 20,
       "monitoring": 0,
       "pre_kickoff": 0,
       "pre_kickoff_90": 0,
       "pre_kickoff_30": 0
     },
-    "unique_fixture_bindings": 32,
+    "unique_fixture_bindings": 34,
     "unique_phases": {
       "opening": 0,
-      "decision": 18,
+      "decision": 20,
       "monitoring": 0,
       "pre_kickoff": 0,
       "pre_kickoff_90": 0,
       "pre_kickoff_30": 0
     },
     "requested_phases": {
-      "decision": 18
+      "decision": 20
     },
-    "latest": "2026-07-26T13:37:46.718153+08:00",
+    "latest": "2026-07-27T13:37:10.998391+08:00",
     "latest_by_phase": {
-      "decision": "2026-07-26T13:37:46.718153+08:00"
+      "decision": "2026-07-27T13:37:10.998391+08:00"
     },
     "latest_by_requested_phase": {
-      "decision": "2026-07-26T13:37:46.718153+08:00"
+      "decision": "2026-07-27T13:37:10.998391+08:00"
     },
     "bindings_by_requested_phase": {
       "decision": [
@@ -271,6 +271,18 @@
           "马尔默",
           "埃夫斯堡",
           "2040634"
+        ],
+        [
+          "2026-07-27",
+          "罗森博格",
+          "费特斯塔",
+          "2040642"
+        ],
+        [
+          "2026-07-27",
+          "赫根",
+          "索尔纳",
+          "2040641"
         ]
       ]
     },
@@ -437,6 +449,24 @@
             "2040634"
           ],
           "captured_at": "2026-07-26T13:37:46.718153+08:00"
+        },
+        {
+          "binding": [
+            "2026-07-27",
+            "罗森博格",
+            "费特斯塔",
+            "2040642"
+          ],
+          "captured_at": "2026-07-27T13:37:10.998391+08:00"
+        },
+        {
+          "binding": [
+            "2026-07-27",
+            "赫根",
+            "索尔纳",
+            "2040641"
+          ],
+          "captured_at": "2026-07-27T13:37:10.998391+08:00"
         }
       ]
     }
