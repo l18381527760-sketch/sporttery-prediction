@@ -1,0 +1,21 @@
+{
+  "fixtures": {
+    "bytes": 634,
+    "path": "data/import_extracts/2026-07-27/fixtures.csv",
+    "sha256": "f1e672907fc571c93410da7b0a1f4f6a7e1033ab4979089e9128b33a1ce8a408"
+  },
+  "imported_at_bjt": "2026-07-27T12:18:38.501113+08:00",
+  "odds": {
+    "bytes": 2572,
+    "path": "data/import_extracts/2026-07-27/odds.json",
+    "sha256": "d13d58c105a8db8d0ab6f924b839979d9d24ee5419d83624df497f748d086c2f"
+  },
+  "ratings": {
+    "bytes": 6246,
+    "path": "data/import_extracts/2026-07-27/ratings.csv",
+    "sha256": "a095a576b5f00d3abd31ec4a3974bbb54eabfa33c1aac4899f733b7efb4aad63"
+  },
+  "schema_version": 2,
+  "source": "zgzcw",
+  "target_date": "2026-07-27"
+}
