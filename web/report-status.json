@@ -8,17 +8,17 @@
   "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "forecast",
-  "initial_report_ready": false,
-  "provisional_plan_sha256": "",
+  "report_stage": "provisional",
+  "initial_report_ready": true,
+  "provisional_plan_sha256": "214ce339bbe3ad0d5b031ed3be01da907d2b691dbc1d20ab1c1628d1aa4e5620",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
-  "revalidation_ready": false,
-  "build_id": "30236609344-1-forecast",
-  "generated_at_bjt": "2026-07-27T12:18:39+08:00",
-  "image_sha256": "394c1d7656137dc9716a4557421abc03d09bd5aad67fc70b7f5591df801bfd76",
-  "source_commit_sha": "34b1ee22064b73c963be09e335cd5232c08cd41a",
+  "revalidation_ready": true,
+  "build_id": "30240203823-1-provisional",
+  "generated_at_bjt": "2026-07-27T13:37:25+08:00",
+  "image_sha256": "ecb2cc2a4b69c7ecf1dc466233f79247e28064163c3e564ac9cdae40deba58e3",
+  "source_commit_sha": "e32d2775860f8806c481d181bcb13ba9cbce92d5",
   "fixture_count": 2,
   "official_fixture_count": 2,
   "prediction_count": 2,
@@ -29,12 +29,10 @@
   "odds_coverage": 1.0,
   "official_odds_coverage_ratio": 1.0,
   "email_opportunity": {
-    "state": "unknown",
-    "actionable_plan_count": null,
+    "state": "absent",
+    "actionable_plan_count": 0,
     "draw_alert_count": 0,
-    "reasons": [
-      "actionable_plan_unavailable"
-    ]
+    "reasons": []
   },
   "data_quality": {
     "source_ready": true,
@@ -47,10 +45,10 @@
     "plan_csv_ready": false,
     "decision_ready": false,
     "plan_lock_ready": false,
-    "decision_bundle_ready": false,
-    "provisional_plan_ready": false,
-    "provisional_shadow_ready": false,
-    "provisional_state_ready": false,
+    "decision_bundle_ready": true,
+    "provisional_plan_ready": true,
+    "provisional_shadow_ready": true,
+    "provisional_state_ready": true,
     "decision_snapshot_ready": false,
     "ledger_ready": true,
     "site_ready": true,
@@ -59,7 +57,7 @@
   "evidence_health": {
     "schema_version": 1,
     "target_date": "2026-07-27",
-    "generated_at_bjt": "2026-07-27T12:18:39+08:00",
+    "generated_at_bjt": "2026-07-27T13:37:25+08:00",
     "identity_confirmed": 2,
     "identity_total": 2,
     "identity_confirmation_rate": 1.0,
@@ -74,41 +72,77 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 0,
-      "matches": 0,
+      "files": 1,
+      "matches": 2,
       "phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 2,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 0,
+      "unique_fixture_bindings": 2,
       "unique_phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 2,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {},
-      "latest": null,
-      "latest_by_phase": {},
-      "latest_by_requested_phase": {},
-      "bindings_by_requested_phase": {},
-      "latest_by_binding_by_requested_phase": {}
+      "requested_phases": {
+        "decision": 2
+      },
+      "latest": "2026-07-27T13:37:10.998391+08:00",
+      "latest_by_phase": {
+        "decision": "2026-07-27T13:37:10.998391+08:00"
+      },
+      "latest_by_requested_phase": {
+        "decision": "2026-07-27T13:37:10.998391+08:00"
+      },
+      "bindings_by_requested_phase": {
+        "decision": [
+          [
+            "2026-07-27",
+            "罗森博格",
+            "费特斯塔",
+            "2040642"
+          ],
+          [
+            "2026-07-27",
+            "赫根",
+            "索尔纳",
+            "2040641"
+          ]
+        ]
+      },
+      "latest_by_binding_by_requested_phase": {
+        "decision": [
+          {
+            "binding": [
+              "2026-07-27",
+              "罗森博格",
+              "费特斯塔",
+              "2040642"
+            ],
+            "captured_at": "2026-07-27T13:37:10.998391+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-27",
+              "赫根",
+              "索尔纳",
+              "2040641"
+            ],
+            "captured_at": "2026-07-27T13:37:10.998391+08:00"
+          }
+        ]
+      }
     },
     "forecast_blockers": [],
-    "decision_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ],
-    "hard_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ]
+    "decision_blockers": [],
+    "hard_blockers": []
   },
   "source_status": {
     "source": "中国足彩网",
@@ -116,7 +150,7 @@
     "target_date": "2026-07-27",
     "updated_at": "2026-07-27T04:18:38.501113+00:00",
     "fallback": true,
-    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+    "message": "",
     "fixture_count": 2,
     "no_fixtures": false
   }
