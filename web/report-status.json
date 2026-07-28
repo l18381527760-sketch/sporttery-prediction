@@ -1,24 +1,24 @@
 {
   "schema_version": 3,
-  "report_date": "2026-07-27",
+  "report_date": "2026-07-28",
   "forecast_ready": true,
   "decision_snapshot_ready": false,
-  "settlement_ready": true,
+  "settlement_ready": false,
   "plan_ready": false,
-  "settled_through": "2026-07-26",
+  "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "settlement",
+  "report_stage": "forecast",
   "initial_report_ready": false,
   "provisional_plan_sha256": "",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
   "revalidation_ready": false,
-  "build_id": "30273111388-1-settlement",
-  "generated_at_bjt": "2026-07-27T22:16:10+08:00",
-  "image_sha256": "0f4b858735e0d3d95543abdba6bb937827b9f1390ec0c6670c536a17a94c49aa",
-  "source_commit_sha": "97b8ffb24880cfa8f4870869ad1636ed477e7acf",
+  "build_id": "30328267958-1-forecast",
+  "generated_at_bjt": "2026-07-28T12:19:31+08:00",
+  "image_sha256": "9abbf57dceb84bc17693fabed7d5be4968ca1a3b9154128d37893109eaf19873",
+  "source_commit_sha": "e21759d42c5b3866bdb0d26b1d97c1bfc1b63505",
   "fixture_count": 2,
   "official_fixture_count": 2,
   "prediction_count": 2,
@@ -58,8 +58,8 @@
   },
   "evidence_health": {
     "schema_version": 1,
-    "target_date": "2026-07-27",
-    "generated_at_bjt": "2026-07-27T22:16:10+08:00",
+    "target_date": "2026-07-28",
+    "generated_at_bjt": "2026-07-28T12:19:31+08:00",
     "identity_confirmed": 2,
     "identity_total": 2,
     "identity_confirmation_rate": 1.0,
@@ -74,89 +74,49 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 1,
-      "matches": 2,
+      "files": 0,
+      "matches": 0,
       "phases": {
         "opening": 0,
-        "decision": 2,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 2,
+      "unique_fixture_bindings": 0,
       "unique_phases": {
         "opening": 0,
-        "decision": 2,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {
-        "decision": 2
-      },
-      "latest": "2026-07-27T13:37:10.998391+08:00",
-      "latest_by_phase": {
-        "decision": "2026-07-27T13:37:10.998391+08:00"
-      },
-      "latest_by_requested_phase": {
-        "decision": "2026-07-27T13:37:10.998391+08:00"
-      },
-      "bindings_by_requested_phase": {
-        "decision": [
-          [
-            "2026-07-27",
-            "罗森博格",
-            "费特斯塔",
-            "2040642"
-          ],
-          [
-            "2026-07-27",
-            "赫根",
-            "索尔纳",
-            "2040641"
-          ]
-        ]
-      },
-      "latest_by_binding_by_requested_phase": {
-        "decision": [
-          {
-            "binding": [
-              "2026-07-27",
-              "罗森博格",
-              "费特斯塔",
-              "2040642"
-            ],
-            "captured_at": "2026-07-27T13:37:10.998391+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-27",
-              "赫根",
-              "索尔纳",
-              "2040641"
-            ],
-            "captured_at": "2026-07-27T13:37:10.998391+08:00"
-          }
-        ]
-      }
+      "requested_phases": {},
+      "latest": null,
+      "latest_by_phase": {},
+      "latest_by_requested_phase": {},
+      "bindings_by_requested_phase": {},
+      "latest_by_binding_by_requested_phase": {}
     },
     "forecast_blockers": [],
     "decision_blockers": [
+      "decision_snapshot_incomplete",
       "decision_odds_stale"
     ],
     "hard_blockers": [
+      "decision_snapshot_incomplete",
       "decision_odds_stale"
     ]
   },
   "source_status": {
     "source": "中国足彩网",
     "analysis_source": "中国足彩网专业欧赔市场",
-    "target_date": "2026-07-27",
-    "updated_at": "2026-07-27T04:18:38.501113+00:00",
+    "target_date": "2026-07-28",
+    "updated_at": "2026-07-28T04:19:30.222256+00:00",
     "fallback": true,
-    "message": "",
+    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
     "fixture_count": 2,
     "no_fixtures": false
   }
