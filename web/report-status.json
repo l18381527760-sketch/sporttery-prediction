@@ -1,24 +1,24 @@
 {
   "schema_version": 3,
-  "report_date": "2026-07-29",
+  "report_date": "2026-07-30",
   "forecast_ready": true,
   "decision_snapshot_ready": false,
-  "settlement_ready": true,
+  "settlement_ready": false,
   "plan_ready": false,
-  "settled_through": "2026-07-28",
+  "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "settlement",
+  "report_stage": "forecast",
   "initial_report_ready": false,
   "provisional_plan_sha256": "",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
   "revalidation_ready": false,
-  "build_id": "30454815645-1-settlement",
-  "generated_at_bjt": "2026-07-29T21:17:29+08:00",
-  "image_sha256": "f9a7046b2329cb0f053541d53291251bc7eb52ceddc96daaa6fe130d1156f00d",
-  "source_commit_sha": "490b4b0fa55be88812c6b1eff5e801f6d912b3e1",
+  "build_id": "30513415309-1-forecast",
+  "generated_at_bjt": "2026-07-30T12:18:31+08:00",
+  "image_sha256": "9dd3bde51d21368d84ccdc4ef9f8caeb98b958b78233bad7d93798302004f703",
+  "source_commit_sha": "aab5fe729114f6afd7b36a035550e67ed1bd1500",
   "fixture_count": 6,
   "official_fixture_count": 6,
   "prediction_count": 6,
@@ -58,8 +58,8 @@
   },
   "evidence_health": {
     "schema_version": 1,
-    "target_date": "2026-07-29",
-    "generated_at_bjt": "2026-07-29T21:17:29+08:00",
+    "target_date": "2026-07-30",
+    "generated_at_bjt": "2026-07-30T12:18:31+08:00",
     "identity_confirmed": 6,
     "identity_total": 6,
     "identity_confirmation_rate": 1.0,
@@ -74,149 +74,49 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 1,
-      "matches": 6,
+      "files": 0,
+      "matches": 0,
       "phases": {
         "opening": 0,
-        "decision": 6,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 6,
+      "unique_fixture_bindings": 0,
       "unique_phases": {
         "opening": 0,
-        "decision": 6,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {
-        "decision": 6
-      },
-      "latest": "2026-07-29T13:36:40.088877+08:00",
-      "latest_by_phase": {
-        "decision": "2026-07-29T13:36:40.088877+08:00"
-      },
-      "latest_by_requested_phase": {
-        "decision": "2026-07-29T13:36:40.088877+08:00"
-      },
-      "bindings_by_requested_phase": {
-        "decision": [
-          [
-            "2026-07-29",
-            "图凯拉特",
-            "奥莫尼亚",
-            "2040645"
-          ],
-          [
-            "2026-07-29",
-            "巴西国际",
-            "弗拉门戈",
-            "2040648"
-          ],
-          [
-            "2026-07-29",
-            "弗鲁米嫩",
-            "巴伊亚",
-            "2040649"
-          ],
-          [
-            "2026-07-29",
-            "波兹莱赫",
-            "奥胡斯",
-            "2040646"
-          ],
-          [
-            "2026-07-29",
-            "米拉索",
-            "雷莫",
-            "2040647"
-          ],
-          [
-            "2026-07-29",
-            "维多利亚",
-            "帕梅拉斯",
-            "2040650"
-          ]
-        ]
-      },
-      "latest_by_binding_by_requested_phase": {
-        "decision": [
-          {
-            "binding": [
-              "2026-07-29",
-              "图凯拉特",
-              "奥莫尼亚",
-              "2040645"
-            ],
-            "captured_at": "2026-07-29T13:36:40.088877+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-29",
-              "巴西国际",
-              "弗拉门戈",
-              "2040648"
-            ],
-            "captured_at": "2026-07-29T13:36:40.088877+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-29",
-              "弗鲁米嫩",
-              "巴伊亚",
-              "2040649"
-            ],
-            "captured_at": "2026-07-29T13:36:40.088877+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-29",
-              "波兹莱赫",
-              "奥胡斯",
-              "2040646"
-            ],
-            "captured_at": "2026-07-29T13:36:40.088877+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-29",
-              "米拉索",
-              "雷莫",
-              "2040647"
-            ],
-            "captured_at": "2026-07-29T13:36:40.088877+08:00"
-          },
-          {
-            "binding": [
-              "2026-07-29",
-              "维多利亚",
-              "帕梅拉斯",
-              "2040650"
-            ],
-            "captured_at": "2026-07-29T13:36:40.088877+08:00"
-          }
-        ]
-      }
+      "requested_phases": {},
+      "latest": null,
+      "latest_by_phase": {},
+      "latest_by_requested_phase": {},
+      "bindings_by_requested_phase": {},
+      "latest_by_binding_by_requested_phase": {}
     },
     "forecast_blockers": [],
     "decision_blockers": [
+      "decision_snapshot_incomplete",
       "decision_odds_stale"
     ],
     "hard_blockers": [
+      "decision_snapshot_incomplete",
       "decision_odds_stale"
     ]
   },
   "source_status": {
     "source": "中国足彩网",
     "analysis_source": "中国足彩网专业欧赔市场",
-    "target_date": "2026-07-29",
-    "updated_at": "2026-07-29T04:17:45.020752+00:00",
+    "target_date": "2026-07-30",
+    "updated_at": "2026-07-30T04:18:30.468188+00:00",
     "fallback": true,
-    "message": "",
+    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
     "fixture_count": 6,
     "no_fixtures": false
   }
