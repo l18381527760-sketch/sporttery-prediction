@@ -8,17 +8,17 @@
   "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "forecast",
-  "initial_report_ready": false,
-  "provisional_plan_sha256": "",
+  "report_stage": "provisional",
+  "initial_report_ready": true,
+  "provisional_plan_sha256": "214ce339bbe3ad0d5b031ed3be01da907d2b691dbc1d20ab1c1628d1aa4e5620",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
-  "revalidation_ready": false,
-  "build_id": "30603712878-1-forecast",
-  "generated_at_bjt": "2026-07-31T12:17:29+08:00",
-  "image_sha256": "e2f9325a9ece01d9ea4b82d0af7c337a5df307e1c00e28fe6f8c6d56bbe4c28c",
-  "source_commit_sha": "1854af1940c5ed0b70f1896aaaf4798b5de242d0",
+  "revalidation_ready": true,
+  "build_id": "30607247021-1-provisional",
+  "generated_at_bjt": "2026-07-31T13:38:30+08:00",
+  "image_sha256": "09f1735a1e980573bbd432e3f8f3f7bfddc0bcaa9838b438364f59fb7c6ae206",
+  "source_commit_sha": "e95c9ed2ee17c11875790789ccda8a8ee22c5aa6",
   "fixture_count": 3,
   "official_fixture_count": 3,
   "prediction_count": 3,
@@ -29,12 +29,10 @@
   "odds_coverage": 1.0,
   "official_odds_coverage_ratio": 1.0,
   "email_opportunity": {
-    "state": "unknown",
-    "actionable_plan_count": null,
+    "state": "absent",
+    "actionable_plan_count": 0,
     "draw_alert_count": 0,
-    "reasons": [
-      "actionable_plan_unavailable"
-    ]
+    "reasons": []
   },
   "data_quality": {
     "source_ready": true,
@@ -47,10 +45,10 @@
     "plan_csv_ready": false,
     "decision_ready": false,
     "plan_lock_ready": false,
-    "decision_bundle_ready": false,
-    "provisional_plan_ready": false,
-    "provisional_shadow_ready": false,
-    "provisional_state_ready": false,
+    "decision_bundle_ready": true,
+    "provisional_plan_ready": true,
+    "provisional_shadow_ready": true,
+    "provisional_state_ready": true,
     "decision_snapshot_ready": false,
     "ledger_ready": true,
     "site_ready": true,
@@ -59,7 +57,7 @@
   "evidence_health": {
     "schema_version": 1,
     "target_date": "2026-07-31",
-    "generated_at_bjt": "2026-07-31T12:17:29+08:00",
+    "generated_at_bjt": "2026-07-31T13:38:30+08:00",
     "identity_confirmed": 3,
     "identity_total": 3,
     "identity_confirmation_rate": 1.0,
@@ -74,41 +72,92 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 0,
-      "matches": 0,
+      "files": 1,
+      "matches": 3,
       "phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 3,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 0,
+      "unique_fixture_bindings": 3,
       "unique_phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 3,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {},
-      "latest": null,
-      "latest_by_phase": {},
-      "latest_by_requested_phase": {},
-      "bindings_by_requested_phase": {},
-      "latest_by_binding_by_requested_phase": {}
+      "requested_phases": {
+        "decision": 3
+      },
+      "latest": "2026-07-31T13:36:57.409779+08:00",
+      "latest_by_phase": {
+        "decision": "2026-07-31T13:36:57.409779+08:00"
+      },
+      "latest_by_requested_phase": {
+        "decision": "2026-07-31T13:36:57.409779+08:00"
+      },
+      "bindings_by_requested_phase": {
+        "decision": [
+          [
+            "2026-07-31",
+            "博德闪耀",
+            "利勒斯特",
+            "2040668"
+          ],
+          [
+            "2026-07-31",
+            "瓦勒伦加",
+            "汉坎",
+            "2040667"
+          ],
+          [
+            "2026-07-31",
+            "纽约城",
+            "多伦多",
+            "2040669"
+          ]
+        ]
+      },
+      "latest_by_binding_by_requested_phase": {
+        "decision": [
+          {
+            "binding": [
+              "2026-07-31",
+              "博德闪耀",
+              "利勒斯特",
+              "2040668"
+            ],
+            "captured_at": "2026-07-31T13:36:57.409779+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-31",
+              "瓦勒伦加",
+              "汉坎",
+              "2040667"
+            ],
+            "captured_at": "2026-07-31T13:36:57.409779+08:00"
+          },
+          {
+            "binding": [
+              "2026-07-31",
+              "纽约城",
+              "多伦多",
+              "2040669"
+            ],
+            "captured_at": "2026-07-31T13:36:57.409779+08:00"
+          }
+        ]
+      }
     },
     "forecast_blockers": [],
-    "decision_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ],
-    "hard_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ]
+    "decision_blockers": [],
+    "hard_blockers": []
   },
   "source_status": {
     "source": "中国足彩网",
@@ -116,7 +165,7 @@
     "target_date": "2026-07-31",
     "updated_at": "2026-07-31T04:17:28.771455+00:00",
     "fallback": true,
-    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+    "message": "",
     "fixture_count": 3,
     "no_fixtures": false
   }
