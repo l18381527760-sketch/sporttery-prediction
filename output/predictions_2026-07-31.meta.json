@@ -1,0 +1,107 @@
+{
+  "fixture_extract": {
+    "match_count": 3,
+    "rows": [
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-07-31",
+        "is_single_had": "false",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-01 03:00",
+        "kickoff_local": "周五002",
+        "market_odds_a": "1.24",
+        "market_odds_b": "9.35",
+        "market_odds_draw": "6.27",
+        "match_id": "2040668",
+        "match_num": "周五002",
+        "neutral": "false",
+        "odds_a": "1.17",
+        "odds_b": "9.00",
+        "odds_draw": "6.10",
+        "pool_status": "",
+        "stage": "挪超",
+        "team_a": "博德闪耀",
+        "team_b": "利勒斯特",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-07-31",
+        "is_single_had": "false",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-01 07:30",
+        "kickoff_local": "周五003",
+        "market_odds_a": "1.64",
+        "market_odds_b": "4.75",
+        "market_odds_draw": "3.94",
+        "match_id": "2040669",
+        "match_num": "周五003",
+        "neutral": "false",
+        "odds_a": "1.52",
+        "odds_b": "4.72",
+        "odds_draw": "3.85",
+        "pool_status": "",
+        "stage": "美职联",
+        "team_a": "纽约城",
+        "team_b": "多伦多",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-07-31",
+        "is_single_had": "true",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-01 01:00",
+        "kickoff_local": "周五001",
+        "market_odds_a": "1.57",
+        "market_odds_b": "4.89",
+        "market_odds_draw": "4.24",
+        "match_id": "2040667",
+        "match_num": "周五001",
+        "neutral": "false",
+        "odds_a": "1.49",
+        "odds_b": "4.60",
+        "odds_draw": "4.15",
+        "pool_status": "",
+        "stage": "挪超",
+        "team_a": "瓦勒伦加",
+        "team_b": "汉坎",
+        "venue": "中国足彩网备用数据"
+      }
+    ],
+    "sha256": "99affd39492ac87ec1942f1e3e87725ab829185c3f00ae1db991f64c8abf15ad"
+  },
+  "generated_at_bjt": "2026-07-31T12:17:28.925884+08:00",
+  "model_inputs": {
+    "config": {
+      "bytes": 457,
+      "path": "config.json",
+      "sha256": "2d7819d1d8071390dfd11ce5e1fc5f847903790453559a9b4fc4ab3b9775529b"
+    },
+    "fixtures": {
+      "bytes": 838,
+      "path": "data/import_extracts/2026-07-31/fixtures.csv",
+      "sha256": "513930f1d147356aae3930b1bc0354f30e318e6166b3c77b8d8d69ead4e8da20"
+    },
+    "prediction_code": {
+      "bytes": 17359,
+      "path": "predict_today.py",
+      "sha256": "429ca146fabf12de06ab150ae66fa5455a347f19c095c2eab4a4fd4eaefa3c55"
+    },
+    "ratings": {
+      "bytes": 6690,
+      "path": "data/import_extracts/2026-07-31/ratings.csv",
+      "sha256": "979212d2dd56e089f2001f0df8a8f296256a05506cc53c996e147ce670b0f8a5"
+    }
+  },
+  "predictions": {
+    "bytes": 1147,
+    "path": "output/predictions_2026-07-31.csv",
+    "sha256": "e36288f6f0104dca68794ce28983c55bf0007bc000225cb61ac5746fab69da7a"
+  },
+  "schema_version": 2,
+  "target_date": "2026-07-31"
+}
