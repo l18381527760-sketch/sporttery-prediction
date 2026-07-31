@@ -133,34 +133,34 @@
       "unique_phases": "full_fixture_bindings",
       "requested_phases": "full_fixture_bindings"
     },
-    "files": 7,
-    "matches": 48,
+    "files": 8,
+    "matches": 51,
     "phases": {
       "opening": 0,
-      "decision": 34,
+      "decision": 37,
       "monitoring": 0,
       "pre_kickoff": 0,
       "pre_kickoff_90": 0,
       "pre_kickoff_30": 0
     },
-    "unique_fixture_bindings": 48,
+    "unique_fixture_bindings": 51,
     "unique_phases": {
       "opening": 0,
-      "decision": 34,
+      "decision": 37,
       "monitoring": 0,
       "pre_kickoff": 0,
       "pre_kickoff_90": 0,
       "pre_kickoff_30": 0
     },
     "requested_phases": {
-      "decision": 34
+      "decision": 37
     },
-    "latest": "2026-07-30T13:36:35.367859+08:00",
+    "latest": "2026-07-31T13:36:57.409779+08:00",
     "latest_by_phase": {
-      "decision": "2026-07-30T13:36:35.367859+08:00"
+      "decision": "2026-07-31T13:36:57.409779+08:00"
     },
     "latest_by_requested_phase": {
-      "decision": "2026-07-30T13:36:35.367859+08:00"
+      "decision": "2026-07-31T13:36:57.409779+08:00"
     },
     "bindings_by_requested_phase": {
       "decision": [
@@ -367,6 +367,24 @@
           "费伦茨瓦",
           "特温特",
           "2040654"
+        ],
+        [
+          "2026-07-31",
+          "博德闪耀",
+          "利勒斯特",
+          "2040668"
+        ],
+        [
+          "2026-07-31",
+          "瓦勒伦加",
+          "汉坎",
+          "2040667"
+        ],
+        [
+          "2026-07-31",
+          "纽约城",
+          "多伦多",
+          "2040669"
         ]
       ]
     },
@@ -677,6 +695,33 @@
             "2040654"
           ],
           "captured_at": "2026-07-30T13:36:35.367859+08:00"
+        },
+        {
+          "binding": [
+            "2026-07-31",
+            "博德闪耀",
+            "利勒斯特",
+            "2040668"
+          ],
+          "captured_at": "2026-07-31T13:36:57.409779+08:00"
+        },
+        {
+          "binding": [
+            "2026-07-31",
+            "瓦勒伦加",
+            "汉坎",
+            "2040667"
+          ],
+          "captured_at": "2026-07-31T13:36:57.409779+08:00"
+        },
+        {
+          "binding": [
+            "2026-07-31",
+            "纽约城",
+            "多伦多",
+            "2040669"
+          ],
+          "captured_at": "2026-07-31T13:36:57.409779+08:00"
         }
       ]
     }
