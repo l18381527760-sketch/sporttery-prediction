@@ -1,38 +1,40 @@
 {
   "schema_version": 3,
-  "report_date": "2026-08-01",
+  "report_date": "2026-08-02",
   "forecast_ready": true,
   "decision_snapshot_ready": false,
-  "settlement_ready": true,
+  "settlement_ready": false,
   "plan_ready": false,
-  "settled_through": "2026-07-31",
+  "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "settlement",
-  "initial_report_ready": true,
-  "provisional_plan_sha256": "214ce339bbe3ad0d5b031ed3be01da907d2b691dbc1d20ab1c1628d1aa4e5620",
+  "report_stage": "forecast",
+  "initial_report_ready": false,
+  "provisional_plan_sha256": "",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
-  "revalidation_ready": true,
-  "build_id": "30696997271-1-settlement",
-  "generated_at_bjt": "2026-08-01T19:16:22+08:00",
-  "image_sha256": "699efa7b0c5deba7aedda7dc69f20ffcba00e870088d306c42f6965bd469dc5f",
-  "source_commit_sha": "b29432a285495f652e99148163919bf4d59b1a58",
-  "fixture_count": 16,
-  "official_fixture_count": 16,
-  "prediction_count": 16,
+  "revalidation_ready": false,
+  "build_id": "30732076755-1-forecast",
+  "generated_at_bjt": "2026-08-02T12:19:55+08:00",
+  "image_sha256": "83d17b47cad1fac219a96d2715e3632b34973c600a3c81a2c11130493baf0b48",
+  "source_commit_sha": "3e1c98762329b87653012b805e61911a0a04e98c",
+  "fixture_count": 14,
+  "official_fixture_count": 14,
+  "prediction_count": 14,
   "plan_count": 0,
   "ledger_count": 5,
-  "odds_covered_fixture_count": 16,
-  "official_odds_count": 16,
+  "odds_covered_fixture_count": 14,
+  "official_odds_count": 14,
   "odds_coverage": 1.0,
   "official_odds_coverage_ratio": 1.0,
   "email_opportunity": {
-    "state": "absent",
-    "actionable_plan_count": 0,
+    "state": "unknown",
+    "actionable_plan_count": null,
     "draw_alert_count": 0,
-    "reasons": []
+    "reasons": [
+      "actionable_plan_unavailable"
+    ]
   },
   "data_quality": {
     "source_ready": true,
@@ -45,10 +47,10 @@
     "plan_csv_ready": false,
     "decision_ready": false,
     "plan_lock_ready": false,
-    "decision_bundle_ready": true,
-    "provisional_plan_ready": true,
-    "provisional_shadow_ready": true,
-    "provisional_state_ready": true,
+    "decision_bundle_ready": false,
+    "provisional_plan_ready": false,
+    "provisional_shadow_ready": false,
+    "provisional_state_ready": false,
     "decision_snapshot_ready": false,
     "ledger_ready": true,
     "site_ready": true,
@@ -56,10 +58,10 @@
   },
   "evidence_health": {
     "schema_version": 1,
-    "target_date": "2026-08-01",
-    "generated_at_bjt": "2026-08-01T19:16:22+08:00",
-    "identity_confirmed": 16,
-    "identity_total": 16,
+    "target_date": "2026-08-02",
+    "generated_at_bjt": "2026-08-02T12:19:55+08:00",
+    "identity_confirmed": 14,
+    "identity_total": 14,
     "identity_confirmation_rate": 1.0,
     "result_provenance_rate": null,
     "snapshot_coverage": {
@@ -72,296 +74,50 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 1,
-      "matches": 16,
+      "files": 0,
+      "matches": 0,
       "phases": {
         "opening": 0,
-        "decision": 16,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 16,
+      "unique_fixture_bindings": 0,
       "unique_phases": {
         "opening": 0,
-        "decision": 16,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {
-        "decision": 16
-      },
-      "latest": "2026-08-01T13:36:37.121065+08:00",
-      "latest_by_phase": {
-        "decision": "2026-08-01T13:36:37.121065+08:00"
-      },
-      "latest_by_requested_phase": {
-        "decision": "2026-08-01T13:36:37.121065+08:00"
-      },
-      "bindings_by_requested_phase": {
-        "decision": [
-          [
-            "2026-08-01",
-            "全北现代",
-            "首尔FC",
-            "2040674"
-          ],
-          [
-            "2026-08-01",
-            "图尔库",
-            "玛丽港",
-            "2040676"
-          ],
-          [
-            "2026-08-01",
-            "圣路易斯",
-            "盐湖城",
-            "2040685"
-          ],
-          [
-            "2026-08-01",
-            "拉赫蒂",
-            "雅罗",
-            "2040679"
-          ],
-          [
-            "2026-08-01",
-            "斯达",
-            "维京",
-            "2040680"
-          ],
-          [
-            "2026-08-01",
-            "桑托斯",
-            "雷莫",
-            "2040705"
-          ],
-          [
-            "2026-08-01",
-            "江原FC",
-            "富川FC",
-            "2040673"
-          ],
-          [
-            "2026-08-01",
-            "波特兰",
-            "西雅图",
-            "2040687"
-          ],
-          [
-            "2026-08-01",
-            "洛城银河",
-            "达拉斯",
-            "2040686"
-          ],
-          [
-            "2026-08-01",
-            "浦项制铁",
-            "金泉尚武",
-            "2040675"
-          ],
-          [
-            "2026-08-01",
-            "温哥华",
-            "洛杉矶",
-            "2040683"
-          ],
-          [
-            "2026-08-01",
-            "芝加哥",
-            "夏洛特",
-            "2040684"
-          ],
-          [
-            "2026-08-01",
-            "费特斯塔",
-            "桑纳菲",
-            "2040678"
-          ],
-          [
-            "2026-08-01",
-            "赫尔火花",
-            "库普斯",
-            "2040681"
-          ],
-          [
-            "2026-08-01",
-            "赫根",
-            "卡尔马",
-            "2040677"
-          ],
-          [
-            "2026-08-01",
-            "迈阿密",
-            "哥伦布",
-            "2040682"
-          ]
-        ]
-      },
-      "latest_by_binding_by_requested_phase": {
-        "decision": [
-          {
-            "binding": [
-              "2026-08-01",
-              "全北现代",
-              "首尔FC",
-              "2040674"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "图尔库",
-              "玛丽港",
-              "2040676"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "圣路易斯",
-              "盐湖城",
-              "2040685"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "拉赫蒂",
-              "雅罗",
-              "2040679"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "斯达",
-              "维京",
-              "2040680"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "桑托斯",
-              "雷莫",
-              "2040705"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "江原FC",
-              "富川FC",
-              "2040673"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "波特兰",
-              "西雅图",
-              "2040687"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "洛城银河",
-              "达拉斯",
-              "2040686"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "浦项制铁",
-              "金泉尚武",
-              "2040675"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "温哥华",
-              "洛杉矶",
-              "2040683"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "芝加哥",
-              "夏洛特",
-              "2040684"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "费特斯塔",
-              "桑纳菲",
-              "2040678"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "赫尔火花",
-              "库普斯",
-              "2040681"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "赫根",
-              "卡尔马",
-              "2040677"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-01",
-              "迈阿密",
-              "哥伦布",
-              "2040682"
-            ],
-            "captured_at": "2026-08-01T13:36:37.121065+08:00"
-          }
-        ]
-      }
+      "requested_phases": {},
+      "latest": null,
+      "latest_by_phase": {},
+      "latest_by_requested_phase": {},
+      "bindings_by_requested_phase": {},
+      "latest_by_binding_by_requested_phase": {}
     },
     "forecast_blockers": [],
-    "decision_blockers": [],
-    "hard_blockers": []
+    "decision_blockers": [
+      "decision_snapshot_incomplete",
+      "decision_odds_stale"
+    ],
+    "hard_blockers": [
+      "decision_snapshot_incomplete",
+      "decision_odds_stale"
+    ]
   },
   "source_status": {
     "source": "中国足彩网",
     "analysis_source": "中国足彩网专业欧赔市场",
-    "target_date": "2026-08-01",
-    "updated_at": "2026-08-01T04:18:18.942744+00:00",
+    "target_date": "2026-08-02",
+    "updated_at": "2026-08-02T04:19:54.366524+00:00",
     "fallback": true,
-    "message": "",
-    "fixture_count": 16,
+    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+    "fixture_count": 14,
     "no_fixtures": false
   }
 }
