@@ -1,0 +1,130 @@
+{
+  "fixture_extract": {
+    "match_count": 4,
+    "rows": [
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-03",
+        "is_single_had": "false",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-04 00:00",
+        "kickoff_local": "周一001",
+        "market_odds_a": "3.27",
+        "market_odds_b": "1.95",
+        "market_odds_draw": "3.79",
+        "match_id": "2040701",
+        "match_num": "周一001",
+        "neutral": "false",
+        "odds_a": "3.07",
+        "odds_b": "1.85",
+        "odds_draw": "3.80",
+        "pool_status": "",
+        "stage": "芬超",
+        "team_a": "塞纳乔琪",
+        "team_b": "赫尔辛基",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-03",
+        "is_single_had": "false",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-04 01:00",
+        "kickoff_local": "周一002",
+        "market_odds_a": "6.82",
+        "market_odds_b": "1.37",
+        "market_odds_draw": "4.96",
+        "match_id": "2040702",
+        "match_num": "周一002",
+        "neutral": "false",
+        "odds_a": "7.10",
+        "odds_b": "1.25",
+        "odds_draw": "5.30",
+        "pool_status": "",
+        "stage": "瑞典超",
+        "team_a": "哈斯塔德",
+        "team_b": "天狼星",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-03",
+        "is_single_had": "true",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-04 01:00",
+        "kickoff_local": "周一003",
+        "market_odds_a": "1.44",
+        "market_odds_b": "5.86",
+        "market_odds_draw": "4.68",
+        "match_id": "2040703",
+        "match_num": "周一003",
+        "neutral": "false",
+        "odds_a": "1.38",
+        "odds_b": "5.50",
+        "odds_draw": "4.50",
+        "pool_status": "",
+        "stage": "瑞典超",
+        "team_a": "佐加顿斯",
+        "team_b": "瓦斯特拉",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-03",
+        "is_single_had": "true",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-04 08:00",
+        "kickoff_local": "周一004",
+        "market_odds_a": "1.55",
+        "market_odds_b": "5.83",
+        "market_odds_draw": "3.68",
+        "match_id": "2040704",
+        "match_num": "周一004",
+        "neutral": "false",
+        "odds_a": "1.48",
+        "odds_b": "5.45",
+        "odds_draw": "3.70",
+        "pool_status": "",
+        "stage": "巴西杯",
+        "team_a": "巴竞技",
+        "team_b": "维多利亚",
+        "venue": "中国足彩网备用数据"
+      }
+    ],
+    "sha256": "eeca4a84c8fc806bb9dba07b38a4360d56dee3a44397856c766e1ff1dc558067"
+  },
+  "generated_at_bjt": "2026-08-03T12:16:50.100656+08:00",
+  "model_inputs": {
+    "config": {
+      "bytes": 457,
+      "path": "config.json",
+      "sha256": "2d7819d1d8071390dfd11ce5e1fc5f847903790453559a9b4fc4ab3b9775529b"
+    },
+    "fixtures": {
+      "bytes": 1056,
+      "path": "data/import_extracts/2026-08-03/fixtures.csv",
+      "sha256": "00c36a314556f550d45ae297edd78e9b92ea96b31cad9d588c49d2ab8b2a9d31"
+    },
+    "prediction_code": {
+      "bytes": 17359,
+      "path": "predict_today.py",
+      "sha256": "429ca146fabf12de06ab150ae66fa5455a347f19c095c2eab4a4fd4eaefa3c55"
+    },
+    "ratings": {
+      "bytes": 6788,
+      "path": "data/import_extracts/2026-08-03/ratings.csv",
+      "sha256": "8cdf5bcd3ed6ff3a303d4f252e6a1d8e060ee76582e78020450a50b4d65e78bf"
+    }
+  },
+  "predictions": {
+    "bytes": 1475,
+    "path": "output/predictions_2026-08-03.csv",
+    "sha256": "bb463a92af9f42b46942acb4f548f512039db266118dcda79f00a4e5c153b191"
+  },
+  "schema_version": 2,
+  "target_date": "2026-08-03"
+}
