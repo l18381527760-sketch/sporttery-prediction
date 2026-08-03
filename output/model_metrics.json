@@ -133,34 +133,34 @@
       "unique_phases": "full_fixture_bindings",
       "requested_phases": "full_fixture_bindings"
     },
-    "files": 10,
-    "matches": 81,
+    "files": 11,
+    "matches": 85,
     "phases": {
       "opening": 0,
-      "decision": 67,
+      "decision": 71,
       "monitoring": 0,
       "pre_kickoff": 0,
       "pre_kickoff_90": 0,
       "pre_kickoff_30": 0
     },
-    "unique_fixture_bindings": 81,
+    "unique_fixture_bindings": 85,
     "unique_phases": {
       "opening": 0,
-      "decision": 67,
+      "decision": 71,
       "monitoring": 0,
       "pre_kickoff": 0,
       "pre_kickoff_90": 0,
       "pre_kickoff_30": 0
     },
     "requested_phases": {
-      "decision": 67
+      "decision": 71
     },
-    "latest": "2026-08-02T13:44:16.180501+08:00",
+    "latest": "2026-08-03T13:36:37.354677+08:00",
     "latest_by_phase": {
-      "decision": "2026-08-02T13:44:16.180501+08:00"
+      "decision": "2026-08-03T13:36:37.354677+08:00"
     },
     "latest_by_requested_phase": {
-      "decision": "2026-08-02T13:44:16.180501+08:00"
+      "decision": "2026-08-03T13:36:37.354677+08:00"
     },
     "bindings_by_requested_phase": {
       "decision": [
@@ -565,6 +565,30 @@
           "蔚山现代",
           "FC安养",
           "2040688"
+        ],
+        [
+          "2026-08-03",
+          "佐加顿斯",
+          "瓦斯特拉",
+          "2040703"
+        ],
+        [
+          "2026-08-03",
+          "哈斯塔德",
+          "天狼星",
+          "2040702"
+        ],
+        [
+          "2026-08-03",
+          "塞纳乔琪",
+          "赫尔辛基",
+          "2040701"
+        ],
+        [
+          "2026-08-03",
+          "巴竞技",
+          "维多利亚",
+          "2040704"
         ]
       ]
     },
@@ -1172,6 +1196,42 @@
             "2040688"
           ],
           "captured_at": "2026-08-02T13:44:16.180501+08:00"
+        },
+        {
+          "binding": [
+            "2026-08-03",
+            "佐加顿斯",
+            "瓦斯特拉",
+            "2040703"
+          ],
+          "captured_at": "2026-08-03T13:36:37.354677+08:00"
+        },
+        {
+          "binding": [
+            "2026-08-03",
+            "哈斯塔德",
+            "天狼星",
+            "2040702"
+          ],
+          "captured_at": "2026-08-03T13:36:37.354677+08:00"
+        },
+        {
+          "binding": [
+            "2026-08-03",
+            "塞纳乔琪",
+            "赫尔辛基",
+            "2040701"
+          ],
+          "captured_at": "2026-08-03T13:36:37.354677+08:00"
+        },
+        {
+          "binding": [
+            "2026-08-03",
+            "巴竞技",
+            "维多利亚",
+            "2040704"
+          ],
+          "captured_at": "2026-08-03T13:36:37.354677+08:00"
         }
       ]
     }
