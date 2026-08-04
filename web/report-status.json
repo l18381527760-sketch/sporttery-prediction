@@ -1,31 +1,31 @@
 {
   "schema_version": 3,
-  "report_date": "2026-08-03",
+  "report_date": "2026-08-04",
   "forecast_ready": true,
   "decision_snapshot_ready": false,
-  "settlement_ready": true,
+  "settlement_ready": false,
   "plan_ready": false,
-  "settled_through": "2026-08-02",
+  "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "settlement",
+  "report_stage": "forecast",
   "initial_report_ready": false,
   "provisional_plan_sha256": "",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
   "revalidation_ready": false,
-  "build_id": "30829860930-1-settlement",
-  "generated_at_bjt": "2026-08-03T23:58:33+08:00",
-  "image_sha256": "1dad7b06fc86dce615e27d3d57188474f573778e28df31d7db578b588043042e",
-  "source_commit_sha": "83465184e034d6af6a21047ce8acb56b434b4e93",
-  "fixture_count": 4,
-  "official_fixture_count": 4,
-  "prediction_count": 4,
+  "build_id": "30877169017-1-forecast",
+  "generated_at_bjt": "2026-08-04T12:16:59+08:00",
+  "image_sha256": "0b7190a495e7e3fc2a122f26d02d38cbd514dd247338b8029e0e565a07287215",
+  "source_commit_sha": "2891bac5511cdf643d5f3cff9bc54d74ef0da717",
+  "fixture_count": 5,
+  "official_fixture_count": 5,
+  "prediction_count": 5,
   "plan_count": 0,
   "ledger_count": 5,
-  "odds_covered_fixture_count": 4,
-  "official_odds_count": 4,
+  "odds_covered_fixture_count": 5,
+  "official_odds_count": 5,
   "odds_coverage": 1.0,
   "official_odds_coverage_ratio": 1.0,
   "email_opportunity": {
@@ -58,10 +58,10 @@
   },
   "evidence_health": {
     "schema_version": 1,
-    "target_date": "2026-08-03",
-    "generated_at_bjt": "2026-08-03T23:58:33+08:00",
-    "identity_confirmed": 4,
-    "identity_total": 4,
+    "target_date": "2026-08-04",
+    "generated_at_bjt": "2026-08-04T12:16:59+08:00",
+    "identity_confirmed": 5,
+    "identity_total": 5,
     "identity_confirmation_rate": 1.0,
     "result_provenance_rate": null,
     "snapshot_coverage": {
@@ -74,120 +74,50 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 1,
-      "matches": 4,
+      "files": 0,
+      "matches": 0,
       "phases": {
         "opening": 0,
-        "decision": 4,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 4,
+      "unique_fixture_bindings": 0,
       "unique_phases": {
         "opening": 0,
-        "decision": 4,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {
-        "decision": 4
-      },
-      "latest": "2026-08-03T13:36:37.354677+08:00",
-      "latest_by_phase": {
-        "decision": "2026-08-03T13:36:37.354677+08:00"
-      },
-      "latest_by_requested_phase": {
-        "decision": "2026-08-03T13:36:37.354677+08:00"
-      },
-      "bindings_by_requested_phase": {
-        "decision": [
-          [
-            "2026-08-03",
-            "佐加顿斯",
-            "瓦斯特拉",
-            "2040703"
-          ],
-          [
-            "2026-08-03",
-            "哈斯塔德",
-            "天狼星",
-            "2040702"
-          ],
-          [
-            "2026-08-03",
-            "塞纳乔琪",
-            "赫尔辛基",
-            "2040701"
-          ],
-          [
-            "2026-08-03",
-            "巴竞技",
-            "维多利亚",
-            "2040704"
-          ]
-        ]
-      },
-      "latest_by_binding_by_requested_phase": {
-        "decision": [
-          {
-            "binding": [
-              "2026-08-03",
-              "佐加顿斯",
-              "瓦斯特拉",
-              "2040703"
-            ],
-            "captured_at": "2026-08-03T13:36:37.354677+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-03",
-              "哈斯塔德",
-              "天狼星",
-              "2040702"
-            ],
-            "captured_at": "2026-08-03T13:36:37.354677+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-03",
-              "塞纳乔琪",
-              "赫尔辛基",
-              "2040701"
-            ],
-            "captured_at": "2026-08-03T13:36:37.354677+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-03",
-              "巴竞技",
-              "维多利亚",
-              "2040704"
-            ],
-            "captured_at": "2026-08-03T13:36:37.354677+08:00"
-          }
-        ]
-      }
+      "requested_phases": {},
+      "latest": null,
+      "latest_by_phase": {},
+      "latest_by_requested_phase": {},
+      "bindings_by_requested_phase": {},
+      "latest_by_binding_by_requested_phase": {}
     },
     "forecast_blockers": [],
     "decision_blockers": [
+      "decision_snapshot_incomplete",
       "decision_odds_stale"
     ],
     "hard_blockers": [
+      "decision_snapshot_incomplete",
       "decision_odds_stale"
     ]
   },
   "source_status": {
     "source": "中国足彩网",
     "analysis_source": "中国足彩网专业欧赔市场",
-    "target_date": "2026-08-03",
-    "updated_at": "2026-08-03T04:16:49.941895+00:00",
+    "target_date": "2026-08-04",
+    "updated_at": "2026-08-04T04:16:58.317815+00:00",
     "fallback": true,
-    "message": "",
-    "fixture_count": 4,
+    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+    "fixture_count": 5,
     "no_fixtures": false
   }
 }

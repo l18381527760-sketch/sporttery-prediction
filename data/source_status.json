@@ -1,10 +1,10 @@
 {
   "source": "中国足彩网",
   "analysis_source": "中国足彩网专业欧赔市场",
-  "target_date": "2026-08-03",
-  "updated_at": "2026-08-03T04:16:49.941895+00:00",
+  "target_date": "2026-08-04",
+  "updated_at": "2026-08-04T04:16:58.317815+00:00",
   "fallback": true,
-  "message": "",
-  "fixture_count": 4,
+  "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+  "fixture_count": 5,
   "no_fixtures": false
 }

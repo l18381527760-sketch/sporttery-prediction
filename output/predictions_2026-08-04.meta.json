@@ -1,0 +1,153 @@
+{
+  "fixture_extract": {
+    "match_count": 5,
+    "rows": [
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-04",
+        "is_single_had": "false",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-05 00:00",
+        "kickoff_local": "周二002",
+        "market_odds_a": "2.04",
+        "market_odds_b": "3.35",
+        "market_odds_draw": "3.47",
+        "match_id": "2040727",
+        "match_num": "周二002",
+        "neutral": "false",
+        "odds_a": "1.87",
+        "odds_b": "3.50",
+        "odds_draw": "3.25",
+        "pool_status": "",
+        "stage": "欧冠",
+        "team_a": "米亚尔比",
+        "team_b": "布拉迪斯",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-04",
+        "is_single_had": "false",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-05 02:00",
+        "kickoff_local": "周二004",
+        "market_odds_a": "2.13",
+        "market_odds_b": "3.02",
+        "market_odds_draw": "3.62",
+        "match_id": "2040720",
+        "match_num": "周二004",
+        "neutral": "false",
+        "odds_a": "2.00",
+        "odds_b": "2.91",
+        "odds_draw": "3.50",
+        "pool_status": "",
+        "stage": "欧冠",
+        "team_a": "圣吉联合",
+        "team_b": "博德闪耀",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-04",
+        "is_single_had": "false",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-05 08:30",
+        "kickoff_local": "周二001",
+        "market_odds_a": "3.21",
+        "market_odds_b": "2.24",
+        "market_odds_draw": "3.06",
+        "match_id": "2040716",
+        "match_num": "周二001",
+        "neutral": "false",
+        "odds_a": "3.10",
+        "odds_b": "2.19",
+        "odds_draw": "2.86",
+        "pool_status": "",
+        "stage": "巴西杯",
+        "team_a": "雷莫",
+        "team_b": "桑托斯",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-04",
+        "is_single_had": "true",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-05 02:00",
+        "kickoff_local": "周二003",
+        "market_odds_a": "1.52",
+        "market_odds_b": "5.56",
+        "market_odds_draw": "4.17",
+        "match_id": "2040728",
+        "match_num": "周二003",
+        "neutral": "false",
+        "odds_a": "1.44",
+        "odds_b": "5.55",
+        "odds_draw": "3.92",
+        "pool_status": "",
+        "stage": "欧冠",
+        "team_a": "奥林匹亚",
+        "team_b": "奈梅亨",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-04",
+        "is_single_had": "true",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-05 02:00",
+        "kickoff_local": "周二005",
+        "market_odds_a": "3.28",
+        "market_odds_b": "2.05",
+        "market_odds_draw": "3.52",
+        "match_id": "2040721",
+        "match_num": "周二005",
+        "neutral": "false",
+        "odds_a": "3.35",
+        "odds_b": "1.88",
+        "odds_draw": "3.35",
+        "pool_status": "",
+        "stage": "欧冠",
+        "team_a": "布斯巴达",
+        "team_b": "里昂",
+        "venue": "中国足彩网备用数据"
+      }
+    ],
+    "sha256": "3af6d9b1dd33cbeef1c62311cf1e89e1f0f5e8207d1c0443d21091048a2e79bd"
+  },
+  "generated_at_bjt": "2026-08-04T12:16:58.483218+08:00",
+  "model_inputs": {
+    "config": {
+      "bytes": 457,
+      "path": "config.json",
+      "sha256": "2d7819d1d8071390dfd11ce5e1fc5f847903790453559a9b4fc4ab3b9775529b"
+    },
+    "fixtures": {
+      "bytes": 1245,
+      "path": "data/import_extracts/2026-08-04/fixtures.csv",
+      "sha256": "0162f2af13ec6121512e8bce5691c8f408e2f5cb94334a0ca5732dc15809e93b"
+    },
+    "prediction_code": {
+      "bytes": 17359,
+      "path": "predict_today.py",
+      "sha256": "429ca146fabf12de06ab150ae66fa5455a347f19c095c2eab4a4fd4eaefa3c55"
+    },
+    "ratings": {
+      "bytes": 7088,
+      "path": "data/import_extracts/2026-08-04/ratings.csv",
+      "sha256": "0fe30b8e48bc8ed732b1f157e9f2ba6a68a4c6be1a071a1fc3f53bfed3683486"
+    }
+  },
+  "predictions": {
+    "bytes": 1768,
+    "path": "output/predictions_2026-08-04.csv",
+    "sha256": "39930d07efb767da7dbe13961e0e0f591e4044385d5d83343114641744e3642f"
+  },
+  "schema_version": 2,
+  "target_date": "2026-08-04"
+}
