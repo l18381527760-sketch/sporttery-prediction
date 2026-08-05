@@ -133,34 +133,34 @@
       "unique_phases": "full_fixture_bindings",
       "requested_phases": "full_fixture_bindings"
     },
-    "files": 12,
-    "matches": 90,
+    "files": 13,
+    "matches": 93,
     "phases": {
       "opening": 0,
-      "decision": 76,
+      "decision": 79,
       "monitoring": 0,
       "pre_kickoff": 0,
       "pre_kickoff_90": 0,
       "pre_kickoff_30": 0
     },
-    "unique_fixture_bindings": 90,
+    "unique_fixture_bindings": 93,
     "unique_phases": {
       "opening": 0,
-      "decision": 76,
+      "decision": 79,
       "monitoring": 0,
       "pre_kickoff": 0,
       "pre_kickoff_90": 0,
       "pre_kickoff_30": 0
     },
     "requested_phases": {
-      "decision": 76
+      "decision": 79
     },
-    "latest": "2026-08-04T13:36:34.633221+08:00",
+    "latest": "2026-08-05T13:36:50.391232+08:00",
     "latest_by_phase": {
-      "decision": "2026-08-04T13:36:34.633221+08:00"
+      "decision": "2026-08-05T13:36:50.391232+08:00"
     },
     "latest_by_requested_phase": {
-      "decision": "2026-08-04T13:36:34.633221+08:00"
+      "decision": "2026-08-05T13:36:50.391232+08:00"
     },
     "bindings_by_requested_phase": {
       "decision": [
@@ -619,6 +619,24 @@
           "雷莫",
           "桑托斯",
           "2040716"
+        ],
+        [
+          "2026-08-05",
+          "奥胡斯",
+          "沙巴巴库",
+          "2040722"
+        ],
+        [
+          "2026-08-05",
+          "弗鲁米嫩",
+          "达伽马",
+          "2040717"
+        ],
+        [
+          "2026-08-05",
+          "费内巴切",
+          "格风暴",
+          "2040723"
         ]
       ]
     },
@@ -1307,6 +1325,33 @@
             "2040716"
           ],
           "captured_at": "2026-08-04T13:36:34.633221+08:00"
+        },
+        {
+          "binding": [
+            "2026-08-05",
+            "奥胡斯",
+            "沙巴巴库",
+            "2040722"
+          ],
+          "captured_at": "2026-08-05T13:36:50.391232+08:00"
+        },
+        {
+          "binding": [
+            "2026-08-05",
+            "弗鲁米嫩",
+            "达伽马",
+            "2040717"
+          ],
+          "captured_at": "2026-08-05T13:36:50.391232+08:00"
+        },
+        {
+          "binding": [
+            "2026-08-05",
+            "费内巴切",
+            "格风暴",
+            "2040723"
+          ],
+          "captured_at": "2026-08-05T13:36:50.391232+08:00"
         }
       ]
     }
