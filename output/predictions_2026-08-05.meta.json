@@ -1,0 +1,107 @@
+{
+  "fixture_extract": {
+    "match_count": 3,
+    "rows": [
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-05",
+        "is_single_had": "false",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-06 08:30",
+        "kickoff_local": "周三001",
+        "market_odds_a": "1.98",
+        "market_odds_b": "3.73",
+        "market_odds_draw": "3.19",
+        "match_id": "2040717",
+        "match_num": "周三001",
+        "neutral": "false",
+        "odds_a": "2.03",
+        "odds_b": "3.62",
+        "odds_draw": "2.80",
+        "pool_status": "",
+        "stage": "巴西杯",
+        "team_a": "弗鲁米嫩",
+        "team_b": "达伽马",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-05",
+        "is_single_had": "true",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-06 00:30",
+        "kickoff_local": "周三002",
+        "market_odds_a": "1.61",
+        "market_odds_b": "4.92",
+        "market_odds_draw": "3.93",
+        "match_id": "2040722",
+        "match_num": "周三002",
+        "neutral": "false",
+        "odds_a": "1.54",
+        "odds_b": "4.70",
+        "odds_draw": "3.74",
+        "pool_status": "",
+        "stage": "欧冠",
+        "team_a": "奥胡斯",
+        "team_b": "沙巴巴库",
+        "venue": "中国足彩网备用数据"
+      },
+      {
+        "analysis_source": "中国足彩网专业欧赔市场",
+        "date": "2026-08-05",
+        "is_single_had": "true",
+        "is_single_hhad": "false",
+        "is_single_ttg": "false",
+        "kickoff_at": "2026-08-06 02:00",
+        "kickoff_local": "周三003",
+        "market_odds_a": "1.34",
+        "market_odds_b": "7.69",
+        "market_odds_draw": "4.96",
+        "match_id": "2040723",
+        "match_num": "周三003",
+        "neutral": "false",
+        "odds_a": "1.25",
+        "odds_b": "7.60",
+        "odds_draw": "5.05",
+        "pool_status": "",
+        "stage": "欧冠",
+        "team_a": "费内巴切",
+        "team_b": "格风暴",
+        "venue": "中国足彩网备用数据"
+      }
+    ],
+    "sha256": "4353287b7752853d6eee7131f793f09a785b137bc7956ec004bed0a542d32512"
+  },
+  "generated_at_bjt": "2026-08-05T12:17:09.517484+08:00",
+  "model_inputs": {
+    "config": {
+      "bytes": 457,
+      "path": "config.json",
+      "sha256": "2d7819d1d8071390dfd11ce5e1fc5f847903790453559a9b4fc4ab3b9775529b"
+    },
+    "fixtures": {
+      "bytes": 840,
+      "path": "data/import_extracts/2026-08-05/fixtures.csv",
+      "sha256": "7533195010d9f07ae9781a0fddaa2b4241086124676ada6b6b621fd8e1400a8d"
+    },
+    "prediction_code": {
+      "bytes": 17359,
+      "path": "predict_today.py",
+      "sha256": "429ca146fabf12de06ab150ae66fa5455a347f19c095c2eab4a4fd4eaefa3c55"
+    },
+    "ratings": {
+      "bytes": 7139,
+      "path": "data/import_extracts/2026-08-05/ratings.csv",
+      "sha256": "0f348188aab416a10a8fd1c06e1ad7ba1bdbbf8d963370cbb505bc49e6e5a01a"
+    }
+  },
+  "predictions": {
+    "bytes": 1157,
+    "path": "output/predictions_2026-08-05.csv",
+    "sha256": "08b4c5939ee901da78ea76f45b1dcf22b291a598111379000ff906ec877859bc"
+  },
+  "schema_version": 2,
+  "target_date": "2026-08-05"
+}
