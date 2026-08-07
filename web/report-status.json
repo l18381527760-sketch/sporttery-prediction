@@ -8,17 +8,17 @@
   "settled_through": "2026-08-06",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "settlement",
+  "report_stage": "forecast",
   "initial_report_ready": true,
   "provisional_plan_sha256": "214ce339bbe3ad0d5b031ed3be01da907d2b691dbc1d20ab1c1628d1aa4e5620",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
   "revalidation_ready": true,
-  "build_id": "31151666598-1-settlement",
-  "generated_at_bjt": "2026-08-07T13:47:56+08:00",
-  "image_sha256": "d8cb64d80ae3d0731c60d346fce54b446f4cb0216f24e54e666e2c03858fa867",
-  "source_commit_sha": "5c73e0d8a77b5dd1928456c6ed49c42a6a3014bf",
+  "build_id": "31162124928-1-forecast",
+  "generated_at_bjt": "2026-08-07T16:33:09+08:00",
+  "image_sha256": "25fe0d7d3221a838e27d25c0c352bdbc2ab244cf03391685726547a7dacf63ec",
+  "source_commit_sha": "10b4ee7a2a89305b883d0360666756fafeeb0fd3",
   "fixture_count": 10,
   "official_fixture_count": 10,
   "prediction_count": 10,
@@ -29,10 +29,12 @@
   "odds_coverage": 1.0,
   "official_odds_coverage_ratio": 1.0,
   "email_opportunity": {
-    "state": "absent",
-    "actionable_plan_count": 0,
+    "state": "unknown",
+    "actionable_plan_count": null,
     "draw_alert_count": 0,
-    "reasons": []
+    "reasons": [
+      "actionable_plan_unavailable"
+    ]
   },
   "data_quality": {
     "source_ready": true,
@@ -45,10 +47,10 @@
     "plan_csv_ready": false,
     "decision_ready": false,
     "plan_lock_ready": false,
-    "decision_bundle_ready": true,
-    "provisional_plan_ready": true,
-    "provisional_shadow_ready": true,
-    "provisional_state_ready": true,
+    "decision_bundle_ready": false,
+    "provisional_plan_ready": false,
+    "provisional_shadow_ready": false,
+    "provisional_state_ready": false,
     "decision_snapshot_ready": false,
     "ledger_ready": true,
     "site_ready": true,
@@ -57,7 +59,7 @@
   "evidence_health": {
     "schema_version": 1,
     "target_date": "2026-08-07",
-    "generated_at_bjt": "2026-08-07T13:47:56+08:00",
+    "generated_at_bjt": "2026-08-07T16:33:09+08:00",
     "identity_confirmed": 10,
     "identity_total": 10,
     "identity_confirmation_rate": 1.0,
@@ -261,8 +263,12 @@
       }
     },
     "forecast_blockers": [],
-    "decision_blockers": [],
-    "hard_blockers": []
+    "decision_blockers": [
+      "decision_odds_stale"
+    ],
+    "hard_blockers": [
+      "decision_odds_stale"
+    ]
   },
   "source_status": {
     "source": "中国足彩网",
