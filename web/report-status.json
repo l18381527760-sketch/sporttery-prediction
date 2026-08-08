@@ -8,17 +8,17 @@
   "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "forecast",
-  "initial_report_ready": false,
-  "provisional_plan_sha256": "",
+  "report_stage": "provisional",
+  "initial_report_ready": true,
+  "provisional_plan_sha256": "214ce339bbe3ad0d5b031ed3be01da907d2b691dbc1d20ab1c1628d1aa4e5620",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
-  "revalidation_ready": false,
-  "build_id": "31239057753-1-forecast",
-  "generated_at_bjt": "2026-08-08T12:17:02+08:00",
-  "image_sha256": "273bb5814306bab0625d5129881171a7f7fcc328794e971600cc70a264d3a2e2",
-  "source_commit_sha": "f1fba5af75711e01ee4e03c2d740d1e7513eb319",
+  "revalidation_ready": true,
+  "build_id": "31242051210-1-provisional",
+  "generated_at_bjt": "2026-08-08T13:37:13+08:00",
+  "image_sha256": "989333139d924735725ec443292ac0ed6a252c61f6ac6123859f3f3148c1cf32",
+  "source_commit_sha": "0de8ee262987402aa208382820adb4bea8d6cbdf",
   "fixture_count": 25,
   "official_fixture_count": 25,
   "prediction_count": 25,
@@ -29,12 +29,10 @@
   "odds_coverage": 1.0,
   "official_odds_coverage_ratio": 1.0,
   "email_opportunity": {
-    "state": "unknown",
-    "actionable_plan_count": null,
+    "state": "absent",
+    "actionable_plan_count": 0,
     "draw_alert_count": 0,
-    "reasons": [
-      "actionable_plan_unavailable"
-    ]
+    "reasons": []
   },
   "data_quality": {
     "source_ready": true,
@@ -47,10 +45,10 @@
     "plan_csv_ready": false,
     "decision_ready": false,
     "plan_lock_ready": false,
-    "decision_bundle_ready": false,
-    "provisional_plan_ready": false,
-    "provisional_shadow_ready": false,
-    "provisional_state_ready": false,
+    "decision_bundle_ready": true,
+    "provisional_plan_ready": true,
+    "provisional_shadow_ready": true,
+    "provisional_state_ready": true,
     "decision_snapshot_ready": false,
     "ledger_ready": true,
     "site_ready": true,
@@ -59,7 +57,7 @@
   "evidence_health": {
     "schema_version": 1,
     "target_date": "2026-08-08",
-    "generated_at_bjt": "2026-08-08T12:17:02+08:00",
+    "generated_at_bjt": "2026-08-08T13:37:13+08:00",
     "identity_confirmed": 25,
     "identity_total": 25,
     "identity_confirmation_rate": 1.0,
@@ -74,41 +72,422 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 0,
-      "matches": 0,
+      "files": 1,
+      "matches": 25,
       "phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 25,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 0,
+      "unique_fixture_bindings": 25,
       "unique_phases": {
         "opening": 0,
-        "decision": 0,
+        "decision": 25,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {},
-      "latest": null,
-      "latest_by_phase": {},
-      "latest_by_requested_phase": {},
-      "bindings_by_requested_phase": {},
-      "latest_by_binding_by_requested_phase": {}
+      "requested_phases": {
+        "decision": 25
+      },
+      "latest": "2026-08-08T13:36:53.553754+08:00",
+      "latest_by_phase": {
+        "decision": "2026-08-08T13:36:53.553754+08:00"
+      },
+      "latest_by_requested_phase": {
+        "decision": "2026-08-08T13:36:53.553754+08:00"
+      },
+      "bindings_by_requested_phase": {
+        "decision": [
+          [
+            "2026-08-08",
+            "FC安养",
+            "大田市民",
+            "2040751"
+          ],
+          [
+            "2026-08-08",
+            "全北现代",
+            "济州SK",
+            "2040752"
+          ],
+          [
+            "2026-08-08",
+            "前进之鹰",
+            "威廉二世",
+            "2040764"
+          ],
+          [
+            "2026-08-08",
+            "南特",
+            "圣旺红星",
+            "2040798"
+          ],
+          [
+            "2026-08-08",
+            "博塔弗戈",
+            "弗鲁米嫩",
+            "2040772"
+          ],
+          [
+            "2026-08-08",
+            "吉马良斯",
+            "阿罗卡",
+            "2040765"
+          ],
+          [
+            "2026-08-08",
+            "埃因霍温",
+            "福图纳",
+            "2040766"
+          ],
+          [
+            "2026-08-08",
+            "大宫松鼠",
+            "新泻天鹅",
+            "2040797"
+          ],
+          [
+            "2026-08-08",
+            "大阪樱花",
+            "冈山绿雉",
+            "2040750"
+          ],
+          [
+            "2026-08-08",
+            "奈梅亨",
+            "特尔斯达",
+            "2040760"
+          ],
+          [
+            "2026-08-08",
+            "奥尔格里",
+            "索尔纳",
+            "2040756"
+          ],
+          [
+            "2026-08-08",
+            "女王巡游",
+            "米尔沃尔",
+            "2040755"
+          ],
+          [
+            "2026-08-08",
+            "斯旺西",
+            "伯明翰",
+            "2040758"
+          ],
+          [
+            "2026-08-08",
+            "格雷米奥",
+            "圣保罗",
+            "2040770"
+          ],
+          [
+            "2026-08-08",
+            "波城",
+            "阿纳西",
+            "2040767"
+          ],
+          [
+            "2026-08-08",
+            "瓦勒伦加",
+            "博德闪耀",
+            "2040754"
+          ],
+          [
+            "2026-08-08",
+            "米亚尔比",
+            "埃夫斯堡",
+            "2040762"
+          ],
+          [
+            "2026-08-08",
+            "维京",
+            "萨普斯堡",
+            "2040759"
+          ],
+          [
+            "2026-08-08",
+            "蒙彼利埃",
+            "第戎",
+            "2040768"
+          ],
+          [
+            "2026-08-08",
+            "西汉姆联",
+            "朴茨茅斯",
+            "2040757"
+          ],
+          [
+            "2026-08-08",
+            "金泉尚武",
+            "首尔FC",
+            "2040753"
+          ],
+          [
+            "2026-08-08",
+            "阿尔克马",
+            "海牙",
+            "2040769"
+          ],
+          [
+            "2026-08-08",
+            "阿马多拉",
+            "里斯本",
+            "2040771"
+          ],
+          [
+            "2026-08-08",
+            "雅罗",
+            "瓦萨",
+            "2040763"
+          ],
+          [
+            "2026-08-08",
+            "马里迪莫",
+            "卡沙比亚",
+            "2040761"
+          ]
+        ]
+      },
+      "latest_by_binding_by_requested_phase": {
+        "decision": [
+          {
+            "binding": [
+              "2026-08-08",
+              "FC安养",
+              "大田市民",
+              "2040751"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "全北现代",
+              "济州SK",
+              "2040752"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "前进之鹰",
+              "威廉二世",
+              "2040764"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "南特",
+              "圣旺红星",
+              "2040798"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "博塔弗戈",
+              "弗鲁米嫩",
+              "2040772"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "吉马良斯",
+              "阿罗卡",
+              "2040765"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "埃因霍温",
+              "福图纳",
+              "2040766"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "大宫松鼠",
+              "新泻天鹅",
+              "2040797"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "大阪樱花",
+              "冈山绿雉",
+              "2040750"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "奈梅亨",
+              "特尔斯达",
+              "2040760"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "奥尔格里",
+              "索尔纳",
+              "2040756"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "女王巡游",
+              "米尔沃尔",
+              "2040755"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "斯旺西",
+              "伯明翰",
+              "2040758"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "格雷米奥",
+              "圣保罗",
+              "2040770"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "波城",
+              "阿纳西",
+              "2040767"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "瓦勒伦加",
+              "博德闪耀",
+              "2040754"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "米亚尔比",
+              "埃夫斯堡",
+              "2040762"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "维京",
+              "萨普斯堡",
+              "2040759"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "蒙彼利埃",
+              "第戎",
+              "2040768"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "西汉姆联",
+              "朴茨茅斯",
+              "2040757"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "金泉尚武",
+              "首尔FC",
+              "2040753"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "阿尔克马",
+              "海牙",
+              "2040769"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "阿马多拉",
+              "里斯本",
+              "2040771"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "雅罗",
+              "瓦萨",
+              "2040763"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          },
+          {
+            "binding": [
+              "2026-08-08",
+              "马里迪莫",
+              "卡沙比亚",
+              "2040761"
+            ],
+            "captured_at": "2026-08-08T13:36:53.553754+08:00"
+          }
+        ]
+      }
     },
     "forecast_blockers": [],
-    "decision_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ],
-    "hard_blockers": [
-      "decision_snapshot_incomplete",
-      "decision_odds_stale"
-    ]
+    "decision_blockers": [],
+    "hard_blockers": []
   },
   "source_status": {
     "source": "中国足彩网",
@@ -116,7 +495,7 @@
     "target_date": "2026-08-08",
     "updated_at": "2026-08-08T04:17:01.304848+00:00",
     "fallback": true,
-    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+    "message": "",
     "fixture_count": 25,
     "no_fixtures": false
   }
