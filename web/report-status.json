@@ -1,31 +1,31 @@
 {
   "schema_version": 3,
-  "report_date": "2026-08-07",
+  "report_date": "2026-08-08",
   "forecast_ready": true,
   "decision_snapshot_ready": false,
-  "settlement_ready": true,
+  "settlement_ready": false,
   "plan_ready": false,
-  "settled_through": "2026-08-06",
+  "settled_through": "",
   "decision_odds_at_bjt": "",
   "plan_locked_at_bjt": "",
-  "report_stage": "settlement",
+  "report_stage": "forecast",
   "initial_report_ready": false,
   "provisional_plan_sha256": "",
   "provisional_candidate_count": 0,
   "confirmed_stake": 0,
   "provisional_stake": 0,
   "revalidation_ready": false,
-  "build_id": "31166773087-1-settlement",
-  "generated_at_bjt": "2026-08-07T17:40:43+08:00",
-  "image_sha256": "7a565b9a04d54d6f607dcdd7cb177baa3b7a75e55ad1b14d7218b0a08a62f52f",
-  "source_commit_sha": "f386e866a4c9168350c12b977d9d77badfc22781",
-  "fixture_count": 10,
-  "official_fixture_count": 10,
-  "prediction_count": 10,
+  "build_id": "31239057753-1-forecast",
+  "generated_at_bjt": "2026-08-08T12:17:02+08:00",
+  "image_sha256": "273bb5814306bab0625d5129881171a7f7fcc328794e971600cc70a264d3a2e2",
+  "source_commit_sha": "f1fba5af75711e01ee4e03c2d740d1e7513eb319",
+  "fixture_count": 25,
+  "official_fixture_count": 25,
+  "prediction_count": 25,
   "plan_count": 0,
   "ledger_count": 5,
-  "odds_covered_fixture_count": 10,
-  "official_odds_count": 10,
+  "odds_covered_fixture_count": 25,
+  "official_odds_count": 25,
   "odds_coverage": 1.0,
   "official_odds_coverage_ratio": 1.0,
   "email_opportunity": {
@@ -58,10 +58,10 @@
   },
   "evidence_health": {
     "schema_version": 1,
-    "target_date": "2026-08-07",
-    "generated_at_bjt": "2026-08-07T17:40:43+08:00",
-    "identity_confirmed": 10,
-    "identity_total": 10,
+    "target_date": "2026-08-08",
+    "generated_at_bjt": "2026-08-08T12:17:02+08:00",
+    "identity_confirmed": 25,
+    "identity_total": 25,
     "identity_confirmation_rate": 1.0,
     "result_provenance_rate": null,
     "snapshot_coverage": {
@@ -74,210 +74,50 @@
         "unique_phases": "full_fixture_bindings",
         "requested_phases": "full_fixture_bindings"
       },
-      "files": 1,
-      "matches": 10,
+      "files": 0,
+      "matches": 0,
       "phases": {
         "opening": 0,
-        "decision": 10,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "unique_fixture_bindings": 10,
+      "unique_fixture_bindings": 0,
       "unique_phases": {
         "opening": 0,
-        "decision": 10,
+        "decision": 0,
         "monitoring": 0,
         "pre_kickoff": 0,
         "pre_kickoff_90": 0,
         "pre_kickoff_30": 0
       },
-      "requested_phases": {
-        "decision": 10
-      },
-      "latest": "2026-08-07T13:36:53.172260+08:00",
-      "latest_by_phase": {
-        "decision": "2026-08-07T13:36:53.172260+08:00"
-      },
-      "latest_by_requested_phase": {
-        "decision": "2026-08-07T13:36:53.172260+08:00"
-      },
-      "bindings_by_requested_phase": {
-        "decision": [
-          [
-            "2026-08-07",
-            "坎布尔",
-            "SBV精英",
-            "2040741"
-          ],
-          [
-            "2026-08-07",
-            "埃斯托里",
-            "法马利康",
-            "2040746"
-          ],
-          [
-            "2026-08-07",
-            "埃门",
-            "罗达JC",
-            "2040743"
-          ],
-          [
-            "2026-08-07",
-            "塞纳乔琪",
-            "赫尔火花",
-            "2040739"
-          ],
-          [
-            "2026-08-07",
-            "大阪钢巴",
-            "浦和红钻",
-            "2040738"
-          ],
-          [
-            "2026-08-07",
-            "奥斯",
-            "布雷达",
-            "2040742"
-          ],
-          [
-            "2026-08-07",
-            "桑纳菲",
-            "KF奥斯陆",
-            "2040740"
-          ],
-          [
-            "2026-08-07",
-            "横滨水手",
-            "鹿岛鹿角",
-            "2040737"
-          ],
-          [
-            "2026-08-07",
-            "波鸿",
-            "柏林赫塔",
-            "2040744"
-          ],
-          [
-            "2026-08-07",
-            "米堡",
-            "雷克瑟姆",
-            "2040745"
-          ]
-        ]
-      },
-      "latest_by_binding_by_requested_phase": {
-        "decision": [
-          {
-            "binding": [
-              "2026-08-07",
-              "坎布尔",
-              "SBV精英",
-              "2040741"
-            ],
-            "captured_at": "2026-08-07T13:36:53.172260+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-07",
-              "埃斯托里",
-              "法马利康",
-              "2040746"
-            ],
-            "captured_at": "2026-08-07T13:36:53.172260+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-07",
-              "埃门",
-              "罗达JC",
-              "2040743"
-            ],
-            "captured_at": "2026-08-07T13:36:53.172260+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-07",
-              "塞纳乔琪",
-              "赫尔火花",
-              "2040739"
-            ],
-            "captured_at": "2026-08-07T13:36:53.172260+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-07",
-              "大阪钢巴",
-              "浦和红钻",
-              "2040738"
-            ],
-            "captured_at": "2026-08-07T13:36:53.172260+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-07",
-              "奥斯",
-              "布雷达",
-              "2040742"
-            ],
-            "captured_at": "2026-08-07T13:36:53.172260+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-07",
-              "桑纳菲",
-              "KF奥斯陆",
-              "2040740"
-            ],
-            "captured_at": "2026-08-07T13:36:53.172260+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-07",
-              "横滨水手",
-              "鹿岛鹿角",
-              "2040737"
-            ],
-            "captured_at": "2026-08-07T13:36:53.172260+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-07",
-              "波鸿",
-              "柏林赫塔",
-              "2040744"
-            ],
-            "captured_at": "2026-08-07T13:36:53.172260+08:00"
-          },
-          {
-            "binding": [
-              "2026-08-07",
-              "米堡",
-              "雷克瑟姆",
-              "2040745"
-            ],
-            "captured_at": "2026-08-07T13:36:53.172260+08:00"
-          }
-        ]
-      }
+      "requested_phases": {},
+      "latest": null,
+      "latest_by_phase": {},
+      "latest_by_requested_phase": {},
+      "bindings_by_requested_phase": {},
+      "latest_by_binding_by_requested_phase": {}
     },
     "forecast_blockers": [],
     "decision_blockers": [
+      "decision_snapshot_incomplete",
       "decision_odds_stale"
     ],
     "hard_blockers": [
+      "decision_snapshot_incomplete",
       "decision_odds_stale"
     ]
   },
   "source_status": {
     "source": "中国足彩网",
     "analysis_source": "中国足彩网专业欧赔市场",
-    "target_date": "2026-08-07",
-    "updated_at": "2026-08-07T04:16:56.944447+00:00",
+    "target_date": "2026-08-08",
+    "updated_at": "2026-08-08T04:17:01.304848+00:00",
     "fallback": true,
-    "message": "",
-    "fixture_count": 10,
+    "message": "竞彩网云端接口暂时不可用（HTTPError），已切换中国足彩网竞彩页面。",
+    "fixture_count": 25,
     "no_fixtures": false
   }
 }
